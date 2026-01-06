@@ -1,0 +1,14 @@
+[project]
+name = "reliable-llm-monitoring"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+dependencies = [
+    "models-under-pressure",
+    "python-dotenv",
+    "tqdm>=4.67.1",
+]
+
+[tool.uv.sources.models-under-pressure]
+path = "/Users/ep/Documents/research/vrcp_proj/models-under-pressure"
+editable = true
