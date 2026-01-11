@@ -18,6 +18,29 @@ class CascadePredictionResults:
     final_scores: np.ndarray
 
 
+def run_llm_baseline(
+    baseline_model_name: str,
+    dataset: LabelledDataset,
+    baseline_batch_size: int = 16,
+) -> np.ndarray:
+    """
+    Run the baseline LLM model on the given dataset and return the high-stakes probabilities.
+    Args:
+        baseline_model_name: The name of the baseline model to use (from the McKenzie et al. codebase).
+        dataset: The dataset to run the baseline model on.
+        baseline_batch_size: The batch size to use when calling the baseline model.
+    Returns:
+        A numpy array of high-stakes probabilities from the baseline model.
+    """
+    prompt_key = get_model_baseline_prompt(get_abbreviated_model_name(baseline_model_name))
+    prompt_config = likelihood_continuation_prompts[prompt_key]
+    model = LLMModel.load(LOCAL_MODELS[get_abbreviated_model_name(baseline_model_name)])
+    baseline_model = LikelihoodContinuationBaseline(model, prompt_config=prompt_config)
+    baseline_results = baseline_model.likelihood_classify_dataset(dataset, batch_size=baseline_batch_size)
+    baseline_high_stakes_prob = np.array(baseline_results.other_fields["high_stakes_score"])
+    return baseline_high_stakes_prob
+
+
 def run_online_cascade(
     probe: callable,  # TODO defined a Protocol for this, we want a function that returns logits
     baseline_model_name: str,
@@ -38,18 +61,14 @@ def run_online_cascade(
     probe_scores = probe(dataset)
     to_call_baseline = np.logical_and(probe_scores < threshold, 1 - probe_scores < threshold)
 
-    prompt_key = get_model_baseline_prompt(get_abbreviated_model_name(baseline_model_name))
-    prompt_config = likelihood_continuation_prompts[prompt_key]
-    model = LLMModel.load(LOCAL_MODELS[get_abbreviated_model_name(baseline_model_name)])
-    baseline_model = LikelihoodContinuationBaseline(model, prompt_config=prompt_config)
-
     # Use boolean array to select examples where we need to call the baseline
     baseline_indices = np.where(to_call_baseline)[0].tolist()
     dataset_to_call_baseline = dataset[baseline_indices]
-    baseline_results = baseline_model.likelihood_classify_dataset(
-        dataset_to_call_baseline, batch_size=baseline_batch_size
+    baseline_high_stakes_prob = run_llm_baseline(
+        baseline_model_name=baseline_model_name,
+        dataset=dataset_to_call_baseline,
+        baseline_batch_size=baseline_batch_size,
     )
-    baseline_high_stakes_prob = np.array(baseline_results.other_fields["high_stakes_score"])
 
     # re-index baseline scores to match the original dataset
     # baseline_scores is nan where baseline was not called
@@ -68,31 +87,6 @@ def run_online_cascade(
         used_baseline=to_call_baseline,
         final_scores=final_scores,
     )
-
-
-def compute_all_cascade_scores(
-    probe: callable,
-    baseline_model_name: str,
-    dataset: LabelledDataset,
-    baseline_batch_size: int = 16,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Precompute scores for offline cascade:
-    - probe_scores: scores from the probe for all examples
-    - baseline_scores: scores from the baseline model for all examples
-    """
-    # Probe scores for all examples
-    probe_scores = probe(dataset)
-
-    # Baseline scores for all examples
-    prompt_key = get_model_baseline_prompt(get_abbreviated_model_name(baseline_model_name))
-    prompt_config = likelihood_continuation_prompts[prompt_key]
-    model = LLMModel.load(LOCAL_MODELS[get_abbreviated_model_name(baseline_model_name)])
-    baseline_model = LikelihoodContinuationBaseline(model, prompt_config=prompt_config)
-    baseline_results = baseline_model.likelihood_classify_dataset(dataset, batch_size=baseline_batch_size)
-    baseline_scores = np.array(baseline_results.other_fields["high_stakes_score"])
-
-    return probe_scores, baseline_scores
 
 
 def run_offline_cascade(

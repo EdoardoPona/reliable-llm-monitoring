@@ -12,10 +12,11 @@ import os
 from pathlib import Path
 
 import numpy as np
-from cascade import compute_all_cascade_scores, run_offline_cascade, run_online_cascade
-from dataset import ActivationConfig, load_dataset, sample_from_dataset
 from dotenv import load_dotenv
-from probes import probe_function, train_probe
+
+from reliable_monitoring.cascade import run_llm_baseline, run_offline_cascade, run_online_cascade
+from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset
+from reliable_monitoring.probes import probe_function, train_probe
 
 # Load environment
 load_dotenv()
@@ -63,10 +64,6 @@ def test_cascade_equivalence():
     probe = train_probe(train_dataset)
     print("   ✓ Probe trained")
 
-    # Define probe wrapper
-    def probe_fn(dataset):
-        return probe_function(probe, dataset)
-
     # Test parameters - just 2 test cases to keep it fast
     test_cases = [
         {"threshold": 0.5, "merge_strategy": "avg", "baseline_batch_size": 8},
@@ -87,7 +84,7 @@ def test_cascade_equivalence():
         # Run online cascade
         print("\n   Running ONLINE cascade...")
         online_results = run_online_cascade(
-            probe=probe_fn,
+            probe=lambda dataset: probe_function(probe, dataset),
             baseline_model_name=MODEL_NAME,
             threshold=threshold,
             dataset=test_dataset,
@@ -99,8 +96,8 @@ def test_cascade_equivalence():
         # Run offline cascade
         print("\n   Running OFFLINE cascade...")
         print("   - Computing all cascade scores...")
-        probe_scores, baseline_scores = compute_all_cascade_scores(
-            probe=probe_fn,
+        probe_scores = probe_function(probe, test_dataset)
+        baseline_scores = run_llm_baseline(
             baseline_model_name=MODEL_NAME,
             dataset=test_dataset,
             baseline_batch_size=baseline_batch_size,
