@@ -7,6 +7,7 @@ dependencies = [
     "models-under-pressure",
     "python-dotenv",
     "tqdm>=4.67.1",
+    "pytest>=8.0.0",
 ]
 
 [tool.uv.sources.models-under-pressure]

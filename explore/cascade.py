@@ -18,8 +18,8 @@ class CascadePredictionResults:
     final_scores: np.ndarray
 
 
-def run_cascade(
-    probe: callable,  # TODO refine the type here, really we are happy with anything that returns the logits
+def run_online_cascade(
+    probe: callable,  # TODO defined a Protocol for this, we want a function that returns logits
     baseline_model_name: str,
     threshold: float,
     dataset: LabelledDataset,
@@ -27,10 +27,10 @@ def run_cascade(
     merge_strategy: str = "avg",
 ) -> CascadePredictionResults:
     """
-    Run a cascade of a probe and a baseline model on the given dataset.
+    Run a cascade online: call the baseline model only for examples that need it.
     Args:
         probe: A callable that takes in a dataset and returns probe scores (logits).
-        baseline_model_name: The name of the baseline model to use (from the McKenzie et al. codebase)
+        baseline_model_name: The name of the baseline model to use (from the McKenzie et al. codebase).
         threshold: The threshold for the probe scores to decide when to use the baseline model.
         dataset: The dataset to run the cascade on.
         merge_strategy: The strategy to merge probe and baseline model scores ("avg" or "replace").
@@ -65,6 +65,67 @@ def run_cascade(
     return CascadePredictionResults(
         probe_scores=probe_scores,
         baseline_scores=baseline_scores,
+        used_baseline=to_call_baseline,
+        final_scores=final_scores,
+    )
+
+
+def compute_all_cascade_scores(
+    probe: callable,
+    baseline_model_name: str,
+    dataset: LabelledDataset,
+    baseline_batch_size: int = 16,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Precompute scores for offline cascade:
+    - probe_scores: scores from the probe for all examples
+    - baseline_scores: scores from the baseline model for all examples
+    """
+    # Probe scores for all examples
+    probe_scores = probe(dataset)
+
+    # Baseline scores for all examples
+    prompt_key = get_model_baseline_prompt(get_abbreviated_model_name(baseline_model_name))
+    prompt_config = likelihood_continuation_prompts[prompt_key]
+    model = LLMModel.load(LOCAL_MODELS[get_abbreviated_model_name(baseline_model_name)])
+    baseline_model = LikelihoodContinuationBaseline(model, prompt_config=prompt_config)
+    baseline_results = baseline_model.likelihood_classify_dataset(dataset, batch_size=baseline_batch_size)
+    baseline_scores = np.array(baseline_results.other_fields["high_stakes_score"])
+
+    return probe_scores, baseline_scores
+
+
+def run_offline_cascade(
+    probe_scores: np.ndarray,
+    baseline_scores: np.ndarray,
+    threshold: float,
+    merge_strategy: str = "avg",
+) -> CascadePredictionResults:
+    """
+    Merge precomputed probe and baseline scores using the cascade logic.
+    Args:
+        probe_scores: Scores from the probe for all examples.
+        baseline_scores: Scores from the baseline for all examples.
+        threshold: Threshold applied to probe_scores to decide when to use baseline.
+        merge_strategy: "avg" to average probe and baseline when baseline is used,
+                        "replace" to replace probe with baseline when baseline is used.
+    """
+    to_call_baseline = np.logical_and(probe_scores < threshold, 1 - probe_scores < threshold)
+
+    # Mask baseline_scores to only where we would have called the baseline
+    masked_baseline_scores = np.full_like(probe_scores, np.nan)
+    masked_baseline_scores[to_call_baseline] = baseline_scores[to_call_baseline]
+
+    if merge_strategy == "avg":
+        final_scores = np.where(to_call_baseline, (probe_scores + masked_baseline_scores) / 2, probe_scores)
+    elif merge_strategy == "replace":
+        final_scores = np.where(to_call_baseline, masked_baseline_scores, probe_scores)
+    else:
+        raise ValueError(f"Unknown merge strategy: {merge_strategy}")
+
+    return CascadePredictionResults(
+        probe_scores=probe_scores,
+        baseline_scores=masked_baseline_scores,
         used_baseline=to_call_baseline,
         final_scores=final_scores,
     )
