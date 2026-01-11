@@ -6,3 +6,10 @@ After all code changes, you should check formatting and linting by running `./li
 - You should write and run specific tests for new functionality you add. Generally, you will be told do to so.
 - Tests for a given module should be placed in a corresponding test file, next to the module file. For example, tests for `claude.py` should go in `test_claude.py` (at the same location).
 - Unit tests shoud be comprehensive but terse and reuse code as much as possible. Make sure to use fixtures effectively to avoid duplication. We should not have clearly superfluous tests.
+
+**Git**
+Unless explicitly told to, do not use stateful git commands. You can use things like `git diff` for exploring changes. 
+Let me (the user) handle git workflows.
+
+**TODO**
+Ignore TODO.md unless explicitly told to address something in it.
