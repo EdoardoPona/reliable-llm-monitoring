@@ -1,15 +1,34 @@
 import numpy as np
 
 
-def is_pareto(costs):
+def is_pareto(costs, *, maximize: bool = False):
     """
-    Find the pareto-efficient points
-    :param costs: An (n_points, n_costs) array
-    :return: A (n_points, ) boolean array, indicating whether each point is Pareto efficient
+    Return a boolean mask indicating Pareto-efficient points.
+
+    By default assumes `costs` are to be MINIMIZED.
+    If `maximize=True`, assumes objectives are to be MAXIMIZED.
+
+    A point i is dominated if there exists j != i such that:
+      - minimization: costs[j] <= costs[i] for all dims AND costs[j] < costs[i] for at least one dim
+      - maximization: costs[j] >= costs[i] for all dims AND costs[j] > costs[i] for at least one dim
     """
-    is_efficient = np.ones(costs.shape[0], dtype=bool)
-    for i, c in enumerate(costs):
-        is_efficient[i] = np.all(np.any((costs[:i]) >= c, axis=1)) and np.all(np.any((costs[i + 1 :]) >= c, axis=1))
+    costs = np.asarray(costs)
+    n = costs.shape[0]
+    is_efficient = np.ones(n, dtype=bool)
+
+    for i in range(n):
+        others = np.arange(n) != i
+        if not np.any(others):
+            continue
+
+        if maximize:
+            dominates_i = np.all(costs[others] >= costs[i], axis=1) & np.any(costs[others] > costs[i], axis=1)
+        else:
+            dominates_i = np.all(costs[others] <= costs[i], axis=1) & np.any(costs[others] < costs[i], axis=1)
+
+        if np.any(dominates_i):
+            is_efficient[i] = False
+
     return is_efficient
 
 
