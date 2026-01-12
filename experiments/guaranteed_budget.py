@@ -26,8 +26,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
-LAYER = 11
 DATA_DIR = os.environ["DATA_DIR"]
 
 DEBUG_SAMPLE_SIZE = 100
@@ -71,34 +69,78 @@ def parse_args():
         default="avg",
         help="The strategy to merge probe and baseline scores in the cascade.",
     )
-
+    parser.add_argument(
+        "--activations-model-name",
+        type=str,
+        default="meta-llama/Llama-3.2-1B-Instruct",
+        help="The name of the LLM model to use for computing activations.",
+    )
+    parser.add_argument(
+        "--activations-layer",
+        type=int,
+        default=11,
+        help="The layer of the LLM model to use for computing activations.",
+    )
+    parser.add_argument(
+        "--baseline-model-name",
+        type=str,
+        default="meta-llama/Llama-3.2-1B-Instruct",
+        help="The name of the LLM model to use as the baseline in the cascade.",
+    )
+    parser.add_argument(
+        "--train-dataset-path",
+        type=str,
+        default=f"{DATA_DIR}/training/prompts_4x/train.jsonl",
+        help="Path to the training dataset for fitting the probe.",
+    )
+    parser.add_argument(
+        "--calib-dataset-path",
+        type=str,
+        default=f"{DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl",
+        help="Path to the calibration dataset",
+    )
+    parser.add_argument(
+        "--test-dataset-path",
+        type=str,
+        default=f"{DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl",
+        help="Path to the test dataset for evaluating the final performance.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducibility.",
+    )
     return parser.parse_args()
 
 
 def run_guaranteed_budget_experiment():
     args = parse_args()
+    seed = args.seed
+    np.random.seed(seed)
+
     activation_config = ActivationConfig(
-        model_name=MODEL_NAME,
-        layer=LAYER,
+        model_name=args.activations_model_name,
+        layer=args.activations_layer,
     )
     train_dataset = load_dataset(
-        Path(f"{DATA_DIR}/training/prompts_4x/train.jsonl"),
+        Path(args.train_dataset_path),
         activation_config=activation_config,
     )
     calib_dataset = load_dataset(
-        Path(f"{DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl"),
+        Path(args.calib_dataset_path),
         activation_config=activation_config,
     )
     test_dataset = load_dataset(
-        Path(f"{DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl"),
+        Path(args.test_dataset_path),
         activation_config=activation_config,
     )
 
     if args.debug:
         logger.warning("Running in debug mode with smaller datasets.")
-        train_dataset = sample_from_dataset(train_dataset, DEBUG_SAMPLE_SIZE, seed=42)
-        calib_dataset = sample_from_dataset(calib_dataset, DEBUG_SAMPLE_SIZE, seed=42)
-        test_dataset = sample_from_dataset(test_dataset, DEBUG_SAMPLE_SIZE, seed=42)
+        train_dataset = sample_from_dataset(train_dataset, DEBUG_SAMPLE_SIZE, seed=seed)
+        calib_dataset = sample_from_dataset(calib_dataset, DEBUG_SAMPLE_SIZE, seed=seed)
+        test_dataset = sample_from_dataset(test_dataset, DEBUG_SAMPLE_SIZE, seed=seed)
 
     logger.info(f"Train dataset size: {len(train_dataset)}")
     logger.info(f"Calibration dataset size: {len(calib_dataset)}")
@@ -114,7 +156,7 @@ def run_guaranteed_budget_experiment():
 
     logger.info("Computing baseline model costs on calibration dataset...")
     baseline_scores = run_llm_baseline(
-        baseline_model_name=MODEL_NAME,
+        baseline_model_name=args.baseline_model_name,
         dataset=calib_dataset,
         baseline_batch_size=args.baseline_batch_size,
     )
@@ -171,7 +213,7 @@ def run_guaranteed_budget_experiment():
 
         logger.info("Computing baseline model costs on test dataset...")
         baseline_test_scores = run_llm_baseline(
-            baseline_model_name=MODEL_NAME,
+            baseline_model_name=args.baseline_model_name,
             dataset=test_dataset,
             baseline_batch_size=args.baseline_batch_size,
         )
