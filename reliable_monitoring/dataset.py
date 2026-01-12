@@ -233,7 +233,9 @@ def load_dataset(
     return dataset
 
 
-def sample_from_dataset(dataset: LabelledDataset, num_samples: int) -> LabelledDataset:
+def sample_from_dataset(dataset: LabelledDataset, num_samples: int, seed: int | None = None) -> LabelledDataset:
+    if seed is not None:
+        random.seed(seed)
     indices = list(range(len(dataset)))
     sample = random.sample(indices, num_samples)
     return dataset[sample]
