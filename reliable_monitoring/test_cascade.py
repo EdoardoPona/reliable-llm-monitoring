@@ -25,7 +25,7 @@ load_dotenv()
 MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
 LAYER = 11
 DATA_DIR = os.environ["DATA_DIR"]
-TRAIN_SAMPLE_SIZE = 200  # Small sample for probe training
+TRAIN_SAMPLE_SIZE = 50  # Small sample for probe training
 TEST_SAMPLE_SIZE = 50  # Small sample for fast testing
 
 
@@ -85,10 +85,11 @@ def test_cascade_equivalence():
         # Run online cascade
         print("\n   Running ONLINE cascade...")
         online_results = run_online_cascade(
-            probe=probe,  # Pass probe directly
+            probe=probe,
             baseline_model_name=MODEL_NAME,
-            threshold=threshold,
             dataset=test_dataset,
+            selection_strategy="fixed_threshold",
+            threshold=threshold,
             baseline_batch_size=baseline_batch_size,
             merge_strategy=merge_strategy,
         )
@@ -97,7 +98,7 @@ def test_cascade_equivalence():
         # Run offline cascade
         print("\n   Running OFFLINE cascade...")
         print("   - Computing all cascade scores...")
-        probe_scores = probe.predict(test_dataset)  # Use probe.predict() method
+        probe_scores = probe.predict(test_dataset)
         baseline_scores = run_llm_baseline(
             baseline_model_name=MODEL_NAME,
             dataset=test_dataset,
@@ -107,6 +108,7 @@ def test_cascade_equivalence():
         offline_results = run_offline_cascade(
             probe_scores=probe_scores,
             baseline_scores=baseline_scores,
+            selection_strategy="fixed_threshold",
             threshold=threshold,
             merge_strategy=merge_strategy,
         )
