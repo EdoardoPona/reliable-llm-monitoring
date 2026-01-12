@@ -85,20 +85,19 @@ def get_selection_strategy(name: str) -> SelectionStrategy:
 
 @register_selection_strategy("fixed_threshold")
 def select_fixed_threshold(probe_scores: np.ndarray, threshold: float, **kwargs) -> np.ndarray:
-    """Send examples where probe is uncertain (score between threshold and 1-threshold).
+    """Send examples where probe is uncertain (both classes' scores < threshold).
 
     Args:
         probe_scores: Array of probe scores for all examples
-        threshold: Threshold value; sends examples where probe score is between
-                   threshold and 1-threshold (i.e., uncertain examples)
+        threshold: Threshold for uncertainty (between 0.5 and 1)
 
     Returns:
         Boolean array indicating which examples to send to baseline
     """
     if threshold is None:
         raise ValueError("fixed_threshold strategy requires 'threshold' parameter")
-    if not (0 < threshold <= 0.5):
-        raise ValueError(f"threshold must be in (0, 0.5], got {threshold}")
+    if not (0.5 <= threshold <= 1):
+        raise ValueError(f"threshold must be in (0.5, 1], got {threshold}")
     return np.logical_and(probe_scores < threshold, 1 - probe_scores < threshold)
 
 

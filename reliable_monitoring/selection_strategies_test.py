@@ -23,14 +23,23 @@ class TestFixedThreshold:
 
     def test_returns_boolean_mask(self, scores):
         """Return boolean array of correct shape."""
-        mask = select_fixed_threshold(scores, threshold=0.1)
+        mask = select_fixed_threshold(scores, threshold=0.7)
         assert mask.dtype == bool
         assert mask.shape == scores.shape
 
+    def test_selects_in_range(self):
+        """Select examples with score < threshold AND score > 1-threshold."""
+        scores = np.array([0.1, 0.3, 0.5, 0.7, 0.9])
+        mask = select_fixed_threshold(scores, threshold=0.7)
+        # Select if score < 0.7 AND score > 0.3: only 0.5 qualifies
+        assert np.array_equal(scores[mask], [0.5])
+
     def test_raises_on_invalid_threshold(self, scores):
-        """Raise error if threshold out of bounds."""
+        """Raise error if threshold out of bounds [0.5, 1]."""
         with pytest.raises(ValueError, match="must be in"):
-            select_fixed_threshold(scores, threshold=0.6)
+            select_fixed_threshold(scores, threshold=0.3)
+        with pytest.raises(ValueError, match="must be in"):
+            select_fixed_threshold(scores, threshold=1.1)
 
     def test_raises_on_missing_threshold(self):
         """Raise error if threshold not provided via kwargs."""
@@ -108,7 +117,7 @@ class TestSelectionRegistry:
 
     def test_helper_with_string_strategy(self, scores):
         """Helper function works with strategy names."""
-        mask = select_examples_for_baseline(scores, strategy="fixed_threshold", threshold=0.2)
+        mask = select_examples_for_baseline(scores, strategy="fixed_threshold", threshold=0.7)
         assert mask.sum() >= 0
 
     def test_helper_with_custom_callable(self, scores):
