@@ -306,3 +306,57 @@ def run_offline_cascade(
         used_baseline=to_call_baseline,
         final_scores=final_scores,
     )
+
+
+def offline_batch_cascade(
+    probe_scores: np.ndarray,
+    baseline_scores: np.ndarray,
+    batch_size: int,
+    selection_strategy: str | SelectionStrategy = "fixed_threshold",
+    merge_strategy: str = "avg",
+    **selection_kwargs,
+) -> CascadePredictionResults:
+    """Run offline cascade in batches.
+    Depending on the selection strategy, this might give different results than the non-batched cascades
+    because the selection strategy is applied independently to each batch.
+
+    Args:
+        probe_scores: Scores from the probe for all examples.
+        baseline_scores: Scores from the baseline for all examples.
+        batch_size: Number of examples to process in each batch.
+        selection_strategy: Strategy for selecting which examples to use baseline.
+                           Can be a strategy name ("fixed_threshold", "fixed_budget_rate", "fixed_budget_amount")
+                           or a custom SelectionStrategy callable.
+        merge_strategy: "avg" to average probe and baseline when baseline is used,
+                        "replace" to replace probe with baseline when baseline is used.
+        **selection_kwargs: Strategy-specific parameters (e.g., threshold=0.5, rate=0.5, amount=500)
+
+    Returns:
+        CascadePredictionResults with merged scores.
+    """
+    n_samples = len(probe_scores)
+    all_used_baseline = np.zeros(n_samples, dtype=bool)
+    all_final_scores = np.zeros(n_samples)
+
+    for start_idx in range(0, n_samples, batch_size):
+        end_idx = min(start_idx + batch_size, n_samples)
+        batch_probe_scores = probe_scores[start_idx:end_idx]
+        batch_baseline_scores = baseline_scores[start_idx:end_idx]
+
+        batch_results = run_offline_cascade(
+            probe_scores=batch_probe_scores,
+            baseline_scores=batch_baseline_scores,
+            selection_strategy=selection_strategy,
+            merge_strategy=merge_strategy,
+            **selection_kwargs,
+        )
+
+        all_used_baseline[start_idx:end_idx] = batch_results.used_baseline
+        all_final_scores[start_idx:end_idx] = batch_results.final_scores
+
+    return CascadePredictionResults(
+        probe_scores=probe_scores,
+        baseline_scores=baseline_scores,
+        used_baseline=all_used_baseline,
+        final_scores=all_final_scores,
+    )
