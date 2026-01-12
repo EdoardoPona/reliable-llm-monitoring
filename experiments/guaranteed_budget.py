@@ -4,10 +4,10 @@ This experiment finds hyperparameters that guarantee control over the baseline m
 
 import argparse
 import logging
-import os
 from pathlib import Path
 
 import numpy as np
+from config import load_config
 from dotenv import load_dotenv
 
 from reliable_monitoring.bounds import hb_p_value
@@ -26,117 +26,48 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-DATA_DIR = os.environ["DATA_DIR"]
-
 DEBUG_SAMPLE_SIZE = 100
 
 
 def parse_args():
+    """Parse command line arguments to get config file path."""
+    default_config_path = Path(__file__).parent / "configs" / "guaranteed_budget.yaml"
+
     parser = argparse.ArgumentParser(description="Guaranteed Budget Experiment")
-    # NOTE: for now only rate budgets are supported
     parser.add_argument(
-        "--budget",
-        type=float,
-        required=True,
-        help="The budget to guarantee control over.",
-    )
-    parser.add_argument(
-        "--guarantee_probability",
-        type=float,
-        default=0.95,
-        help="The probability with which the budget is guaranteed (1-FWER)",
-    )
-    parser.add_argument(
-        "--reduction-strategy",
+        "--config",
         type=str,
-        default="mean",
-        help="The strategy to reduce the sequence of activations to a fixed size vector.",
-    )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Run in debug mode with smaller datasets.",
-    )
-    parser.add_argument(
-        "--baseline-batch-size",
-        type=int,
-        default=16,
-        help="Batch size for baseline model inference.",
-    )
-    parser.add_argument(
-        "--cascade_merge_strategy",
-        type=str,
-        default="avg",
-        help="The strategy to merge probe and baseline scores in the cascade.",
-    )
-    parser.add_argument(
-        "--activations-model-name",
-        type=str,
-        default="meta-llama/Llama-3.2-1B-Instruct",
-        help="The name of the LLM model to use for computing activations.",
-    )
-    parser.add_argument(
-        "--activations-layer",
-        type=int,
-        default=11,
-        help="The layer of the LLM model to use for computing activations.",
-    )
-    parser.add_argument(
-        "--baseline-model-name",
-        type=str,
-        default="meta-llama/Llama-3.2-1B-Instruct",
-        help="The name of the LLM model to use as the baseline in the cascade.",
-    )
-    parser.add_argument(
-        "--train-dataset-path",
-        type=str,
-        default=f"{DATA_DIR}/training/prompts_4x/train.jsonl",
-        help="Path to the training dataset for fitting the probe.",
-    )
-    parser.add_argument(
-        "--calib-dataset-path",
-        type=str,
-        default=f"{DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl",
-        help="Path to the calibration dataset",
-    )
-    parser.add_argument(
-        "--test-dataset-path",
-        type=str,
-        default=f"{DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl",
-        help="Path to the test dataset for evaluating the final performance.",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed for reproducibility.",
+        default=str(default_config_path),
+        help="Path to the YAML configuration file.",
     )
     return parser.parse_args()
 
 
 def run_guaranteed_budget_experiment():
     args = parse_args()
-    seed = args.seed
+    config = load_config(args.config)
+
+    seed = config.seed
     np.random.seed(seed)
 
     activation_config = ActivationConfig(
-        model_name=args.activations_model_name,
-        layer=args.activations_layer,
+        model_name=config.activations_model_name,
+        layer=config.activations_layer,
     )
     train_dataset = load_dataset(
-        Path(args.train_dataset_path),
+        Path(config.train_dataset_path),
         activation_config=activation_config,
     )
     calib_dataset = load_dataset(
-        Path(args.calib_dataset_path),
+        Path(config.calib_dataset_path),
         activation_config=activation_config,
     )
     test_dataset = load_dataset(
-        Path(args.test_dataset_path),
+        Path(config.test_dataset_path),
         activation_config=activation_config,
     )
 
-    if args.debug:
+    if config.debug:
         logger.warning("Running in debug mode with smaller datasets.")
         train_dataset = sample_from_dataset(train_dataset, DEBUG_SAMPLE_SIZE, seed=seed)
         calib_dataset = sample_from_dataset(calib_dataset, DEBUG_SAMPLE_SIZE, seed=seed)
@@ -147,7 +78,7 @@ def run_guaranteed_budget_experiment():
     logger.info(f"Test dataset size: {len(test_dataset)}")
 
     logger.info("Fitting probe...")
-    probe = SequenceProbe(reduction_strategy=args.reduction_strategy)
+    probe = SequenceProbe(reduction_strategy=config.reduction_strategy)
     probe.fit(train_dataset)
 
     # computing offline scores on calibration dataset
@@ -156,9 +87,9 @@ def run_guaranteed_budget_experiment():
 
     logger.info("Computing baseline model costs on calibration dataset...")
     baseline_scores = run_llm_baseline(
-        baseline_model_name=args.baseline_model_name,
+        baseline_model_name=config.baseline_model_name,
         dataset=calib_dataset,
-        baseline_batch_size=args.baseline_batch_size,
+        baseline_batch_size=config.baseline_batch_size,
     )
 
     # compute empirical risks on cascade
@@ -174,7 +105,7 @@ def run_guaranteed_budget_experiment():
             probe_scores,
             baseline_scores,
             threshold=t,
-            merge_strategy=args.cascade_merge_strategy,
+            merge_strategy=config.cascade_merge_strategy,
         )
         empirical_budget_risks[i] = baseline_budget_cost(scores)
         # empirical_performance_scores[i] = empirical_accuracy(scores, calib_dataset)
@@ -183,13 +114,13 @@ def run_guaranteed_budget_experiment():
     p_values = hb_p_value(
         r_hat=empirical_budget_risks,
         n=len(calib_dataset),
-        alpha=args.budget,
+        alpha=config.budget,
     )
 
     # run FST to find hyperparameters that guarantee budget control
     # the risks (and p-values) are already in the order in which we want them
     # that is, ascending in thresholds, which we expect to correspond to ascending in cost as well.
-    delta = 1 - args.guarantee_probability
+    delta = 1 - config.guarantee_probability
     rejected_hyperparams = fixed_sequence_testing(
         p_values=p_values,
         delta=delta,
@@ -204,7 +135,7 @@ def run_guaranteed_budget_experiment():
         best_threshold = thresholds[best_index]
 
         logger.info(
-            f"Best threshold guaranteeing budget {args.budget} with probability {args.guarantee_probability} is {best_threshold:.4f}"
+            f"Best threshold guaranteeing budget {config.budget} with probability {config.guarantee_probability} is {best_threshold:.4f}"
         )
 
         # compute test scores
@@ -213,9 +144,9 @@ def run_guaranteed_budget_experiment():
 
         logger.info("Computing baseline model costs on test dataset...")
         baseline_test_scores = run_llm_baseline(
-            baseline_model_name=args.baseline_model_name,
+            baseline_model_name=config.baseline_model_name,
             dataset=test_dataset,
-            baseline_batch_size=args.baseline_batch_size,
+            baseline_batch_size=config.baseline_batch_size,
         )
 
         logger.info("Computing empirical risks on test dataset...")
@@ -223,7 +154,7 @@ def run_guaranteed_budget_experiment():
             probe_test_scores,
             baseline_test_scores,
             threshold=best_threshold,
-            merge_strategy=args.cascade_merge_strategy,
+            merge_strategy=config.cascade_merge_strategy,
         )
         test_budget_cost = baseline_budget_cost(test_scores)
 
