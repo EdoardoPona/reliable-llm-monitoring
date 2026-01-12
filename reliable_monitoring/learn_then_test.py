@@ -32,13 +32,26 @@ def is_pareto(costs, *, maximize: bool = False):
     return is_efficient
 
 
-def fixed_sequence_testing(h_sorted, p_vals, delta):
-    list_rejected = []
-    for b in range(len(h_sorted)):
-        xx, yy, zz = np.unravel_index(h_sorted[b], p_vals.shape)
-        if p_vals[xx, yy, zz] < delta:
-            list_rejected.append((xx + 1, yy + 1, zz + 1))
+def fixed_sequence_testing(p_values, delta):
+    """
+    Fixed-sequence testing for an *ordered* 1D sequence of p-values.
+
+    Parameters
+    ----------
+    p_values : sequence of float
+        p_values[i] is the p-value of the i-th hypothesis in the testing order.
+    delta : float
+        Per-step significance threshold.
+
+    Returns
+    -------
+    rejected_indices : list[int]
+        The (0-based) indices rejected before the first non-rejection.
+    """
+    rejected_indices = []
+    for i, p in enumerate(p_values):
+        if p < delta:
+            rejected_indices.append(i)
         else:
             break
-
-    return list_rejected
+    return rejected_indices
