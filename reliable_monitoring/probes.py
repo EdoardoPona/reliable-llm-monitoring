@@ -1,65 +1,232 @@
+"""Probe implementations for classification based on model activations.
+
+This module provides a Protocol-based interface for probes and two implementations:
+- LinearProbe: Works with pre-reduced activations (most efficient)
+- SequenceProbe: Handles raw sequence activations on-the-fly (flexible)
+"""
+
+from collections.abc import Callable
+from typing import Protocol, runtime_checkable
+
 import numpy as np
 import torch
-import tqdm
 from models_under_pressure.interfaces.dataset import LabelledDataset
 from sklearn.linear_model import LogisticRegression
 
-device = (
-    torch.device("mps")
-    if torch.backends.mps.is_available()
-    else torch.device("cuda")
-    if torch.cuda.is_available()
-    else torch.device("cpu")
-)
+
+@runtime_checkable
+class Probe(Protocol):
+    """Protocol for probe models that predict from datasets.
+
+    A probe takes a LabelledDataset and returns probability scores for the
+    positive class. The probe handles extracting the appropriate features
+    from the dataset's other_fields.
+
+    The protocol supports both training and inference:
+    - fit(dataset): Train the probe on a dataset
+    - predict(dataset): Generate predictions on a dataset
+    """
+
+    def fit(self, dataset: LabelledDataset) -> None:
+        """Train the probe on the given dataset.
+
+        Args:
+            dataset: Training dataset with labels and features in other_fields
+        """
+        ...
+
+    def predict(self, dataset: LabelledDataset) -> np.ndarray:
+        """Generate probability predictions for the positive class.
+
+        Args:
+            dataset: Dataset to predict on
+
+        Returns:
+            Array of probabilities for positive class, shape (n_samples,)
+        """
+        ...
 
 
-def batched_average_over_sequence(
-    activations: torch.Tensor,
-    attention_mask: torch.Tensor,
-    batch_size: int = 256,
-    device=device,
-) -> torch.Tensor:
-    """Compute average over sequence dimension in batches to save memory."""
-    n_samples = activations.shape[0]
-    averaged_acts = []
-    for start_idx in tqdm.tqdm(range(0, n_samples, batch_size)):
-        end_idx = min(start_idx + batch_size, n_samples)
-        batch_acts = activations[start_idx:end_idx].to(device)  # (batch, seq_len, hidden_dim)
-        batch_mask = attention_mask[start_idx:end_idx].to(device)
-        masked_acts = batch_acts * batch_mask.unsqueeze(-1)  # (batch, seq_len, hidden_dim)
+class LinearProbe:
+    """Linear probe using logistic regression on reduced activations.
 
-        sum_acts = masked_acts.sum(dim=1)  # (batch, hidden_dim)
-        lengths = batch_mask.sum(dim=1, keepdim=True)  # (batch, 1)
-        avg_acts = sum_acts / lengths  # (batch, hidden_dim)
-        averaged_acts.append(avg_acts.cpu())  # Move to CPU to save GPU memory
+    This is the most efficient probe implementation. It expects reduced activations
+    (already aggregated over the sequence dimension) in the dataset's other_fields.
 
-    return torch.cat(averaged_acts, dim=0)  # (n_samples, hidden_dim)
+    Use this when:
+    - You've pre-computed reductions using reduce_activations()
+    - You want maximum inference speed
+    - Memory is not a constraint (can store reduced activations)
+
+    Attributes:
+        activation_field: Name of field containing reduced activations
+        clf: The underlying sklearn classifier
+    """
+
+    def __init__(
+        self,
+        activation_field: str = "activations_mean",
+        max_iter: int = 1000,
+        **sklearn_kwargs,
+    ):
+        """Initialize linear probe.
+
+        Args:
+            activation_field: Name of dataset field with reduced activations.
+                Default is "activations_mean" (assumes mean reduction was applied).
+            max_iter: Maximum iterations for logistic regression
+            **sklearn_kwargs: Additional arguments passed to LogisticRegression
+        """
+        self.activation_field = activation_field
+        self.clf = LogisticRegression(max_iter=max_iter, **sklearn_kwargs)
+
+    def fit(self, dataset: LabelledDataset) -> None:
+        """Train the probe on reduced activations.
+
+        Args:
+            dataset: Dataset with self.activation_field in other_fields
+
+        Raises:
+            ValueError: If the required activation field is missing
+        """
+        if self.activation_field not in dataset.other_fields:
+            raise ValueError(
+                f"Dataset missing field '{self.activation_field}'. "
+                f"Did you forget to call reduce_activations()? "
+                f"Available fields: {list(dataset.other_fields.keys())}"
+            )
+
+        X = dataset.other_fields[self.activation_field]
+        y = dataset.labels_numpy()
+
+        # Convert to numpy if tensor
+        if isinstance(X, torch.Tensor):
+            X = X.numpy()
+
+        self.clf.fit(X, y)
+
+    def predict(self, dataset: LabelledDataset) -> np.ndarray:
+        """Predict probabilities for positive class.
+
+        Args:
+            dataset: Dataset with self.activation_field in other_fields
+
+        Returns:
+            Probability scores for positive class, shape (n_samples,)
+
+        Raises:
+            ValueError: If the required activation field is missing
+        """
+        if self.activation_field not in dataset.other_fields:
+            raise ValueError(
+                f"Dataset missing field '{self.activation_field}'. "
+                f"Did you forget to call reduce_activations()? "
+                f"Available fields: {list(dataset.other_fields.keys())}"
+            )
+
+        X = dataset.other_fields[self.activation_field]
+
+        # Convert to numpy if tensor
+        if isinstance(X, torch.Tensor):
+            X = X.numpy()
+
+        return self.clf.predict_proba(X)[:, 1]
 
 
-def train_probe(
-    dataset: LabelledDataset,
-) -> LogisticRegression:
-    activations = dataset.other_fields["activations"]  # (n_samples, seq_len, hidden_dim)
-    attention_mask = dataset.other_fields["attention_mask"]  # (n_samples, seq_len)
-    labels = dataset.labels_numpy()
+class SequenceProbe:
+    """Linear probe that handles raw sequence activations.
 
-    # Compute average activations over sequence dimension
-    avg_activations = batched_average_over_sequence(activations, attention_mask)  # (n_samples, hidden_dim)
+    This probe computes reduction on-the-fly during inference. Use this when:
+    - You want to keep raw activations in the dataset
+    - You're experimenting with different reduction strategies
+    - Memory isn't a constraint
 
-    # Train logistic regression probe
-    probe = LogisticRegression(max_iter=1000)
-    probe.fit(avg_activations, labels)
+    For production use with large datasets, prefer LinearProbe with pre-computed reductions.
 
-    return probe
+    Attributes:
+        reduction_strategy: Name of reduction strategy or custom function
+        batch_size: Batch size for on-the-fly reduction
+        clf: The underlying sklearn classifier
+    """
 
+    def __init__(
+        self,
+        reduction_strategy: str | Callable = "mean",
+        max_iter: int = 1000,
+        batch_size: int = 256,
+        **sklearn_kwargs,
+    ):
+        """Initialize sequence probe.
 
-def probe_function(clf: LogisticRegression, dataset: LabelledDataset) -> np.ndarray:
-    activations = dataset.other_fields["activations"]
-    attention_mask = dataset.other_fields["attention_mask"]
-    X = batched_average_over_sequence(
-        activations,
-        attention_mask,
-        batch_size=512,
-    ).numpy()
-    probs = clf.predict_proba(X)[:, 1]
-    return probs
+        Args:
+            reduction_strategy: How to reduce sequence dimension.
+                Can be built-in name ("mean", "max", etc.) or custom function.
+            max_iter: Maximum iterations for logistic regression
+            batch_size: Batch size for on-the-fly reduction
+            **sklearn_kwargs: Additional arguments passed to LogisticRegression
+        """
+        self.reduction_strategy = reduction_strategy
+        self.batch_size = batch_size
+        self.clf = LogisticRegression(max_iter=max_iter, **sklearn_kwargs)
+
+    def _get_reduced_activations(self, dataset: LabelledDataset) -> np.ndarray:
+        """Compute reduced activations from raw sequence activations."""
+        from reliable_monitoring.reductions import apply_reduction_batched, get_reduction_function
+
+        activations = dataset.other_fields["activations"]
+        attention_mask = dataset.other_fields["attention_mask"]
+
+        # Get reduction function
+        if isinstance(self.reduction_strategy, str):
+            reduction_fn = get_reduction_function(self.reduction_strategy)
+        else:
+            reduction_fn = self.reduction_strategy
+
+        # Apply reduction
+        reduced = apply_reduction_batched(
+            activations=activations,
+            attention_mask=attention_mask,
+            reduction_fn=reduction_fn,
+            batch_size=self.batch_size,
+            show_progress=True,
+        )
+
+        return reduced.numpy()
+
+    def fit(self, dataset: LabelledDataset) -> None:
+        """Train the probe on raw sequence activations.
+
+        Args:
+            dataset: Dataset with "activations" and "attention_mask" fields
+
+        Raises:
+            ValueError: If required fields are missing
+        """
+        if "activations" not in dataset.other_fields:
+            raise ValueError("Dataset missing 'activations' field")
+        if "attention_mask" not in dataset.other_fields:
+            raise ValueError("Dataset missing 'attention_mask' field")
+
+        X = self._get_reduced_activations(dataset)
+        y = dataset.labels_numpy()
+        self.clf.fit(X, y)
+
+    def predict(self, dataset: LabelledDataset) -> np.ndarray:
+        """Predict probabilities for positive class.
+
+        Args:
+            dataset: Dataset with "activations" and "attention_mask" fields
+
+        Returns:
+            Probability scores for positive class, shape (n_samples,)
+
+        Raises:
+            ValueError: If required fields are missing
+        """
+        if "activations" not in dataset.other_fields:
+            raise ValueError("Dataset missing 'activations' field")
+        if "attention_mask" not in dataset.other_fields:
+            raise ValueError("Dataset missing 'attention_mask' field")
+
+        X = self._get_reduced_activations(dataset)
+        return self.clf.predict_proba(X)[:, 1]

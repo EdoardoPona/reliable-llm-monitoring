@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 from reliable_monitoring.cascade import run_llm_baseline, run_offline_cascade, run_online_cascade
 from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset
-from reliable_monitoring.probes import probe_function, train_probe
+from reliable_monitoring.probes import SequenceProbe
 
 # Load environment
 load_dotenv()
@@ -61,7 +61,8 @@ def test_cascade_equivalence():
 
     # Train probe
     print("\n2. Training probe...")
-    probe = train_probe(train_dataset)
+    probe = SequenceProbe(reduction_strategy="mean")
+    probe.fit(train_dataset)
     print("   ✓ Probe trained")
 
     # Test parameters - just 2 test cases to keep it fast
@@ -84,7 +85,7 @@ def test_cascade_equivalence():
         # Run online cascade
         print("\n   Running ONLINE cascade...")
         online_results = run_online_cascade(
-            probe=lambda dataset: probe_function(probe, dataset),
+            probe=probe,  # Pass probe directly
             baseline_model_name=MODEL_NAME,
             threshold=threshold,
             dataset=test_dataset,
@@ -96,7 +97,7 @@ def test_cascade_equivalence():
         # Run offline cascade
         print("\n   Running OFFLINE cascade...")
         print("   - Computing all cascade scores...")
-        probe_scores = probe_function(probe, test_dataset)
+        probe_scores = probe.predict(test_dataset)  # Use probe.predict() method
         baseline_scores = run_llm_baseline(
             baseline_model_name=MODEL_NAME,
             dataset=test_dataset,
@@ -180,8 +181,3 @@ def test_cascade_equivalence():
     print("=" * 80)
 
     assert all_tests_passed, "Some test cases failed"
-
-
-if __name__ == "__main__":
-    success = test_cascade_equivalence()
-    exit(0 if success else 1)

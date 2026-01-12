@@ -7,6 +7,8 @@ from models_under_pressure.experiments.monitoring_cascade import get_abbreviated
 from models_under_pressure.interfaces.dataset import LabelledDataset
 from models_under_pressure.model import LLMModel
 
+from reliable_monitoring.probes import Probe
+
 
 @dataclass
 class CascadePredictionResults:
@@ -42,23 +44,27 @@ def run_llm_baseline(
 
 
 def run_online_cascade(
-    probe: callable,  # TODO defined a Protocol for this, we want a function that returns logits
+    probe: Probe,
     baseline_model_name: str,
     threshold: float,
     dataset: LabelledDataset,
     baseline_batch_size: int = 16,
     merge_strategy: str = "avg",
 ) -> CascadePredictionResults:
-    """
-    Run a cascade online: call the baseline model only for examples that need it.
+    """Run a cascade online: call the baseline model only for examples that need it.
+
     Args:
-        probe: A callable that takes in a dataset and returns probe scores (logits).
+        probe: A Probe instance that implements the Probe protocol (has .predict() method).
         baseline_model_name: The name of the baseline model to use (from the McKenzie et al. codebase).
         threshold: The threshold for the probe scores to decide when to use the baseline model.
         dataset: The dataset to run the cascade on.
+        baseline_batch_size: The batch size to use when calling the baseline model.
         merge_strategy: The strategy to merge probe and baseline model scores ("avg" or "replace").
+
+    Returns:
+        CascadePredictionResults with probe scores, baseline scores, and final merged scores.
     """
-    probe_scores = probe(dataset)
+    probe_scores = probe.predict(dataset)
     to_call_baseline = np.logical_and(probe_scores < threshold, 1 - probe_scores < threshold)
 
     # Use boolean array to select examples where we need to call the baseline
