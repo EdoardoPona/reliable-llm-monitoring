@@ -8,6 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from clearml_serialization import (
+    artifact_field,
+    conditional_field,
+    derived_field,
+    scalar_field,
+)
 from config import load_config
 from dotenv import load_dotenv
 
@@ -32,233 +38,53 @@ DEBUG_SAMPLE_SIZE = 32
 
 @dataclass
 class GuaranteedBudgetResults:
-    """Results from a guaranteed budget experiment.
+    """Pure data structure for guaranteed budget experiment results.
 
-    Comprehensive results structure for experiment tracking and analysis.
-    Includes configuration, calibration results, and test results.
+    This is a "structured manifesto" of experiment outputs. It defines the shape
+    and contents of results without any serialization logic. All ClearML
+    serialization is handled by ClearMLSerializer.
     """
 
-    # Experiment metadata
-    config: dict  # Config as dict for easy serialization
-    seed: int
-    debug_mode: bool
+    # Experiment metadata (scalars/artifacts)
+    config: dict = artifact_field()
+    seed: int = scalar_field()
+    debug_mode: bool = scalar_field()
 
-    # Dataset information
-    train_size: int
-    calib_size: int
-    test_size: int
+    # Dataset sizes (scalars)
+    train_size: int = scalar_field()
+    calib_size: int = scalar_field()
+    test_size: int = scalar_field()
 
-    # Probe information
-    probe_reduction_strategy: str  # Just the key parameter
+    # Probe information (scalar)
+    probe_reduction_strategy: str = scalar_field()
 
-    # Calibration phase - thresholds and metrics
-    thresholds: np.ndarray  # Array of thresholds tested
-    empirical_budget_risks: np.ndarray  # Risk for each threshold
-    p_values: np.ndarray  # P-value for each threshold
-    delta: float  # 1 - guarantee_probability
-    reliable_hyperparameters: list[int]  # Indices of thresholds that passed FST (null rejected)
+    # Calibration phase - thresholds and metrics (artifacts)
+    thresholds: np.ndarray = artifact_field()
+    empirical_budget_risks: np.ndarray = artifact_field()
+    p_values: np.ndarray = artifact_field()
+    delta: float = scalar_field()
+    reliable_hyperparameters: list[int] = artifact_field()
 
-    # Calibration phase - raw scores
-    calib_probe_scores: np.ndarray  # Probe predictions on calibration set
-    calib_baseline_scores: np.ndarray  # Baseline predictions on calibration set
+    # Calibration phase - raw scores (artifacts)
+    calib_probe_scores: np.ndarray = artifact_field()
+    calib_baseline_scores: np.ndarray = artifact_field()
 
-    # Best threshold selection
-    success: bool  # Whether any valid threshold was found
-    best_threshold: float | None  # None if no valid threshold found
-    best_index: int | None  # Index into thresholds array
+    # Best threshold selection (scalars)
+    success: bool = scalar_field()
+    best_threshold: float | None = conditional_field(condition="success")
+    best_index: int | None = conditional_field(condition="success")
 
-    # Test phase results (only if success=True)
-    test_budget_cost: float | None  # Actual budget cost on test set
-    test_probe_scores: np.ndarray | None  # Probe predictions on test set
-    test_baseline_scores: np.ndarray | None  # Baseline predictions on test set
-    test_cascade_scores: np.ndarray | None  # Final cascade scores on test set
+    # Test phase results (conditional artifacts)
+    test_budget_cost: float | None = conditional_field(condition="success")
+    test_probe_scores: np.ndarray | None = conditional_field(condition="success")
+    test_baseline_scores: np.ndarray | None = conditional_field(condition="success")
+    test_cascade_scores: np.ndarray | None = conditional_field(condition="success")
 
-    def to_clearml_scalars(self) -> dict[str, float | int]:
-        """Extract metrics suitable for ClearML scalar logging."""
-        scalars = {
-            "success": float(self.success),
-            "delta": self.delta,
-            "num_reliable_hyperparameters": len(self.reliable_hyperparameters),
-            "train_size": self.train_size,
-            "calib_size": self.calib_size,
-            "test_size": self.test_size,
-            "mean_empirical_risk": float(self.empirical_budget_risks.mean()),
-            "min_empirical_risk": float(self.empirical_budget_risks.min()),
-            "max_empirical_risk": float(self.empirical_budget_risks.max()),
-        }
-        if self.success:
-            scalars.update(
-                {
-                    "best_threshold": self.best_threshold,
-                    "test_budget_cost": self.test_budget_cost,
-                    "best_index": self.best_index,
-                }
-            )
-        return scalars
-
-    def to_clearml_artifacts(self) -> dict[str, object]:
-        """Extract numpy arrays and data suitable for ClearML artifact logging."""
-        # Create boolean mask: mask[i] = 1 if hyperparameter i is reliable (null rejected)
-        reliable_mask = np.zeros(len(self.thresholds), dtype=np.uint8)
-        reliable_mask[self.reliable_hyperparameters] = 1
-
-        artifacts = {
-            "thresholds": self.thresholds,
-            "reliable_mask": reliable_mask,
-            "empirical_budget_risks": self.empirical_budget_risks,
-            "p_values": self.p_values,
-            "calib_probe_scores": self.calib_probe_scores,
-            "calib_baseline_scores": self.calib_baseline_scores,
-            "config": self.config,
-        }
-        if self.success:
-            artifacts.update(
-                {
-                    "test_probe_scores": self.test_probe_scores,
-                    "test_baseline_scores": self.test_baseline_scores,
-                    "test_cascade_scores": self.test_cascade_scores,
-                }
-            )
-        return artifacts
-
-    @staticmethod
-    def from_clearml(task: object) -> "GuaranteedBudgetResults":
-        """Reconstruct GuaranteedBudgetResults from a ClearML task.
-
-        This allows you to load experiment results back from ClearML with full typing.
-
-        Args:
-            task: ClearML Task object
-
-        Returns:
-            GuaranteedBudgetResults reconstructed from the task
-
-        Example:
-            >>> from clearml import Task
-            >>> task = Task.get_task(task_id="abc123")
-            >>> results = GuaranteedBudgetResults.from_clearml(task)
-            >>> print(results.best_threshold)
-        """
-        try:
-            import yaml
-        except ImportError as e:
-            raise ImportError("PyYAML is required to use from_clearml()") from e
-
-        # Fetch config.
-        # In ClearML 2.x, connect_configuration() shows up under configuration objects,
-        # and get_parameter("Configuration") may return None.
-        config_dict = None
-
-        if hasattr(task, "get_configuration_object_as_dict"):
-            try:
-                config_dict = task.get_configuration_object_as_dict("Configuration")
-            except Exception:
-                config_dict = None
-
-        if config_dict is None and hasattr(task, "get_parameter"):
-            try:
-                config_dict = task.get_parameter("Configuration")
-            except Exception:
-                config_dict = None
-
-        if isinstance(config_dict, str):
-            config_dict = yaml.safe_load(config_dict)
-
-        # Fetch artifacts
-        artifacts = task.artifacts
-
-        # Fallback: config may be logged as an artifact named "config".
-        if config_dict is None and "config" in artifacts:
-            config_path = artifacts["config"].get_local_copy()
-            with open(config_path) as f:
-                config_dict = yaml.safe_load(f)
-
-        if config_dict is None:
-            raise ValueError(
-                "Could not load configuration from ClearML task; expected a 'Configuration' configuration object or 'config' artifact"
-            )
-
-        # Normalize to plain dict for downstream .get() usage
-        if not isinstance(config_dict, dict):
-            config_dict = dict(config_dict)
-
-        thresholds = np.load(artifacts["thresholds"].get_local_copy())
-        reliable_mask = np.load(artifacts["reliable_mask"].get_local_copy())
-        empirical_budget_risks = np.load(artifacts["empirical_budget_risks"].get_local_copy())
-        p_values = np.load(artifacts["p_values"].get_local_copy())
-        calib_probe_scores = np.load(artifacts["calib_probe_scores"].get_local_copy())
-        calib_baseline_scores = np.load(artifacts["calib_baseline_scores"].get_local_copy())
-
-        # Reconstruct reliable_hyperparameters from boolean mask
-        reliable_hyperparameters = list(np.where(reliable_mask == 1)[0])
-
-        def _get_scalar(results_section: dict, name: str, default: float | int | None = None):
-            series = results_section.get(name)
-            if series is None:
-                return default
-            if isinstance(series, dict) and "y" in series:
-                y = series.get("y")
-                if isinstance(y, list) and len(y) > 0:
-                    return y[-1]
-                return default
-            if isinstance(series, list) and len(series) > 0:
-                return series[-1]
-            return series
-
-        # Fetch metrics (ClearML 2.x)
-        if not hasattr(task, "get_reported_scalars"):
-            raise AttributeError(
-                "ClearML task object does not expose get_reported_scalars(); cannot reconstruct metrics"
-            )
-        scalars = task.get_reported_scalars()
-        results_section = scalars.get("Results", {})
-
-        success = bool(_get_scalar(results_section, "success", 0))
-        delta = float(_get_scalar(results_section, "delta", 0.0))
-
-        best_threshold = None
-        best_index = None
-        test_budget_cost = None
-        test_probe_scores = None
-        test_baseline_scores = None
-        test_cascade_scores = None
-
-        if success:
-            best_threshold = float(_get_scalar(results_section, "best_threshold", 0.0))
-            best_index = int(_get_scalar(results_section, "best_index", 0))
-            test_budget_cost = float(_get_scalar(results_section, "test_budget_cost", 0.0))
-
-            # Try to load test artifacts if they exist
-            if "test_probe_scores" in artifacts:
-                test_probe_scores = np.load(artifacts["test_probe_scores"].get_local_copy())
-            if "test_baseline_scores" in artifacts:
-                test_baseline_scores = np.load(artifacts["test_baseline_scores"].get_local_copy())
-            if "test_cascade_scores" in artifacts:
-                test_cascade_scores = np.load(artifacts["test_cascade_scores"].get_local_copy())
-
-        return GuaranteedBudgetResults(
-            config=config_dict,
-            seed=int(config_dict.get("seed", 42)),
-            debug_mode=bool(config_dict.get("debug", False)),
-            train_size=int(_get_scalar(results_section, "train_size", 0)),
-            calib_size=int(_get_scalar(results_section, "calib_size", 0)),
-            test_size=int(_get_scalar(results_section, "test_size", 0)),
-            probe_reduction_strategy=str(config_dict.get("reduction_strategy", "")),
-            thresholds=thresholds,
-            empirical_budget_risks=empirical_budget_risks,
-            p_values=p_values,
-            delta=delta,
-            reliable_hyperparameters=reliable_hyperparameters,
-            calib_probe_scores=calib_probe_scores,
-            calib_baseline_scores=calib_baseline_scores,
-            success=success,
-            best_threshold=best_threshold,
-            best_index=best_index,
-            test_budget_cost=test_budget_cost,
-            test_probe_scores=test_probe_scores,
-            test_baseline_scores=test_baseline_scores,
-            test_cascade_scores=test_cascade_scores,
-        )
+    # Derived scalars (computed on-the-fly, not stored)
+    mean_empirical_risk: float = derived_field(derive_fn=lambda r: float(r.empirical_budget_risks.mean()))
+    min_empirical_risk: float = derived_field(derive_fn=lambda r: float(r.empirical_budget_risks.min()))
+    max_empirical_risk: float = derived_field(derive_fn=lambda r: float(r.empirical_budget_risks.max()))
+    num_reliable_hyperparameters: int = derived_field(derive_fn=lambda r: len(r.reliable_hyperparameters))
 
 
 def parse_args():
@@ -450,6 +276,7 @@ if __name__ == "__main__":
     import os
 
     from clearml_logger import ClearMLLogger
+    from clearml_serialization import ClearMLSerializer
 
     args = parse_args()
 
@@ -465,7 +292,7 @@ if __name__ == "__main__":
     # Run experiment
     results = run_guaranteed_budget_experiment(args)
 
-    # Log to ClearML if enabled (using methods from results dataclass)
+    # Log to ClearML if enabled (using generic serializer)
     if clearml_logger:
         # Log configuration
         clearml_logger.connect_configuration(results.config)
@@ -490,7 +317,8 @@ if __name__ == "__main__":
         tags.append("success" if results.success else "failure")
         clearml_logger.add_tags(tags)
 
-        # Use results methods for clean data extraction
-        clearml_logger.log_scalars(results.to_clearml_scalars())
-        clearml_logger.log_artifacts(results.to_clearml_artifacts())
+        # Use serializer for clean data extraction
+        serializer = ClearMLSerializer()
+        clearml_logger.log_scalars(serializer.to_clearml_scalars(results))
+        clearml_logger.log_artifacts(serializer.to_clearml_artifacts(results))
         clearml_logger.finalize()
