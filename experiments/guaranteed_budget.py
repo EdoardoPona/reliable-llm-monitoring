@@ -263,7 +263,7 @@ def run_guaranteed_budget_experiment(args: argparse.Namespace | None = None) -> 
             test_budget_cost=float(test_budget_cost),
             test_probe_scores=probe_test_scores,
             test_baseline_scores=baseline_test_scores,
-            test_cascade_scores=test_scores,
+            test_cascade_scores=test_scores.final_scores,
         )
 
 
@@ -294,15 +294,16 @@ if __name__ == "__main__":
 
         # Manually log model information since auto-detection is disabled
         # This explicitly tracks which models were used in the experiment
-        clearml_logger.task.connect_configuration(
-            {
-                "activation_model": results.config["activations_model_name"],
-                "activation_layer": results.config["activations_layer"],
-                "baseline_model": results.config["baseline_model_name"],
-                "reduction_strategy": results.config["reduction_strategy"],
-            },
-            name="Models",
-        )
+        if clearml_logger.task:
+            clearml_logger.task.connect_configuration(
+                {
+                    "activation_model": results.config["activations_model_name"],
+                    "activation_layer": results.config["activations_layer"],
+                    "baseline_model": results.config["baseline_model_name"],
+                    "reduction_strategy": results.config["reduction_strategy"],
+                },
+                name="Models",
+            )
 
         # Add tags
         tags = []

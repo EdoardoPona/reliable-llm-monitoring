@@ -176,6 +176,12 @@ class SequenceProbe:
         activations = dataset.other_fields["activations"]
         attention_mask = dataset.other_fields["attention_mask"]
 
+        # Convert to torch.Tensor if needed
+        if not isinstance(activations, torch.Tensor):
+            activations = torch.tensor(activations)
+        if not isinstance(attention_mask, torch.Tensor):
+            attention_mask = torch.tensor(attention_mask)
+
         # Get reduction function
         if isinstance(self.reduction_strategy, str):
             reduction_fn = get_reduction_function(self.reduction_strategy)

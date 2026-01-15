@@ -203,7 +203,7 @@ def run_llm_baseline(
     prompt_config = likelihood_continuation_prompts[prompt_key]
     model = LLMModel.load(LOCAL_MODELS[get_abbreviated_model_name(baseline_model_name)])
     baseline_model = LikelihoodContinuationBaseline(model, prompt_config=prompt_config)
-    baseline_results = baseline_model.likelihood_classify_dataset(dataset, batch_size=baseline_batch_size)
+    baseline_results = baseline_model.likelihood_classify_dataset(dataset, batch_size=baseline_batch_size)  # type: ignore - this is an issue in the mup codebase
     baseline_high_stakes_prob = np.array(baseline_results.other_fields["high_stakes_score"])
     return baseline_high_stakes_prob
 

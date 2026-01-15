@@ -10,6 +10,7 @@ Both should produce identical final predictions.
 
 import os
 from pathlib import Path
+from typing import TypedDict
 
 import numpy as np
 from dotenv import load_dotenv
@@ -27,6 +28,14 @@ LAYER = 11
 DATA_DIR = os.environ["DATA_DIR"]
 TRAIN_SAMPLE_SIZE = 50  # Small sample for probe training
 TEST_SAMPLE_SIZE = 50  # Small sample for fast testing
+
+
+class CascadeTestParams(TypedDict):
+    """Parameters for cascade testing."""
+
+    threshold: float
+    merge_strategy: str
+    baseline_batch_size: int
 
 
 def test_online_offline_equivalence():
@@ -66,7 +75,7 @@ def test_online_offline_equivalence():
     print("   ✓ Probe trained")
 
     # Test parameters - just 2 test cases to keep it fast
-    test_cases = [
+    test_cases: list[CascadeTestParams] = [
         {"threshold": 0.5, "merge_strategy": "avg", "baseline_batch_size": 8},
         {"threshold": 0.5, "merge_strategy": "replace", "baseline_batch_size": 8},
     ]
@@ -224,7 +233,7 @@ def test_fixed_threshold_batched_non_batched_equivalence():
     print("   ✓ Probe trained")
 
     # Test parameters - just 2 test cases to keep it fast
-    test_cases = [
+    test_cases: list[CascadeTestParams] = [
         {"threshold": 0.5, "merge_strategy": "avg", "baseline_batch_size": 8},
         {"threshold": 0.5, "merge_strategy": "replace", "baseline_batch_size": 8},
     ]

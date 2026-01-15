@@ -12,3 +12,9 @@ repos:
         entry: ruff check . --fix
         language: system
         types: [python]
+
+      - id: ty
+        name: uv run ty check 
+        entry: uv run ty check
+        language: system
+        types: [python]

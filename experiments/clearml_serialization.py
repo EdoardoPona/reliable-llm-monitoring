@@ -32,7 +32,7 @@ DERIVE_FN_KEY = "clearml_derive_fn"
 CONDITION_KEY = "clearml_condition"
 
 
-def scalar_field(**kwargs) -> Field:
+def scalar_field(**kwargs) -> Any:
     """Mark a dataclass field as a ClearML scalar metric.
 
     Scalar fields are logged to ClearML as metrics (float or int values).
@@ -48,7 +48,7 @@ def scalar_field(**kwargs) -> Field:
     return field(metadata=metadata, **kwargs)
 
 
-def artifact_field(**kwargs) -> Field:
+def artifact_field(**kwargs) -> Any:
     """Mark a dataclass field as a ClearML artifact.
 
     Artifact fields are uploaded to ClearML storage (numpy arrays, dicts, etc).
@@ -64,7 +64,7 @@ def artifact_field(**kwargs) -> Field:
     return field(metadata=metadata, **kwargs)
 
 
-def derived_field(derive_fn: Callable, **kwargs) -> Field:
+def derived_field(derive_fn: Callable, **kwargs) -> Any:
     """Mark a dataclass field as a derived scalar.
 
     Derived fields are computed on-the-fly from other fields and not stored
@@ -88,7 +88,7 @@ def derived_field(derive_fn: Callable, **kwargs) -> Field:
     return field(metadata=metadata, init=False, default=None, **kwargs)
 
 
-def conditional_field(condition: str, **kwargs) -> Field:
+def conditional_field(condition: str, **kwargs) -> Any:
     """Mark a dataclass field as conditional.
 
     Conditional fields are only serialized when a boolean condition field
@@ -372,7 +372,7 @@ class ClearMLSerializer:
             return "scalar"
         return "exclude"
 
-    def _infer_field_type_from_annotation(self, annotation: type) -> str:
+    def _infer_field_type_from_annotation(self, annotation: type | str) -> str:
         """Infer field type from type annotation."""
         from typing import Union, get_args, get_origin
 
@@ -486,7 +486,7 @@ class ClearMLSerializer:
 
         return default
 
-    def _load_artifact(self, artifact: Any, expected_type: type) -> Any:
+    def _load_artifact(self, artifact: Any, expected_type: type | str) -> Any:
         """Load artifact from ClearML."""
         try:
             local_path = artifact.get_local_copy()
@@ -507,7 +507,7 @@ class ClearMLSerializer:
             logger.warning(f"Failed to load artifact: {e}")
             return None
 
-    def _get_default_value(self, type_annotation: type) -> Any:
+    def _get_default_value(self, type_annotation: type | str) -> Any:
         """Get default value for type."""
         from typing import get_origin
 

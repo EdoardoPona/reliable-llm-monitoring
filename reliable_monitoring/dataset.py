@@ -139,12 +139,7 @@ def reduce_activations(
 
     # Drop raw activations if requested
     if drop_raw:
-        # Need to reconstruct the dataset without the raw activation field
-        new_other_fields = {k: v for k, v in dataset.other_fields.items() if k != activation_field}
-        # Create a new dataset with updated other_fields
-        dataset = type(dataset)(
-            inputs=dataset.inputs, ids=dataset.ids, labels=dataset.labels, other_fields=new_other_fields
-        )
+        dataset = dataset.drop_cols(activation_field)
         print(f"Removed raw field '{activation_field}' to save memory")
 
     return dataset
@@ -218,7 +213,8 @@ def load_dataset(
         if isinstance(strategy, str):
             strategy_dict = {strategy: strategy}
         elif isinstance(strategy, dict):
-            strategy_dict = strategy
+            # Filter out None values - reduce_activations expects str | Callable only
+            strategy_dict = {k: v for k, v in strategy.items() if v is not None}
         else:
             raise TypeError(f"aggregation_strategy must be str or dict, got {type(strategy)}")
 

@@ -1,5 +1,6 @@
 """Unit tests for dataset reduction functionality."""
 
+import numpy as np
 import pytest
 import torch
 from models_under_pressure.interfaces.dataset import LabelledDataset
@@ -36,7 +37,9 @@ class TestReduceActivations:
         assert "activations_mean" in result.other_fields
 
         # Check shape is correct (sequence dimension removed)
-        assert result.other_fields["activations_mean"].shape == (10, 64)
+        field = result.other_fields["activations_mean"]
+        assert isinstance(field, (np.ndarray, torch.Tensor))
+        assert field.shape == (10, 64)
 
         # Original field should still exist
         assert "activations" in result.other_fields
@@ -54,7 +57,9 @@ class TestReduceActivations:
 
         # All should have correct shape
         for field_name in ["activations_mean", "activations_max", "activations_last"]:
-            assert result.other_fields[field_name].shape == (10, 64)
+            field = result.other_fields[field_name]
+            assert isinstance(field, (np.ndarray, torch.Tensor))
+            assert field.shape == (10, 64)
 
     def test_reduce_with_drop_raw(self):
         """Test dropping raw activations after reduction."""
@@ -86,7 +91,9 @@ class TestReduceActivations:
         assert "activations_custom" in result.other_fields
 
         # Check shape
-        assert result.other_fields["activations_custom"].shape == (10, 64)
+        field = result.other_fields["activations_custom"]
+        assert isinstance(field, (np.ndarray, torch.Tensor))
+        assert field.shape == (10, 64)
 
     def test_reduce_respects_inplace_false(self):
         """Test that inplace=False creates a copy."""
@@ -127,7 +134,9 @@ class TestReduceActivations:
 
         # Should create field with custom prefix
         assert "custom_activations_mean" in result.other_fields
-        assert result.other_fields["custom_activations_mean"].shape == (n_samples, hidden_dim)
+        field = result.other_fields["custom_activations_mean"]
+        assert isinstance(field, (np.ndarray, torch.Tensor))
+        assert field.shape == (n_samples, hidden_dim)
 
 
 class TestReduceActivationsErrors:
@@ -197,4 +206,4 @@ class TestReduceActivationsErrors:
         )
 
         with pytest.raises(TypeError, match="Strategy must be string or callable"):
-            reduce_activations(dataset, strategies={"bad": 12345})  # Integer instead of function
+            reduce_activations(dataset, strategies={"bad": 12345})  # type: ignore[arg-type]

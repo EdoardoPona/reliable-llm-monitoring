@@ -123,8 +123,8 @@ class TestSelectionRegistry:
     def test_helper_with_custom_callable(self, scores):
         """Helper function accepts custom callables."""
 
-        def custom(s, **kw):
-            return s > 0.5
+        def custom(probe_scores: np.ndarray, **kwargs) -> np.ndarray:
+            return probe_scores > 0.5
 
         mask = select_examples_for_baseline(scores, strategy=custom)
         assert (scores[mask] > 0.5).all()
@@ -132,4 +132,4 @@ class TestSelectionRegistry:
     def test_invalid_strategy_type_raises_error(self, scores):
         """Raise error if strategy is not string or callable."""
         with pytest.raises(TypeError, match="string or callable"):
-            select_examples_for_baseline(scores, strategy=123)
+            select_examples_for_baseline(scores, strategy=123)  # type: ignore
