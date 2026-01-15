@@ -13,6 +13,7 @@ reduction_strategy: mean
 cascade_batch_size: 16
 
 # Batch size for baseline model inference
+# this cannot be less than 2, and should be even to avoid losing data
 baseline_batch_size: 16
 
 # The strategy to merge probe and baseline scores in the cascade
