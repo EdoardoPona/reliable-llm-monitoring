@@ -420,7 +420,7 @@ def run_cascade_comparison_experiment(args: argparse.Namespace) -> CascadeCompar
     return CascadeComparisonResults(
         config=vars(config),
         seed=seed,
-        debug_mode=config.debug,
+        debug_mode=args.debug,
         test_size=len(test_dataset),
         cascade_batch_size=cascade_batch_size,
         num_batches=num_batches,

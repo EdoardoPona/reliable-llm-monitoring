@@ -196,7 +196,7 @@ def run_guaranteed_budget_experiment(args: argparse.Namespace | None = None) -> 
         return GuaranteedBudgetResults(
             config=vars(config),
             seed=seed,
-            debug_mode=config.debug,
+            debug_mode=args.debug,
             train_size=len(train_dataset),
             calib_size=len(calib_dataset),
             test_size=len(test_dataset),
@@ -250,7 +250,7 @@ def run_guaranteed_budget_experiment(args: argparse.Namespace | None = None) -> 
         return GuaranteedBudgetResults(
             config=vars(config),
             seed=seed,
-            debug_mode=config.debug,
+            debug_mode=args.debug,
             train_size=len(train_dataset),
             calib_size=len(calib_dataset),
             test_size=len(test_dataset),
