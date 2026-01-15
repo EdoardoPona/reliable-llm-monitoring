@@ -1,0 +1,368 @@
+"""Plotting utilities for cascade comparison experiment results.
+
+This module generates visualizations for easy comparison of adaptive vs fixed
+budget cascade strategies. All plotting functions are pure (no side effects)
+and take CascadeComparisonResults as input.
+
+Functions generate matplotlib figures ready for logging to ClearML.
+"""
+
+import matplotlib.pyplot as plt
+import numpy as np
+from cascade_comparison import CascadeComparisonResults
+from matplotlib.figure import Figure
+
+
+def plot_summary_comparison(results: CascadeComparisonResults) -> Figure:
+    """Generate grouped bar chart comparing summary statistics.
+
+    Shows min/avg/max for each metric side-by-side for adaptive vs fixed.
+
+    Metrics plotted:
+    - Budget Cost (%, lower is better for efficiency)
+    - Accuracy (%, higher is better)
+    - F1 Score (%, higher is better)
+    - ROC-AUC (%, higher is better)
+
+    Args:
+        results: CascadeComparisonResults from experiment
+
+    Returns:
+        Matplotlib figure with grouped bar chart
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle("Cascade Comparison: Summary Statistics", fontsize=16, fontweight="bold")
+
+    metrics = [
+        (
+            "Budget Cost",
+            [
+                "adaptive_min_budget_cost",
+                "adaptive_mean_budget_cost",
+                "adaptive_max_budget_cost",
+                "fixed_min_budget_cost",
+                "fixed_mean_budget_cost",
+                "fixed_max_budget_cost",
+            ],
+        ),
+        (
+            "Accuracy",
+            [
+                "adaptive_best_batch_accuracy",
+                "adaptive_worst_batch_accuracy",
+                "fixed_best_batch_accuracy",
+                "fixed_worst_batch_accuracy",
+            ],
+        ),
+        (
+            "F1 Score",
+            [
+                "adaptive_best_batch_f1_score",
+                "adaptive_worst_batch_f1_score",
+                "fixed_best_batch_f1_score",
+                "fixed_worst_batch_f1_score",
+            ],
+        ),
+        (
+            "ROC-AUC",
+            [
+                "adaptive_best_batch_roc_auc",
+                "adaptive_worst_batch_roc_auc",
+                "fixed_best_batch_roc_auc",
+                "fixed_worst_batch_roc_auc",
+            ],
+        ),
+    ]
+
+    for _idx, (metric_name, ax) in enumerate(zip([m[0] for m in metrics], axes.flat, strict=False)):
+        # Extract data for grouped bar chart
+        if metric_name == "Budget Cost":
+            x = np.arange(3)  # min, avg, max
+            width = 0.35
+            adaptive = [
+                results.adaptive_min_budget_cost,
+                results.adaptive_mean_budget_cost,
+                results.adaptive_max_budget_cost,
+            ]
+            fixed = [results.fixed_min_budget_cost, results.fixed_mean_budget_cost, results.fixed_max_budget_cost]
+            labels = ["Min", "Avg", "Max"]
+        else:
+            # For performance metrics, use best/worst
+            x = np.arange(2)  # best, worst
+            width = 0.35
+            if metric_name == "Accuracy":
+                adaptive = [results.adaptive_best_batch_accuracy, results.adaptive_worst_batch_accuracy]
+                fixed = [results.fixed_best_batch_accuracy, results.fixed_worst_batch_accuracy]
+            elif metric_name == "F1 Score":
+                adaptive = [results.adaptive_best_batch_f1_score, results.adaptive_worst_batch_f1_score]
+                fixed = [results.fixed_best_batch_f1_score, results.fixed_worst_batch_f1_score]
+            else:  # ROC-AUC
+                adaptive = [results.adaptive_best_batch_roc_auc, results.adaptive_worst_batch_roc_auc]
+                fixed = [results.fixed_best_batch_roc_auc, results.fixed_worst_batch_roc_auc]
+            labels = ["Best", "Worst"]
+
+        # Plot bars
+        ax.bar(x - width / 2, adaptive, width, label="Adaptive", color="steelblue", alpha=0.8)
+        ax.bar(x + width / 2, fixed, width, label="Fixed", color="orange", alpha=0.8)
+
+        # Labels and formatting
+        ax.set_ylabel(metric_name, fontweight="bold")
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels)
+        ax.legend(loc="best")
+        ax.grid(axis="y", alpha=0.3)
+        ax.set_axisbelow(True)
+
+        # Add value labels on bars
+        for bars in [ax.patches[i::2] for i in range(2)]:
+            for bar in bars:
+                height = bar.get_height()
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2.0, height, f"{height:.3f}", ha="center", va="bottom", fontsize=9
+                )
+
+    plt.tight_layout()
+    return fig
+
+
+def plot_batch_distributions(results: CascadeComparisonResults) -> dict[str, Figure]:
+    """Generate overlaying histograms for batch metric distributions.
+
+    Creates histograms showing adaptive (blue) and fixed (orange) distributions
+    overlaid on the same chart for easy comparison.
+
+    Metrics plotted:
+    - budget_cost: Distribution of budget costs per batch
+    - accuracy: Distribution of accuracies per batch
+    - f1_score: Distribution of F1 scores per batch
+    - roc_auc: Distribution of ROC-AUC scores per batch
+    - probe_uncertainty: Distribution of probe uncertainties per batch
+
+    Args:
+        results: CascadeComparisonResults from experiment
+
+    Returns:
+        Dictionary mapping metric names to matplotlib figures
+    """
+    figures = {}
+
+    # Extract per-batch metrics
+    adaptive_budget = np.array([b.budget_cost for b in results.adaptive_batches])
+    fixed_budget = np.array([b.budget_cost for b in results.fixed_batches])
+
+    adaptive_accuracy = np.array([b.accuracy for b in results.adaptive_batches])
+    fixed_accuracy = np.array([b.accuracy for b in results.fixed_batches])
+
+    adaptive_f1 = np.array([b.f1_score for b in results.adaptive_batches])
+    fixed_f1 = np.array([b.f1_score for b in results.fixed_batches])
+
+    adaptive_roc_auc = np.array([b.roc_auc for b in results.adaptive_batches])
+    fixed_roc_auc = np.array([b.roc_auc for b in results.fixed_batches])
+
+    adaptive_uncertainty = np.array([b.probe_uncertainty_mean for b in results.adaptive_batches])
+    fixed_uncertainty = np.array([b.probe_uncertainty_mean for b in results.fixed_batches])
+
+    # Metrics to plot
+    metrics_data = [
+        ("budget_cost", adaptive_budget, fixed_budget, "Budget Cost", "Fraction"),
+        ("accuracy", adaptive_accuracy, fixed_accuracy, "Accuracy", "Score"),
+        ("f1_score", adaptive_f1, fixed_f1, "F1 Score", "Score"),
+        ("roc_auc", adaptive_roc_auc, fixed_roc_auc, "ROC-AUC", "Score"),
+        ("probe_uncertainty", adaptive_uncertainty, fixed_uncertainty, "Probe Uncertainty", "Mean Value"),
+    ]
+
+    for metric_key, adaptive_data, fixed_data, title, _ylabel in metrics_data:
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        # Plot overlaying histograms
+        bins = max(5, len(adaptive_data) // 2)
+        ax.hist(adaptive_data, bins=bins, alpha=0.5, label="Adaptive", color="steelblue", edgecolor="black")
+        ax.hist(fixed_data, bins=bins, alpha=0.5, label="Fixed", color="orange", edgecolor="black")
+
+        # Labels and formatting
+        ax.set_xlabel(title, fontweight="bold")
+        ax.set_ylabel("Frequency", fontweight="bold")
+        ax.set_title(f"Distribution of {title} Across Batches", fontweight="bold")
+        ax.legend(loc="best", fontsize=11)
+        ax.grid(axis="y", alpha=0.3)
+        ax.set_axisbelow(True)
+
+        # Add statistics text
+        stats_text = (
+            f"Adaptive: μ={adaptive_data.mean():.3f}, σ={adaptive_data.std():.3f}\n"
+            f"Fixed:    μ={fixed_data.mean():.3f}, σ={fixed_data.std():.3f}"
+        )
+        ax.text(
+            0.98,
+            0.97,
+            stats_text,
+            transform=ax.transAxes,
+            fontsize=10,
+            verticalalignment="top",
+            horizontalalignment="right",
+            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+        )
+
+        plt.tight_layout()
+        figures[metric_key] = fig
+
+    return figures
+
+
+def plot_difficulty_vs_metrics(results: CascadeComparisonResults) -> Figure:
+    """Generate scatter plots showing relationship between difficulty and metrics.
+
+    Shows 4 subplots:
+    - Budget cost vs probe_uncertainty: Adaptive should correlate, fixed should be flat
+    - Accuracy vs probe_uncertainty
+    - F1 score vs probe_uncertainty
+    - ROC-AUC vs probe_uncertainty
+
+    Args:
+        results: CascadeComparisonResults from experiment
+
+    Returns:
+        Matplotlib figure with 2x2 subplot grid
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle("Difficulty vs Performance: Adaptive vs Fixed Strategy", fontsize=16, fontweight="bold")
+
+    # Extract data
+    adaptive_difficulty = np.array([b.probe_uncertainty_mean for b in results.adaptive_batches])
+    fixed_difficulty = np.array([b.probe_uncertainty_mean for b in results.fixed_batches])
+
+    adaptive_budget = np.array([b.budget_cost for b in results.adaptive_batches])
+    fixed_budget = np.array([b.budget_cost for b in results.fixed_batches])
+
+    adaptive_accuracy = np.array([b.accuracy for b in results.adaptive_batches])
+    fixed_accuracy = np.array([b.accuracy for b in results.fixed_batches])
+
+    adaptive_f1 = np.array([b.f1_score for b in results.adaptive_batches])
+    fixed_f1 = np.array([b.f1_score for b in results.fixed_batches])
+
+    adaptive_roc_auc = np.array([b.roc_auc for b in results.adaptive_batches])
+    fixed_roc_auc = np.array([b.roc_auc for b in results.fixed_batches])
+
+    # Scatter plots with best-fit lines
+    metrics = [
+        (adaptive_budget, fixed_budget, "Budget Cost", "Lower is better"),
+        (adaptive_accuracy, fixed_accuracy, "Accuracy", "Higher is better"),
+        (adaptive_f1, fixed_f1, "F1 Score", "Higher is better"),
+        (adaptive_roc_auc, fixed_roc_auc, "ROC-AUC", "Higher is better"),
+    ]
+
+    for ax, (adaptive_y, fixed_y, ylabel, note) in zip(axes.flat, metrics, strict=False):
+        # Scatter plots
+        ax.scatter(adaptive_difficulty, adaptive_y, alpha=0.6, s=100, label="Adaptive", color="steelblue")
+        ax.scatter(fixed_difficulty, fixed_y, alpha=0.6, s=100, label="Fixed", color="orange")
+
+        # Best-fit lines
+        z_adaptive = np.polyfit(adaptive_difficulty, adaptive_y, 1)
+        p_adaptive = np.poly1d(z_adaptive)
+        x_line = np.linspace(adaptive_difficulty.min(), adaptive_difficulty.max(), 100)
+        ax.plot(x_line, p_adaptive(x_line), "steelblue", linestyle="--", linewidth=2, alpha=0.7)
+
+        z_fixed = np.polyfit(fixed_difficulty, fixed_y, 1)
+        p_fixed = np.poly1d(z_fixed)
+        ax.plot(x_line, p_fixed(x_line), "orange", linestyle="--", linewidth=2, alpha=0.7)
+
+        # Labels and formatting
+        ax.set_xlabel("Probe Uncertainty (Difficulty)", fontweight="bold")
+        ax.set_ylabel(ylabel, fontweight="bold")
+        ax.set_title(f"{ylabel} vs Difficulty ({note})", fontweight="bold")
+        ax.legend(loc="best")
+        ax.grid(True, alpha=0.3)
+        ax.set_axisbelow(True)
+
+    plt.tight_layout()
+    return fig
+
+
+def plot_metric_boxplots(results: CascadeComparisonResults) -> Figure:
+    """Generate box plots comparing metric distributions.
+
+    Shows quartiles, whiskers, and outliers for adaptive vs fixed strategies.
+
+    Metrics plotted:
+    - Budget Cost
+    - Accuracy
+    - F1 Score
+    - ROC-AUC
+
+    Args:
+        results: CascadeComparisonResults from experiment
+
+    Returns:
+        Matplotlib figure with box plots
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle("Metric Range Comparison: Adaptive vs Fixed", fontsize=16, fontweight="bold")
+
+    # Extract per-batch metrics
+    adaptive_budget = np.array([b.budget_cost for b in results.adaptive_batches])
+    fixed_budget = np.array([b.budget_cost for b in results.fixed_batches])
+
+    adaptive_accuracy = np.array([b.accuracy for b in results.adaptive_batches])
+    fixed_accuracy = np.array([b.accuracy for b in results.fixed_batches])
+
+    adaptive_f1 = np.array([b.f1_score for b in results.adaptive_batches])
+    fixed_f1 = np.array([b.f1_score for b in results.fixed_batches])
+
+    adaptive_roc_auc = np.array([b.roc_auc for b in results.adaptive_batches])
+    fixed_roc_auc = np.array([b.roc_auc for b in results.fixed_batches])
+
+    # Metrics to plot
+    metrics = [
+        (adaptive_budget, fixed_budget, "Budget Cost"),
+        (adaptive_accuracy, fixed_accuracy, "Accuracy"),
+        (adaptive_f1, fixed_f1, "F1 Score"),
+        (adaptive_roc_auc, fixed_roc_auc, "ROC-AUC"),
+    ]
+
+    for ax, (adaptive_data, fixed_data, title) in zip(axes.flat, metrics, strict=False):
+        # Create box plots
+        bp = ax.boxplot(
+            [adaptive_data, fixed_data],
+            labels=["Adaptive", "Fixed"],
+            patch_artist=True,
+            widths=0.6,
+        )
+
+        # Color the boxes
+        colors = ["steelblue", "orange"]
+        for patch, color in zip(bp["boxes"], colors, strict=False):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.7)
+
+        # Format whiskers and caps
+        for whisker in bp["whiskers"]:
+            whisker.set(linewidth=1.5)
+        for cap in bp["caps"]:
+            cap.set(linewidth=1.5)
+        for median in bp["medians"]:
+            median.set(color="red", linewidth=2)
+
+        # Labels and formatting
+        ax.set_ylabel(title, fontweight="bold")
+        ax.set_title(f"{title} Distribution", fontweight="bold")
+        ax.grid(axis="y", alpha=0.3)
+        ax.set_axisbelow(True)
+
+        # Add statistics
+        stats_text = (
+            f"Adaptive: μ={adaptive_data.mean():.3f}, σ={adaptive_data.std():.3f}\n"
+            f"Fixed:    μ={fixed_data.mean():.3f}, σ={fixed_data.std():.3f}"
+        )
+        ax.text(
+            0.98,
+            0.97,
+            stats_text,
+            transform=ax.transAxes,
+            fontsize=9,
+            verticalalignment="top",
+            horizontalalignment="right",
+            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+        )
+
+    plt.tight_layout()
+    return fig

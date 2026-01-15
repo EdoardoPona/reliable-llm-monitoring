@@ -3091,6 +3091,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "clearml" },
+    { name = "matplotlib" },
     { name = "models-under-pressure" },
     { name = "nbformat" },
     { name = "pytest" },
@@ -3102,6 +3103,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "clearml", specifier = ">=1.0.0" },
+    { name = "matplotlib", specifier = ">=3.7.0" },
     { name = "models-under-pressure", editable = "../models-under-pressure" },
     { name = "nbformat", specifier = ">=5.10.4" },
     { name = "pytest", specifier = ">=8.0.0" },

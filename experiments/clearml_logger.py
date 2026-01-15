@@ -184,6 +184,34 @@ class ClearMLLogger:
                 stacklevel=2,
             )
 
+    def log_figure(self, title: str, series: str, figure, iteration: int = 0) -> None:
+        """Log a matplotlib figure to ClearML.
+
+        Args:
+            title: Plot title/group (e.g., "Comparison", "Distributions")
+            series: Plot series name (e.g., "Summary Statistics", "budget_cost")
+            figure: Matplotlib figure object
+            iteration: Iteration number (default 0)
+        """
+        if not self.enabled or self.task is None:
+            return
+
+        try:
+            logger_instance = self.task.get_logger()
+            logger_instance.report_matplotlib_figure(
+                title=title,
+                series=series,
+                figure=figure,
+                iteration=iteration,
+            )
+            logger.info(f"Logged figure '{title}/{series}' to ClearML")
+        except Exception as e:
+            warnings.warn(
+                f"Failed to log figure to ClearML: {e}",
+                UserWarning,
+                stacklevel=2,
+            )
+
     def finalize(self) -> None:
         """Close and finalize the ClearML task, cleaning up temporary artifacts."""
         if not self.enabled or self.task is None:
