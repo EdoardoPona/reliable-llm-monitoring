@@ -9,9 +9,6 @@ guarantee_probability: 0.95
 # The strategy to reduce the sequence of activations to a fixed size vector
 reduction_strategy: mean
 
-# Run in debug mode with smaller datasets
-debug: true
-
 # Batch size for cascade comparison
 batch_size: 16
 

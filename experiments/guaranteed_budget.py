@@ -91,6 +91,11 @@ def parse_args():
 
     parser = argparse.ArgumentParser(description="Guaranteed Budget Experiment")
     parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Run in debug mode with smaller datasets.",
+    )
+    parser.add_argument(
         "--config",
         type=str,
         default=str(default_config_path),
@@ -129,7 +134,7 @@ def run_guaranteed_budget_experiment(args: argparse.Namespace | None = None) -> 
         activation_config=activation_config,
     )
 
-    if config.debug:
+    if args.debug:
         logger.warning("Running in debug mode with smaller datasets.")
         train_dataset = sample_from_dataset(train_dataset, DEBUG_SAMPLE_SIZE, seed=seed)
         calib_dataset = sample_from_dataset(calib_dataset, DEBUG_SAMPLE_SIZE, seed=seed)
