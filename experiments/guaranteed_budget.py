@@ -22,9 +22,7 @@ from reliable_monitoring.cascade import run_llm_baseline, run_offline_cascade
 from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset
 from reliable_monitoring.learn_then_test import fixed_sequence_testing
 from reliable_monitoring.probes import SequenceProbe
-from reliable_monitoring.risks import (
-    baseline_budget_cost,
-)
+from reliable_monitoring.risks import baseline_budget_cost, evaluate_threshold_risks
 
 load_dotenv()
 
@@ -145,7 +143,7 @@ def run_guaranteed_budget_experiment(args: argparse.Namespace | None = None) -> 
     probe = SequenceProbe(reduction_strategy=config.reduction_strategy)
     probe.fit(train_dataset)
 
-    # computing offline scores on calibration dataset
+    # Computing offline scores on calibration dataset
     logger.info("Computing probe scores on calibration dataset...")
     probe_scores = probe.predict(calib_dataset)
 
@@ -156,28 +154,25 @@ def run_guaranteed_budget_experiment(args: argparse.Namespace | None = None) -> 
         baseline_batch_size=config.baseline_batch_size,
     )
 
-    # compute empirical risks on cascade
+    # Evaluate empirical risks across threshold grid
     logger.info("Computing empirical risks on calibration dataset...")
-    thresholds = np.linspace(0.5, 1, 10)
+    thresholds = np.linspace(
+        getattr(config, "threshold_start", 0.5),
+        getattr(config, "threshold_end", 1.0),
+        getattr(config, "threshold_steps", 10),
+    )
 
-    empirical_budget_risks = np.zeros_like(thresholds)
-    # empirical_performance_scores = np.zeros_like(thresholds)
+    eval_result = evaluate_threshold_risks(
+        probe_scores,
+        baseline_scores,
+        thresholds,
+        merge_strategy=config.cascade_merge_strategy,
+    )
 
-    for i, t in enumerate(thresholds):
-        print(f"Evaluating threshold: {t:.2f}, {i} of {len(thresholds)}")
-        scores = run_offline_cascade(
-            probe_scores,
-            baseline_scores,
-            threshold=t,
-            merge_strategy=config.cascade_merge_strategy,
-        )
-        empirical_budget_risks[i] = baseline_budget_cost(scores)
-        # empirical_performance_scores[i] = empirical_accuracy(scores, calib_dataset)
-
-    # compute p-values for corresponding empirical risks
+    # Compute p-values using Hoeffding-Bentkus bound
     p_values = hb_p_value(
-        r_hat=empirical_budget_risks,
-        n=len(calib_dataset),
+        r_hat=eval_result.empirical_risks,
+        n=eval_result.n_samples,
         alpha=config.budget,
     )
 
@@ -201,8 +196,8 @@ def run_guaranteed_budget_experiment(args: argparse.Namespace | None = None) -> 
             calib_size=len(calib_dataset),
             test_size=len(test_dataset),
             probe_reduction_strategy=config.reduction_strategy,
-            thresholds=thresholds,
-            empirical_budget_risks=empirical_budget_risks,
+            thresholds=eval_result.thresholds,
+            empirical_budget_risks=eval_result.empirical_risks,
             p_values=p_values,
             delta=delta,
             reliable_hyperparameters=list(reliable_hyperparameters),
@@ -217,9 +212,9 @@ def run_guaranteed_budget_experiment(args: argparse.Namespace | None = None) -> 
             test_cascade_scores=None,
         )
     else:
-        # pick the most aggressive hyperparameters that still guarantee the budget
+        # Pick the most aggressive hyperparameters that still guarantee the budget
         best_index = reliable_hyperparameters[-1]
-        best_threshold = thresholds[best_index]
+        best_threshold = eval_result.thresholds[best_index]
 
         logger.info(
             f"Best threshold guaranteeing budget {config.budget} with probability {config.guarantee_probability} is {best_threshold:.4f}"
@@ -255,8 +250,8 @@ def run_guaranteed_budget_experiment(args: argparse.Namespace | None = None) -> 
             calib_size=len(calib_dataset),
             test_size=len(test_dataset),
             probe_reduction_strategy=config.reduction_strategy,
-            thresholds=thresholds,
-            empirical_budget_risks=empirical_budget_risks,
+            thresholds=eval_result.thresholds,
+            empirical_budget_risks=eval_result.empirical_risks,
             p_values=p_values,
             delta=delta,
             reliable_hyperparameters=list(reliable_hyperparameters),
