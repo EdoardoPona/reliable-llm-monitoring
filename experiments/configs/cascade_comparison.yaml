@@ -10,7 +10,7 @@ guarantee_probability: 0.95
 reduction_strategy: mean
 
 # Batch size for cascade comparison
-batch_size: 16
+cascade_batch_size: 16
 
 # Batch size for baseline model inference
 baseline_batch_size: 16

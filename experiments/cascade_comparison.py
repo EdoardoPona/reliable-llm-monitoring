@@ -35,7 +35,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DEBUG_SAMPLE_SIZE = 256
+DEBUG_SAMPLE_SIZE = 32
 
 
 @dataclass
@@ -90,7 +90,7 @@ class CascadeComparisonResults:
 
     # Dataset information
     test_size: int = scalar_field()
-    batch_size: int = scalar_field()
+    cascade_batch_size: int = scalar_field()
     num_batches: int = scalar_field()
 
     # Reliable threshold information
@@ -231,7 +231,7 @@ def run_cascade_comparison_experiment(args: argparse.Namespace) -> CascadeCompar
     seed = config.seed
     np.random.seed(seed)
 
-    batch_size = config.batch_size
+    cascade_batch_size = config.cascade_batch_size
     budget = config.budget
 
     activation_config = ActivationConfig(
@@ -336,14 +336,14 @@ def run_cascade_comparison_experiment(args: argparse.Namespace) -> CascadeCompar
     logger.info(f"Extracted test labels: {len(test_labels)} labels")
 
     # Run batch cascades
-    logger.info(f"Running batch cascades (batch_size={batch_size})...")
+    logger.info(f"Running batch cascades (batch_size={cascade_batch_size})...")
 
     # Adaptive threshold approach
     logger.info(f"Running adaptive threshold cascade (threshold={reliable_threshold})...")
     adaptive_result = offline_batch_cascade(
         probe_scores=test_probe_scores,
         baseline_scores=test_baseline_scores,
-        batch_size=batch_size,
+        batch_size=cascade_batch_size,
         selection_strategy="fixed_threshold",
         merge_strategy=config.cascade_merge_strategy,
         threshold=reliable_threshold,
@@ -354,7 +354,7 @@ def run_cascade_comparison_experiment(args: argparse.Namespace) -> CascadeCompar
     fixed_result = offline_batch_cascade(
         probe_scores=test_probe_scores,
         baseline_scores=test_baseline_scores,
-        batch_size=batch_size,
+        batch_size=cascade_batch_size,
         selection_strategy="fixed_budget_rate",
         merge_strategy=config.cascade_merge_strategy,
         rate=budget,
@@ -365,11 +365,11 @@ def run_cascade_comparison_experiment(args: argparse.Namespace) -> CascadeCompar
     adaptive_batches = []
     fixed_batches = []
 
-    num_batches = (len(test_probe_scores) + batch_size - 1) // batch_size
+    num_batches = (len(test_probe_scores) + cascade_batch_size - 1) // cascade_batch_size
 
     for batch_idx in range(num_batches):
-        start_idx = batch_idx * batch_size
-        end_idx = min(start_idx + batch_size, len(test_probe_scores))
+        start_idx = batch_idx * cascade_batch_size
+        end_idx = min(start_idx + cascade_batch_size, len(test_probe_scores))
         batch_labels = test_labels[start_idx:end_idx]
 
         # Extract batch data for adaptive approach
@@ -422,7 +422,7 @@ def run_cascade_comparison_experiment(args: argparse.Namespace) -> CascadeCompar
         seed=seed,
         debug_mode=config.debug,
         test_size=len(test_dataset),
-        batch_size=batch_size,
+        cascade_batch_size=cascade_batch_size,
         num_batches=num_batches,
         reliable_threshold=reliable_threshold,
         guarantee_probability=config.guarantee_probability,
