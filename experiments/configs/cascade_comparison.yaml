@@ -1,7 +1,7 @@
 # Cascade Comparison Experiment Configuration
 
 # The budget to guarantee control over
-budget: 0.3
+budget: 0.25
 
 # The probability with which the budget is guaranteed (1-FWER)
 guarantee_probability: 0.95
@@ -10,7 +10,7 @@ guarantee_probability: 0.95
 reduction_strategy: mean
 
 # Batch size for cascade comparison
-cascade_batch_size: 16
+cascade_batch_size: 32
 
 # Batch size for baseline model inference
 # this cannot be less than 2, and should be even to avoid losing data

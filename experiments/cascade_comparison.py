@@ -145,6 +145,24 @@ class CascadeComparisonResults:
     adaptive_batches: list[BatchCascadeStatistics] = artifact_field()
     fixed_batches: list[BatchCascadeStatistics] = artifact_field()
 
+    # Paired t-test results for accuracy
+    accuracy_t_stat: float = scalar_field()
+    accuracy_p_value: float = scalar_field()
+    accuracy_mean_diff: float = scalar_field()
+    accuracy_std_diff: float = scalar_field()
+
+    # Paired t-test results for F1 score
+    f1_score_t_stat: float = scalar_field()
+    f1_score_p_value: float = scalar_field()
+    f1_score_mean_diff: float = scalar_field()
+    f1_score_std_diff: float = scalar_field()
+
+    # Paired t-test results for ROC-AUC
+    roc_auc_t_stat: float = scalar_field()
+    roc_auc_p_value: float = scalar_field()
+    roc_auc_mean_diff: float = scalar_field()
+    roc_auc_std_diff: float = scalar_field()
+
     # Derived statistics
     adaptive_budget_costs: np.ndarray = derived_field(
         derive_fn=lambda r: np.array([b.budget_cost for b in r.adaptive_batches])
@@ -152,6 +170,38 @@ class CascadeComparisonResults:
     fixed_budget_costs: np.ndarray = derived_field(
         derive_fn=lambda r: np.array([b.budget_cost for b in r.fixed_batches])
     )
+
+
+def compute_paired_t_tests(metrics: dict[str, tuple[np.ndarray, np.ndarray]]) -> dict[str, dict[str, float]]:
+    """Compute paired t-tests for multiple metrics.
+
+    Since both methods evaluate the same batches, we can use paired t-tests
+    to determine if performance differences are statistically significant.
+
+    Args:
+        metrics: Dictionary mapping metric name to (adaptive_data, fixed_data) arrays
+
+    Returns:
+        Dictionary mapping metric names to dicts with 't_stat', 'p_value', 'mean_diff', 'std_diff'
+    """
+    from scipy import stats
+
+    results_dict = {}
+    for metric_name, (adaptive_data, fixed_data) in metrics.items():
+        diff = adaptive_data - fixed_data
+        t_stat, p_value = stats.ttest_rel(adaptive_data, fixed_data)
+        results_dict[metric_name] = {
+            "t_stat": float(t_stat),
+            "p_value": float(p_value),
+            "mean_diff": float(diff.mean()),
+            "std_diff": float(diff.std()),
+        }
+        logger.info(
+            f"Paired t-test for {metric_name}: t={t_stat:.4f}, p={p_value:.4f}, "
+            f"mean_diff={diff.mean():.4f}±{diff.std():.4f}"
+        )
+
+    return results_dict
 
 
 def parse_args():
@@ -413,6 +463,22 @@ def run_cascade_comparison_experiment(args: argparse.Namespace) -> CascadeCompar
     fixed_best_idx, fixed_best = get_best_batch(fixed_batches)
     fixed_worst_idx, fixed_worst = get_worst_batch(fixed_batches)
 
+    # Compute paired t-tests
+    logger.info("Computing paired t-tests for performance metrics...")
+    adaptive_accuracy = np.array([b.accuracy for b in adaptive_batches])
+    fixed_accuracy = np.array([b.accuracy for b in fixed_batches])
+    adaptive_f1 = np.array([b.f1_score for b in adaptive_batches])
+    fixed_f1 = np.array([b.f1_score for b in fixed_batches])
+    adaptive_roc_auc = np.array([b.roc_auc for b in adaptive_batches])
+    fixed_roc_auc = np.array([b.roc_auc for b in fixed_batches])
+
+    t_test_results = compute_paired_t_tests(
+        {
+            "accuracy": (adaptive_accuracy, fixed_accuracy),
+            "f1_score": (adaptive_f1, fixed_f1),
+            "roc_auc": (adaptive_roc_auc, fixed_roc_auc),
+        }
+    )
     return CascadeComparisonResults(
         config=vars(config),
         seed=seed,
@@ -461,6 +527,19 @@ def run_cascade_comparison_experiment(args: argparse.Namespace) -> CascadeCompar
         fixed_worst_batch_probe_uncertainty=float(fixed_worst.probe_uncertainty_mean),
         adaptive_batches=adaptive_batches,
         fixed_batches=fixed_batches,
+        # Paired t-test results
+        accuracy_t_stat=float(t_test_results["accuracy"]["t_stat"]),
+        accuracy_p_value=float(t_test_results["accuracy"]["p_value"]),
+        accuracy_mean_diff=float(t_test_results["accuracy"]["mean_diff"]),
+        accuracy_std_diff=float(t_test_results["accuracy"]["std_diff"]),
+        f1_score_t_stat=float(t_test_results["f1_score"]["t_stat"]),
+        f1_score_p_value=float(t_test_results["f1_score"]["p_value"]),
+        f1_score_mean_diff=float(t_test_results["f1_score"]["mean_diff"]),
+        f1_score_std_diff=float(t_test_results["f1_score"]["std_diff"]),
+        roc_auc_t_stat=float(t_test_results["roc_auc"]["t_stat"]),
+        roc_auc_p_value=float(t_test_results["roc_auc"]["p_value"]),
+        roc_auc_mean_diff=float(t_test_results["roc_auc"]["mean_diff"]),
+        roc_auc_std_diff=float(t_test_results["roc_auc"]["std_diff"]),
     )
 
 
@@ -511,6 +590,7 @@ if __name__ == "__main__":
                 plot_batch_distributions,
                 plot_difficulty_vs_metrics,
                 plot_metric_boxplots,
+                plot_paired_method_comparison,
                 plot_summary_comparison,
             )
 
@@ -539,6 +619,14 @@ if __name__ == "__main__":
                 title="Analysis",
                 series="Difficulty vs Performance",
                 figure=fig_difficulty,
+            )
+
+            # Paired method comparison
+            fig_paired = plot_paired_method_comparison(results)
+            clearml_logger.log_figure(
+                title="Analysis",
+                series="Paired Method Comparison",
+                figure=fig_paired,
             )
 
             # Box plots

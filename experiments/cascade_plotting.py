@@ -366,3 +366,142 @@ def plot_metric_boxplots(results: CascadeComparisonResults) -> Figure:
 
     plt.tight_layout()
     return fig
+
+
+def plot_paired_method_comparison(results: CascadeComparisonResults) -> Figure:
+    """Generate scatter plots comparing paired performance: adaptive vs fixed on same batches.
+
+    Shows subplots where each dot represents a batch:
+    - X-axis: metric value for adaptive method
+    - Y-axis: metric value for fixed method
+    - Diagonal line: where both methods perform equally
+    - P-values from paired t-tests displayed on plots
+
+    Metrics plotted:
+    - accuracy: Accuracy score (higher is better)
+    - f1_score: F1 score (higher is better)
+    - roc_auc: ROC-AUC score (higher is better)
+
+    Args:
+        results: CascadeComparisonResults from experiment (including t-test results)
+
+    Returns:
+        Matplotlib figure with 1x3 subplot grid
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig.suptitle("Paired Method Comparison: Adaptive vs Fixed (per batch)", fontsize=16, fontweight="bold")
+
+    # Extract metrics from paired batches
+    adaptive_accuracy = np.array([b.accuracy for b in results.adaptive_batches])
+    fixed_accuracy = np.array([b.accuracy for b in results.fixed_batches])
+
+    adaptive_f1 = np.array([b.f1_score for b in results.adaptive_batches])
+    fixed_f1 = np.array([b.f1_score for b in results.fixed_batches])
+
+    adaptive_roc_auc = np.array([b.roc_auc for b in results.adaptive_batches])
+    fixed_roc_auc = np.array([b.roc_auc for b in results.fixed_batches])
+
+    # Metrics to plot: (adaptive_data, fixed_data, title, better_direction, t_stat_field, p_value_field, mean_diff_field)
+    metrics = [
+        (
+            adaptive_accuracy,
+            fixed_accuracy,
+            "Accuracy",
+            "higher",
+            results.accuracy_t_stat,
+            results.accuracy_p_value,
+            results.accuracy_mean_diff,
+        ),
+        (
+            adaptive_f1,
+            fixed_f1,
+            "F1 Score",
+            "higher",
+            results.f1_score_t_stat,
+            results.f1_score_p_value,
+            results.f1_score_mean_diff,
+        ),
+        (
+            adaptive_roc_auc,
+            fixed_roc_auc,
+            "ROC-AUC",
+            "higher",
+            results.roc_auc_t_stat,
+            results.roc_auc_p_value,
+            results.roc_auc_mean_diff,
+        ),
+    ]
+
+    # Batch indices for coloring
+    batch_indices = np.arange(len(results.adaptive_batches))
+
+    for ax, (adaptive_data, fixed_data, title, better_dir, t_stat, p_value, mean_diff) in zip(
+        axes, metrics, strict=False
+    ):
+        # Scatter plot colored by batch index
+        scatter = ax.scatter(
+            adaptive_data,
+            fixed_data,
+            c=batch_indices,
+            s=120,
+            alpha=0.6,
+            cmap="viridis",
+            edgecolors="black",
+            linewidth=0.5,
+        )
+
+        # Diagonal line where both methods are equal
+        min_val = min(adaptive_data.min(), fixed_data.min())
+        max_val = max(adaptive_data.max(), fixed_data.max())
+        ax.plot([min_val, max_val], [min_val, max_val], "r--", linewidth=2, alpha=0.5, label="Equal performance")
+
+        # Labels and formatting
+        ax.set_xlabel(f"Adaptive {title}", fontweight="bold")
+        ax.set_ylabel(f"Fixed {title}", fontweight="bold")
+        ax.set_title(f"{title} Pairing ({better_dir} is better)", fontweight="bold")
+        ax.grid(True, alpha=0.3)
+        ax.set_axisbelow(True)
+        ax.legend(loc="best", fontsize=9)
+
+        # Add colorbar for batch indices
+        cbar = plt.colorbar(scatter, ax=ax)
+        cbar.set_label("Batch Index", fontweight="bold")
+
+        # Add statistics
+        if better_dir == "higher":
+            adaptive_wins = (adaptive_data > fixed_data).sum()
+        else:  # lower is better
+            adaptive_wins = (adaptive_data < fixed_data).sum()
+
+        win_pct = 100 * adaptive_wins / len(adaptive_data)
+
+        # Determine significance level
+        sig_stars = ""
+        if p_value < 0.001:
+            sig_stars = "***"
+        elif p_value < 0.01:
+            sig_stars = "**"
+        elif p_value < 0.05:
+            sig_stars = "*"
+
+        stats_text = (
+            f"Adaptive: μ={adaptive_data.mean():.3f}, σ={adaptive_data.std():.3f}\n"
+            f"Fixed:    μ={fixed_data.mean():.3f}, σ={fixed_data.std():.3f}\n"
+            f"Mean Δ: {mean_diff:.4f}\n"
+            f"Paired t-test: t={t_stat:.3f}, p={p_value:.4f}{sig_stars}\n"
+            f"Adaptive wins: {int(adaptive_wins)}/{len(adaptive_data)} ({win_pct:.1f}%)"
+        )
+        ax.text(
+            0.02,
+            0.98,
+            stats_text,
+            transform=ax.transAxes,
+            fontsize=8.5,
+            verticalalignment="top",
+            horizontalalignment="left",
+            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
+            family="monospace",
+        )
+
+    plt.tight_layout()
+    return fig
