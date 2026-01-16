@@ -10,15 +10,29 @@ from scipy.optimize import brentq
 from scipy.stats import binom
 
 
-def binomial(k: int, n: int, p: float, tail: bool = False) -> float:
-    """Compute the binomial bound
-    if `tail`, probability P(X >= k) for X ~ Binom(n, p).
-    else probability P(X <= k).
+def binomial(r_hat: np.ndarray | float, n: int, p: float, tail: bool = False) -> np.ndarray:
+    """Compute binomial probabilities.
+
+    Handles both scalar and array inputs, always returns array.
+
+    Args:
+        r_hat: Empirical risk(s), in [0, 1]. Can be scalar or array.
+        n: Number of trials (sample size).
+        p: Probability parameter.
+        tail: If True, returns P(X >= k). If False, returns P(X <= k).
+
+    Returns:
+        Array of probabilities. If input is scalar, returns array of length 1.
     """
+    r_hat_array = np.atleast_1d(r_hat)
+    k_values = np.ceil(n * r_hat_array).astype(int)
+
     if tail:
-        return binom.sf(k - 1, n, p)
+        p_values = np.array([binom.sf(k - 1, n, p) for k in k_values])
     else:
-        return binom.cdf(k, n, p)
+        p_values = np.array([binom.cdf(k, n, p) for k in k_values])
+
+    return p_values
 
 
 def h1(y, mu):

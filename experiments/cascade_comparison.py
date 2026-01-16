@@ -23,12 +23,11 @@ from clearml_serialization import (
 from config import load_config
 from dotenv import load_dotenv
 
-from reliable_monitoring.bounds import hb_p_value
 from reliable_monitoring.cascade import offline_batch_cascade, run_llm_baseline
 from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset
 from reliable_monitoring.learn_then_test import fixed_sequence_testing
 from reliable_monitoring.probes import SequenceProbe
-from reliable_monitoring.risks import evaluate_threshold_risks
+from reliable_monitoring.risks import BudgetCostRisk, evaluate_threshold_risks
 
 load_dotenv()
 
@@ -293,15 +292,12 @@ def run_cascade_comparison_experiment(args: argparse.Namespace) -> CascadeCompar
         calib_probe_scores,
         calib_baseline_scores,
         thresholds,
+        risk=BudgetCostRisk,
         merge_strategy=config.cascade_merge_strategy,
     )
 
-    # Compute p-values using Hoeffding-Bentkus bound
-    p_values = hb_p_value(
-        r_hat=eval_result.empirical_risks,
-        n=eval_result.n_samples,
-        alpha=config.budget,
-    )
+    # Compute p-values using the risk's appropriate bound (binomial for budget cost)
+    p_values = eval_result.compute_p_values(alpha=config.budget)
 
     # Apply fixed-sequence testing
     delta = 1 - config.guarantee_probability

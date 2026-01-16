@@ -17,12 +17,11 @@ from clearml_serialization import (
 from config import load_config
 from dotenv import load_dotenv
 
-from reliable_monitoring.bounds import hb_p_value
 from reliable_monitoring.cascade import run_llm_baseline, run_offline_cascade
 from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset
 from reliable_monitoring.learn_then_test import fixed_sequence_testing
 from reliable_monitoring.probes import SequenceProbe
-from reliable_monitoring.risks import baseline_budget_cost, evaluate_threshold_risks
+from reliable_monitoring.risks import BudgetCostRisk, RiskEvaluationContext, evaluate_threshold_risks
 
 load_dotenv()
 
@@ -171,15 +170,12 @@ def run_guaranteed_budget_experiment(args: argparse.Namespace | None = None) -> 
         probe_scores,
         baseline_scores,
         thresholds,
+        risk=BudgetCostRisk,
         merge_strategy=config.cascade_merge_strategy,
     )
 
-    # Compute p-values using Hoeffding-Bentkus bound
-    p_values = hb_p_value(
-        r_hat=eval_result.empirical_risks,
-        n=eval_result.n_samples,
-        alpha=config.budget,
-    )
+    # Compute p-values using the risk's appropriate bound (binomial for budget cost)
+    p_values = eval_result.compute_p_values(alpha=config.budget)
 
     # run FST to find hyperparameters that guarantee budget control
     # the risks (and p-values) are already in the order in which we want them
@@ -243,7 +239,9 @@ def run_guaranteed_budget_experiment(args: argparse.Namespace | None = None) -> 
             threshold=best_threshold,
             merge_strategy=config.cascade_merge_strategy,
         )
-        test_budget_cost = baseline_budget_cost(test_scores)
+        # Use the same empirical computation as the risk function
+        test_context = RiskEvaluationContext(cascade_scores=test_scores)
+        test_budget_cost = BudgetCostRisk.empirical_computation(test_context)
 
         logger.info(f"Test budget cost with threshold {best_threshold:.4f}: {test_budget_cost:.4f}")
 
