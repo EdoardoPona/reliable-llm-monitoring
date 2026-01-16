@@ -10,6 +10,17 @@ from scipy.optimize import brentq
 from scipy.stats import binom
 
 
+def binomial(k: int, n: int, p: float, tail: bool = False) -> float:
+    """Compute the binomial bound
+    if `tail`, probability P(X >= k) for X ~ Binom(n, p).
+    else probability P(X <= k).
+    """
+    if tail:
+        return binom.sf(k - 1, n, p)
+    else:
+        return binom.cdf(k, n, p)
+
+
 def h1(y, mu):
     return y * np.log(y / mu) + (1 - y) * np.log((1 - y) / (1 - mu))
 
