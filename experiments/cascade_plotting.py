@@ -209,14 +209,17 @@ def plot_batch_distributions(results: CascadeComparisonResults) -> dict[str, Fig
     return figures
 
 
-def plot_difficulty_vs_metrics(results: CascadeComparisonResults) -> Figure:
-    """Generate scatter plots showing relationship between difficulty and metrics.
+def plot_probe_uncertainty_vs_metrics(results: CascadeComparisonResults) -> Figure:
+    """Generate scatter plots showing relationship between probe uncertainty and metrics.
 
     Shows 4 subplots:
     - Budget cost vs probe_uncertainty: Adaptive should correlate, fixed should be flat
     - Accuracy vs probe_uncertainty
     - F1 score vs probe_uncertainty
     - ROC-AUC vs probe_uncertainty
+
+    Probe uncertainty is defined as min(p, 1-p), measuring closeness to decision boundary.
+    Higher values indicate higher classification uncertainty (closer to 0.5 decision threshold).
 
     Args:
         results: CascadeComparisonResults from experiment
@@ -225,11 +228,15 @@ def plot_difficulty_vs_metrics(results: CascadeComparisonResults) -> Figure:
         Matplotlib figure with 2x2 subplot grid
     """
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle("Difficulty vs Performance: Adaptive vs Fixed Strategy", fontsize=16, fontweight="bold")
+    fig.suptitle(
+        "Probe Uncertainty vs Performance: Adaptive vs Fixed Strategy\n(Probe Uncertainty = min(p, 1-p))",
+        fontsize=16,
+        fontweight="bold",
+    )
 
     # Extract data
-    adaptive_difficulty = np.array([b.probe_uncertainty_mean for b in results.adaptive_batches])
-    fixed_difficulty = np.array([b.probe_uncertainty_mean for b in results.fixed_batches])
+    adaptive_probe_uncertainty = np.array([b.probe_uncertainty_mean for b in results.adaptive_batches])
+    fixed_probe_uncertainty = np.array([b.probe_uncertainty_mean for b in results.fixed_batches])
 
     adaptive_budget = np.array([b.budget_cost for b in results.adaptive_batches])
     fixed_budget = np.array([b.budget_cost for b in results.fixed_batches])
@@ -253,23 +260,23 @@ def plot_difficulty_vs_metrics(results: CascadeComparisonResults) -> Figure:
 
     for ax, (adaptive_y, fixed_y, ylabel, note) in zip(axes.flat, metrics, strict=False):
         # Scatter plots
-        ax.scatter(adaptive_difficulty, adaptive_y, alpha=0.6, s=100, label="Adaptive", color="steelblue")
-        ax.scatter(fixed_difficulty, fixed_y, alpha=0.6, s=100, label="Fixed", color="orange")
+        ax.scatter(adaptive_probe_uncertainty, adaptive_y, alpha=0.6, s=100, label="Adaptive", color="steelblue")
+        ax.scatter(fixed_probe_uncertainty, fixed_y, alpha=0.6, s=100, label="Fixed", color="orange")
 
         # Best-fit lines
-        z_adaptive = np.polyfit(adaptive_difficulty, adaptive_y, 1)
+        z_adaptive = np.polyfit(adaptive_probe_uncertainty, adaptive_y, 1)
         p_adaptive = np.poly1d(z_adaptive)
-        x_line = np.linspace(adaptive_difficulty.min(), adaptive_difficulty.max(), 100)
+        x_line = np.linspace(adaptive_probe_uncertainty.min(), adaptive_probe_uncertainty.max(), 100)
         ax.plot(x_line, p_adaptive(x_line), "steelblue", linestyle="--", linewidth=2, alpha=0.7)
 
-        z_fixed = np.polyfit(fixed_difficulty, fixed_y, 1)
+        z_fixed = np.polyfit(fixed_probe_uncertainty, fixed_y, 1)
         p_fixed = np.poly1d(z_fixed)
         ax.plot(x_line, p_fixed(x_line), "orange", linestyle="--", linewidth=2, alpha=0.7)
 
         # Labels and formatting
-        ax.set_xlabel("Probe Uncertainty (Difficulty)", fontweight="bold")
+        ax.set_xlabel("Probe Uncertainty", fontweight="bold")
         ax.set_ylabel(ylabel, fontweight="bold")
-        ax.set_title(f"{ylabel} vs Difficulty ({note})", fontweight="bold")
+        ax.set_title(f"{ylabel} vs Probe Uncertainty ({note})", fontweight="bold")
         ax.legend(loc="best")
         ax.grid(True, alpha=0.3)
         ax.set_axisbelow(True)

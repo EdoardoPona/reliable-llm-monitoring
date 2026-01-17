@@ -588,9 +588,9 @@ if __name__ == "__main__":
             # Generate and log plots
             from cascade_plotting import (
                 plot_batch_distributions,
-                plot_difficulty_vs_metrics,
                 plot_metric_boxplots,
                 plot_paired_method_comparison,
+                plot_probe_uncertainty_vs_metrics,
                 plot_summary_comparison,
             )
 
@@ -613,12 +613,12 @@ if __name__ == "__main__":
                     figure=fig,
                 )
 
-            # Difficulty correlation
-            fig_difficulty = plot_difficulty_vs_metrics(results)
+            # Probe uncertainty correlation
+            fig_probe_uncertainty = plot_probe_uncertainty_vs_metrics(results)
             clearml_logger.log_figure(
                 title="Analysis",
-                series="Difficulty vs Performance",
-                figure=fig_difficulty,
+                series="Probe Uncertainty vs Performance",
+                figure=fig_probe_uncertainty,
             )
 
             # Paired method comparison
