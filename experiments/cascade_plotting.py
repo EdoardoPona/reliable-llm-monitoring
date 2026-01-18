@@ -514,155 +514,61 @@ def plot_paired_method_comparison(results: CascadeComparisonResults) -> Figure:
     return fig
 
 
-def plot_performance_gain_vs_probe(
-    results: CascadeComparisonResults, metric: str = "accuracy", show_gain: bool = True
-) -> Figure:
-    """Generate scatter plots comparing cascade vs probe performance across batches.
+def plot_cascade_vs_probe_performance(results: CascadeComparisonResults) -> Figure:
+    """Generate scatter plots comparing cascade performance vs probe performance.
 
-    Shows how performance varies with probe difficulty (low probe accuracy = hard batch).
-    Can display either:
-    - Performance gain: (cascade_metric - probe_metric) on y-axis
-    - Absolute performance: cascade_metric on y-axis, probe_metric as x-axis
-
-    Args:
-        results: CascadeComparisonResults from experiment
-        metric: Performance metric to plot ('accuracy', 'f1_score', or 'roc_auc')
-        show_gain: If True, plot gain. If False, plot absolute performance (Option 1).
-
-    Returns:
-        Matplotlib figure with scatter plots for adaptive and fixed strategies
+    Shows 3 sublots, one for each metric (accuracy, f1_score, roc_auc)
+    For each metric subplot:
+    - X-axis: Probe metric
+    - Y-axis: Cascade metric
+    Each subplot has a scatterplot for adaptive (blue) and fixed (orange) strategies with best-fit lines.
     """
-    # Validate metric
-    valid_metrics = ["accuracy", "f1_score", "roc_auc"]
-    if metric not in valid_metrics:
-        raise ValueError(f"metric must be one of {valid_metrics}, got {metric}")
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig.suptitle("Cascade vs Probe Performance", fontsize=16, fontweight="bold")
 
-    # Map metric names to attribute names
-    metric_map = {
-        "accuracy": ("accuracy", "probe_accuracy"),
-        "f1_score": ("f1_score", "probe_f1_score"),
-        "roc_auc": ("roc_auc", "probe_roc_auc"),
-    }
-    cascade_attr, probe_attr = metric_map[metric]
+    metrics = [
+        ("accuracy", "probe_accuracy", "Accuracy"),
+        ("f1_score", "probe_f1_score", "F1 Score"),
+        ("roc_auc", "probe_roc_auc", "ROC-AUC"),
+    ]
 
-    # Extract data
-    adaptive_cascade = np.array([getattr(b, cascade_attr) for b in results.adaptive_batches])
-    fixed_cascade = np.array([getattr(b, cascade_attr) for b in results.fixed_batches])
-    adaptive_probe = np.array([getattr(b, probe_attr) for b in results.adaptive_batches])
-    fixed_probe = np.array([getattr(b, probe_attr) for b in results.fixed_batches])
+    for ax, (cascade_attr, probe_attr, label) in zip(axes, metrics, strict=False):
+        # Extract data
+        adaptive_probe = np.array([getattr(b, probe_attr) for b in results.adaptive_batches])
+        adaptive_cascade = np.array([getattr(b, cascade_attr) for b in results.adaptive_batches])
+        fixed_probe = np.array([getattr(b, probe_attr) for b in results.fixed_batches])
+        fixed_cascade = np.array([getattr(b, cascade_attr) for b in results.fixed_batches])
 
-    # Create figure
-    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+        # Scatter plots
+        ax.scatter(adaptive_probe, adaptive_cascade, alpha=0.6, s=100, color="steelblue", label="Adaptive")
+        ax.scatter(fixed_probe, fixed_cascade, alpha=0.6, s=100, color="orange", label="Fixed")
 
-    metric_display = metric.replace("_", " ").title()
+        # Best-fit lines
+        z_adaptive = np.polyfit(adaptive_probe, adaptive_cascade, 1)
+        p_adaptive = np.poly1d(z_adaptive)
+        z_fixed = np.polyfit(fixed_probe, fixed_cascade, 1)
+        p_fixed = np.poly1d(z_fixed)
 
-    if show_gain:
-        # Plot performance gain
-        fig.suptitle(
-            f"{metric_display} Gain from Cascade vs Probe Difficulty\n(Higher Probe {metric_display} = Easier Batch)",
-            fontsize=14,
-            fontweight="bold",
-        )
+        x_min = min(adaptive_probe.min(), fixed_probe.min())
+        x_max = max(adaptive_probe.max(), fixed_probe.max())
+        x_line = np.linspace(x_min, x_max, 100)
 
-        adaptive_gain = adaptive_cascade - adaptive_probe
-        fixed_gain = fixed_cascade - fixed_probe
+        ax.plot(x_line, p_adaptive(x_line), "steelblue", linestyle="--", linewidth=2, alpha=0.7)
+        ax.plot(x_line, p_fixed(x_line), "orange", linestyle="--", linewidth=2, alpha=0.7)
 
-        for ax, method, x_data, y_data, color in [
-            (axes[0], "Adaptive", adaptive_probe, adaptive_gain, "steelblue"),
-            (axes[1], "Fixed", fixed_probe, fixed_gain, "orange"),
-        ]:
-            # Scatter plot
-            ax.scatter(x_data, y_data, alpha=0.6, s=100, color=color, edgecolors="black", linewidth=0.5)
+        # Diagonal line (no improvement)
+        y_min = min(adaptive_cascade.min(), fixed_cascade.min())
+        y_max = max(adaptive_cascade.max(), fixed_cascade.max())
+        diag_min = min(x_min, y_min)
+        diag_max = max(x_max, y_max)
+        ax.plot([diag_min, diag_max], [diag_min, diag_max], "r--", linewidth=1, alpha=0.5, label="No improvement")
 
-            # Best-fit line
-            z = np.polyfit(x_data, y_data, 1)
-            p = np.poly1d(z)
-            x_line = np.linspace(x_data.min(), x_data.max(), 100)
-            ax.plot(x_line, p(x_line), color=color, linestyle="--", linewidth=2, alpha=0.7)
-
-            # Zero line for reference
-            ax.axhline(y=0, color="red", linestyle=":", linewidth=1, alpha=0.5)
-
-            # Labels and formatting
-            ax.set_xlabel(f"Probe {metric_display}", fontweight="bold")
-            ax.set_ylabel(f"{metric_display} Gain (Cascade - Probe)", fontweight="bold")
-            ax.set_title(f"{method} Strategy", fontweight="bold")
-            ax.grid(True, alpha=0.3)
-            ax.set_axisbelow(True)
-
-            # Statistics
-            stats_text = (
-                f"Mean Gain: {y_data.mean():.4f}\n"
-                f"Std Gain: {y_data.std():.4f}\n"
-                f"Min Gain: {y_data.min():.4f}\n"
-                f"Max Gain: {y_data.max():.4f}"
-            )
-            ax.text(
-                0.98,
-                0.02,
-                stats_text,
-                transform=ax.transAxes,
-                fontsize=9,
-                verticalalignment="bottom",
-                horizontalalignment="right",
-                bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
-                family="monospace",
-            )
-
-    else:
-        # Plot absolute performance
-        fig.suptitle(
-            f"{metric_display}: Cascade vs Probe Performance\n(Points above diagonal = cascade improves on probe)",
-            fontsize=14,
-            fontweight="bold",
-        )
-
-        for ax, method, probe_x, cascade_y, color in [
-            (axes[0], "Adaptive", adaptive_probe, adaptive_cascade, "steelblue"),
-            (axes[1], "Fixed", fixed_probe, fixed_cascade, "orange"),
-        ]:
-            # Scatter plot
-            ax.scatter(probe_x, cascade_y, alpha=0.6, s=100, color=color, edgecolors="black", linewidth=0.5)
-
-            # Best-fit line
-            z = np.polyfit(probe_x, cascade_y, 1)
-            p = np.poly1d(z)
-            x_line = np.linspace(probe_x.min(), probe_x.max(), 100)
-            ax.plot(x_line, p(x_line), color=color, linestyle="--", linewidth=2, alpha=0.7)
-
-            # Diagonal line (no improvement)
-            min_val = min(probe_x.min(), cascade_y.min())
-            max_val = max(probe_x.max(), cascade_y.max())
-            ax.plot([min_val, max_val], [min_val, max_val], "r--", linewidth=1, alpha=0.5, label="No improvement")
-
-            # Labels and formatting
-            ax.set_xlabel(f"Probe {metric_display}", fontweight="bold")
-            ax.set_ylabel(f"Cascade {metric_display}", fontweight="bold")
-            ax.set_title(f"{method} Strategy", fontweight="bold")
-            ax.legend(loc="best")
-            ax.grid(True, alpha=0.3)
-            ax.set_axisbelow(True)
-
-            # Statistics
-            improvement = cascade_y - probe_x
-            above_diagonal = (cascade_y > probe_x).sum()
-            pct_above = 100 * above_diagonal / len(cascade_y)
-            stats_text = (
-                f"Mean Improvement: {improvement.mean():.4f}\n"
-                f"Std Improvement: {improvement.std():.4f}\n"
-                f"Batches Improved: {above_diagonal}/{len(cascade_y)} ({pct_above:.1f}%)"
-            )
-            ax.text(
-                0.02,
-                0.98,
-                stats_text,
-                transform=ax.transAxes,
-                fontsize=9,
-                verticalalignment="top",
-                horizontalalignment="left",
-                bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
-                family="monospace",
-            )
+        # Labels
+        ax.set_xlabel(f"Probe {label}", fontweight="bold")
+        ax.set_ylabel(f"Cascade {label}", fontweight="bold")
+        ax.set_title(label, fontweight="bold")
+        ax.legend(loc="best")
+        ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     return fig
@@ -719,9 +625,6 @@ def plot_gain_per_budget(results: CascadeComparisonResults, metric: str = "accur
     metric_display = metric.replace("_", " ").title()
     fig.suptitle(f"{metric_display} Gain per Unit Budget: Efficiency Comparison", fontsize=14, fontweight="bold")
 
-    # Batch indices for coloring
-    batch_indices = np.arange(len(results.adaptive_batches))
-
     # Plot 1: Gain per budget vs Probe performance
     ax = axes[0]
     ax.scatter(
@@ -729,8 +632,7 @@ def plot_gain_per_budget(results: CascadeComparisonResults, metric: str = "accur
         adaptive_efficiency,
         alpha=0.6,
         s=100,
-        c=batch_indices,
-        cmap="viridis",
+        color="steelblue",
         edgecolors="black",
         linewidth=0.5,
         label="Adaptive",
@@ -740,15 +642,16 @@ def plot_gain_per_budget(results: CascadeComparisonResults, metric: str = "accur
         fixed_efficiency,
         alpha=0.6,
         s=100,
-        marker="x",
-        c=batch_indices,
-        cmap="viridis",
-        linewidth=2,
+        color="orange",
+        edgecolors="black",
+        linewidth=0.5,
         label="Fixed",
     )
     z_adaptive = np.polyfit(adaptive_probe, adaptive_efficiency, 1)
     p_adaptive = np.poly1d(z_adaptive)
-    x_line = np.linspace(adaptive_probe.min(), adaptive_probe.max(), 100)
+    x_line = np.linspace(
+        min(adaptive_probe.min(), fixed_probe.min()), max(adaptive_probe.max(), fixed_probe.max()), 100
+    )
     ax.plot(x_line, p_adaptive(x_line), "steelblue", linestyle="--", linewidth=2, alpha=0.7)
 
     z_fixed = np.polyfit(fixed_probe, fixed_efficiency, 1)
@@ -763,8 +666,26 @@ def plot_gain_per_budget(results: CascadeComparisonResults, metric: str = "accur
     ax.grid(True, alpha=0.3)
     ax.set_axisbelow(True)
 
+    # Statistics
+    stats_text = (
+        f"Adaptive: μ={adaptive_efficiency.mean():.4f}, σ={adaptive_efficiency.std():.4f}\n"
+        f"Fixed:    μ={fixed_efficiency.mean():.4f}, σ={fixed_efficiency.std():.4f}"
+    )
+    ax.text(
+        0.98,
+        0.02,
+        stats_text,
+        transform=ax.transAxes,
+        fontsize=10,
+        verticalalignment="bottom",
+        horizontalalignment="right",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
+        family="monospace",
+    )
+
     # Plot 2: Paired efficiency comparison
     ax = axes[1]
+    batch_indices = np.arange(len(results.adaptive_batches))
     scatter = ax.scatter(
         adaptive_efficiency,
         fixed_efficiency,

@@ -58,10 +58,15 @@ class BatchCascadeStatistics:
     baseline_score_mean: float = scalar_field()
     baseline_score_std: float = scalar_field()
 
-    # Performance metrics
+    # Performance metrics (cascade)
     accuracy: float = scalar_field()
     f1_score: float = scalar_field()
     roc_auc: float = scalar_field()
+
+    # Performance metrics (probe only - baseline for comparison)
+    probe_accuracy: float = scalar_field()
+    probe_f1_score: float = scalar_field()
+    probe_roc_auc: float = scalar_field()
 
     # Raw data for detailed analysis
     probe_scores: np.ndarray = artifact_field()
@@ -239,7 +244,7 @@ def compute_batch_statistics(
     """Compute statistics for a batch cascade run."""
     from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 
-    # Probe uncertainty (distance from decision boundary)
+    # Probe uncertainty (closeness to decision boundary)
     probe_uncertainty = np.minimum(probe_scores, 1 - probe_scores)
 
     # Baseline scores for examples that used baseline
@@ -247,11 +252,17 @@ def compute_batch_statistics(
     baseline_score_mean = float(np.nanmean(baseline_subset)) if len(baseline_subset) > 0 else 0.0
     baseline_score_std = float(np.nanstd(baseline_subset)) if len(baseline_subset) > 0 else 0.0
 
-    # Performance metrics
+    # Cascade performance metrics
     predictions = (final_scores >= 0.5).astype(int)
     accuracy = float(accuracy_score(labels, predictions))
     f1 = float(f1_score(labels, predictions))
     roc_auc = float(roc_auc_score(labels, final_scores))
+
+    # Probe-only performance metrics
+    probe_predictions = (probe_scores >= 0.5).astype(int)
+    probe_accuracy = float(accuracy_score(labels, probe_predictions))
+    probe_f1 = float(f1_score(labels, probe_predictions))
+    probe_roc_auc = float(roc_auc_score(labels, probe_scores))
 
     return BatchCascadeStatistics(
         batch_index=batch_index,
@@ -266,6 +277,9 @@ def compute_batch_statistics(
         accuracy=accuracy,
         f1_score=f1,
         roc_auc=roc_auc,
+        probe_accuracy=probe_accuracy,
+        probe_f1_score=probe_f1,
+        probe_roc_auc=probe_roc_auc,
         probe_scores=probe_scores.copy(),
         baseline_scores=baseline_scores.copy(),
         used_baseline=used_baseline.copy(),
@@ -567,6 +581,34 @@ if __name__ == "__main__":
     if results is None:
         logger.warning("Experiment failed: no reliable threshold found.")
     else:
+        # Compute all the figures
+        from cascade_plotting import (
+            plot_batch_distributions,
+            plot_cascade_vs_probe_performance,
+            plot_metric_boxplots,
+            plot_paired_method_comparison,
+            plot_probe_uncertainty_vs_metrics,
+            plot_summary_comparison,
+        )
+
+        # Summary bar chart
+        fig_summary = plot_summary_comparison(results)
+
+        # Distribution histograms
+        fig_dists = plot_batch_distributions(results)
+
+        # Probe uncertainty correlation
+        fig_probe_uncertainty = plot_probe_uncertainty_vs_metrics(results)
+
+        # Paired method comparison
+        fig_paired = plot_paired_method_comparison(results)
+
+        # Box plots
+        fig_boxes = plot_metric_boxplots(results)
+
+        # Cascade vs Probe performance
+        fig_cascade_vs_probe = plot_cascade_vs_probe_performance(results)
+
         # Log to ClearML if enabled
         if clearml_logger:
             # Log configuration
@@ -585,27 +627,13 @@ if __name__ == "__main__":
             clearml_logger.log_scalars(serializer.to_clearml_scalars(results))
             clearml_logger.log_artifacts(serializer.to_clearml_artifacts(results))
 
-            # Generate and log plots
-            from cascade_plotting import (
-                plot_batch_distributions,
-                plot_metric_boxplots,
-                plot_paired_method_comparison,
-                plot_probe_uncertainty_vs_metrics,
-                plot_summary_comparison,
-            )
-
             logger.info("Generating comparison plots...")
 
-            # Summary bar chart
-            fig_summary = plot_summary_comparison(results)
             clearml_logger.log_figure(
                 title="Comparison",
                 series="Summary Statistics",
                 figure=fig_summary,
             )
-
-            # Distribution histograms
-            fig_dists = plot_batch_distributions(results)
             for metric_name, fig in fig_dists.items():
                 clearml_logger.log_figure(
                     title="Distributions",
@@ -613,28 +641,28 @@ if __name__ == "__main__":
                     figure=fig,
                 )
 
-            # Probe uncertainty correlation
-            fig_probe_uncertainty = plot_probe_uncertainty_vs_metrics(results)
             clearml_logger.log_figure(
                 title="Analysis",
                 series="Probe Uncertainty vs Performance",
                 figure=fig_probe_uncertainty,
             )
 
-            # Paired method comparison
-            fig_paired = plot_paired_method_comparison(results)
             clearml_logger.log_figure(
                 title="Analysis",
                 series="Paired Method Comparison",
                 figure=fig_paired,
             )
 
-            # Box plots
-            fig_boxes = plot_metric_boxplots(results)
             clearml_logger.log_figure(
                 title="Comparison",
                 series="Metric Ranges",
                 figure=fig_boxes,
+            )
+
+            clearml_logger.log_figure(
+                title="Analysis",
+                series="Cascade vs Probe Performance",
+                figure=fig_cascade_vs_probe,
             )
 
             # Close figures to free memory
