@@ -13,6 +13,79 @@ from cascade_comparison import CascadeComparisonResults
 from matplotlib.figure import Figure
 
 
+def plot_overall_performance_comparison(results: CascadeComparisonResults) -> Figure:
+    """Generate bar chart comparing overall performance metrics across all approaches.
+
+    Shows performance comparison for four approaches:
+    - Probe only (baseline using just probe)
+    - Baseline only (all examples use baseline)
+    - Adaptive cascade (adaptive threshold selection)
+    - Fixed cascade (fixed budget selection)
+
+    Metrics plotted:
+    - Accuracy (higher is better)
+    - F1 Score (higher is better)
+    - ROC-AUC (higher is better)
+
+    Args:
+        results: CascadeComparisonResults from experiment
+
+    Returns:
+        Matplotlib figure with grouped bar chart
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+    fig.suptitle("Overall Performance Comparison: Probe vs Baseline vs Cascades", fontsize=14, fontweight="bold")
+
+    metrics = [
+        (
+            "Accuracy",
+            ["probe_only_accuracy", "baseline_only_accuracy", "adaptive_overall_accuracy", "fixed_overall_accuracy"],
+        ),
+        (
+            "F1 Score",
+            ["probe_only_f1_score", "baseline_only_f1_score", "adaptive_overall_f1_score", "fixed_overall_f1_score"],
+        ),
+        (
+            "ROC-AUC",
+            ["probe_only_roc_auc", "baseline_only_roc_auc", "adaptive_overall_roc_auc", "fixed_overall_roc_auc"],
+        ),
+    ]
+
+    colors = ["steelblue", "coral", "forestgreen", "orange"]
+    labels = ["Probe Only", "Baseline Only", "Adaptive Cascade", "Fixed Cascade"]
+
+    for ax, (metric_name, field_names) in zip(axes.flat, metrics, strict=False):
+        x = np.arange(len(labels))
+        width = 0.6
+        values = [getattr(results, field_name) for field_name in field_names]
+
+        bars = ax.bar(x, values, width, color=colors, alpha=0.8, edgecolor="black", linewidth=1.2)
+
+        # Labels and formatting
+        ax.set_ylabel(metric_name, fontweight="bold", fontsize=11)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, fontsize=10)
+        ax.set_ylim([0, 1.05])
+        ax.grid(axis="y", alpha=0.3)
+        ax.set_axisbelow(True)
+
+        # Add value labels on bars
+        for bar, value in zip(bars, values, strict=False):
+            height = bar.get_height()
+            ax.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                height + 0.01,
+                f"{value:.4f}",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+                fontweight="bold",
+            )
+
+    plt.tight_layout()
+    return fig
+
+
 def plot_summary_comparison(results: CascadeComparisonResults) -> Figure:
     """Generate grouped bar chart comparing summary statistics.
 

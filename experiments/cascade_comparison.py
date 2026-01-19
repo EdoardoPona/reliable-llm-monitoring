@@ -169,6 +169,26 @@ class CascadeComparisonResults:
     roc_auc_mean_diff: float = scalar_field()
     roc_auc_std_diff: float = scalar_field()
 
+    # Overall performance metrics - probe only (baseline for comparison)
+    probe_only_accuracy: float = scalar_field()
+    probe_only_f1_score: float = scalar_field()
+    probe_only_roc_auc: float = scalar_field()
+
+    # Overall performance metrics - baseline only (all examples use baseline)
+    baseline_only_accuracy: float = scalar_field()
+    baseline_only_f1_score: float = scalar_field()
+    baseline_only_roc_auc: float = scalar_field()
+
+    # Overall performance metrics - adaptive cascade (on full dataset)
+    adaptive_overall_accuracy: float = scalar_field()
+    adaptive_overall_f1_score: float = scalar_field()
+    adaptive_overall_roc_auc: float = scalar_field()
+
+    # Overall performance metrics - fixed cascade (on full dataset)
+    fixed_overall_accuracy: float = scalar_field()
+    fixed_overall_f1_score: float = scalar_field()
+    fixed_overall_roc_auc: float = scalar_field()
+
     # Derived statistics
     adaptive_budget_costs: np.ndarray = derived_field(
         derive_fn=lambda r: np.array([b.budget_cost for b in r.adaptive_batches])
@@ -494,6 +514,51 @@ def run_cascade_comparison_experiment(args: argparse.Namespace) -> CascadeCompar
             "roc_auc": (adaptive_roc_auc, fixed_roc_auc),
         }
     )
+
+    # Compute overall performance metrics across all examples
+    logger.info("Computing overall performance metrics...")
+    from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+
+    # Probe only metrics
+    probe_predictions = (test_probe_scores >= 0.5).astype(int)
+    probe_only_accuracy = float(accuracy_score(test_labels, probe_predictions))
+    probe_only_f1 = float(f1_score(test_labels, probe_predictions))
+    probe_only_roc_auc = float(roc_auc_score(test_labels, test_probe_scores))
+
+    # Baseline only metrics (all examples use baseline)
+    baseline_predictions = (test_baseline_scores >= 0.5).astype(int)
+    baseline_only_accuracy = float(accuracy_score(test_labels, baseline_predictions))
+    baseline_only_f1 = float(f1_score(test_labels, baseline_predictions))
+    baseline_only_roc_auc = float(roc_auc_score(test_labels, test_baseline_scores))
+
+    # Adaptive cascade overall metrics
+    adaptive_predictions = (adaptive_result.final_scores >= 0.5).astype(int)
+    adaptive_overall_accuracy = float(accuracy_score(test_labels, adaptive_predictions))
+    adaptive_overall_f1 = float(f1_score(test_labels, adaptive_predictions))
+    adaptive_overall_roc_auc = float(roc_auc_score(test_labels, adaptive_result.final_scores))
+
+    # Fixed cascade overall metrics
+    fixed_predictions = (fixed_result.final_scores >= 0.5).astype(int)
+    fixed_overall_accuracy = float(accuracy_score(test_labels, fixed_predictions))
+    fixed_overall_f1 = float(f1_score(test_labels, fixed_predictions))
+    fixed_overall_roc_auc = float(roc_auc_score(test_labels, fixed_result.final_scores))
+
+    # Log overall metrics
+    logger.info("\n=== OVERALL PERFORMANCE METRICS ===")
+    logger.info(
+        f"Probe Only:        Acc={probe_only_accuracy:.4f}, F1={probe_only_f1:.4f}, ROC-AUC={probe_only_roc_auc:.4f}"
+    )
+    logger.info(
+        f"Baseline Only:     Acc={baseline_only_accuracy:.4f}, F1={baseline_only_f1:.4f}, ROC-AUC={baseline_only_roc_auc:.4f}"
+    )
+    logger.info(
+        f"Adaptive Cascade:  Acc={adaptive_overall_accuracy:.4f}, F1={adaptive_overall_f1:.4f}, ROC-AUC={adaptive_overall_roc_auc:.4f}"
+    )
+    logger.info(
+        f"Fixed Cascade:     Acc={fixed_overall_accuracy:.4f}, F1={fixed_overall_f1:.4f}, ROC-AUC={fixed_overall_roc_auc:.4f}"
+    )
+    logger.info("===================================\n")
+
     return CascadeComparisonResults(
         config=vars(config),
         seed=seed,
@@ -555,6 +620,19 @@ def run_cascade_comparison_experiment(args: argparse.Namespace) -> CascadeCompar
         roc_auc_p_value=float(t_test_results["roc_auc"]["p_value"]),
         roc_auc_mean_diff=float(t_test_results["roc_auc"]["mean_diff"]),
         roc_auc_std_diff=float(t_test_results["roc_auc"]["std_diff"]),
+        # Overall performance metrics
+        probe_only_accuracy=probe_only_accuracy,
+        probe_only_f1_score=probe_only_f1,
+        probe_only_roc_auc=probe_only_roc_auc,
+        baseline_only_accuracy=baseline_only_accuracy,
+        baseline_only_f1_score=baseline_only_f1,
+        baseline_only_roc_auc=baseline_only_roc_auc,
+        adaptive_overall_accuracy=adaptive_overall_accuracy,
+        adaptive_overall_f1_score=adaptive_overall_f1,
+        adaptive_overall_roc_auc=adaptive_overall_roc_auc,
+        fixed_overall_accuracy=fixed_overall_accuracy,
+        fixed_overall_f1_score=fixed_overall_f1,
+        fixed_overall_roc_auc=fixed_overall_roc_auc,
     )
 
 
@@ -587,10 +665,14 @@ if __name__ == "__main__":
             plot_batch_distributions,
             plot_cascade_vs_probe_performance,
             plot_metric_boxplots,
+            plot_overall_performance_comparison,
             plot_paired_method_comparison,
             plot_probe_uncertainty_vs_metrics,
             plot_summary_comparison,
         )
+
+        # Overall performance comparison
+        fig_overall = plot_overall_performance_comparison(results)
 
         # Summary bar chart
         fig_summary = plot_summary_comparison(results)
@@ -632,6 +714,12 @@ if __name__ == "__main__":
             clearml_logger.log_artifacts(serializer.to_clearml_artifacts(results))
 
             logger.info("Generating comparison plots...")
+
+            clearml_logger.log_figure(
+                title="Comparison",
+                series="Overall Performance",
+                figure=fig_overall,
+            )
 
             clearml_logger.log_figure(
                 title="Comparison",
