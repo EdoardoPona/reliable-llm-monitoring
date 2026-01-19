@@ -22,6 +22,7 @@ from clearml_serialization import (
 )
 from config import load_config
 from dotenv import load_dotenv
+from models_under_pressure.experiments.monitoring_cascade import get_abbreviated_model_name
 
 from reliable_monitoring.cascade import offline_batch_cascade, run_llm_baseline
 from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset
@@ -618,8 +619,11 @@ if __name__ == "__main__":
             tags = []
             if results.debug_mode:
                 tags.append("debug")
-            tags.append(f"threshold_{results.reliable_threshold:.2f}")
             tags.append(f"budget_{results.budget:.2f}")
+            tags.append(f"probe_{results.config['reduction_strategy']}")
+            tags.append(f"merge_{results.config['cascade_merge_strategy']}")
+            tags.append(f"baseline_model_{get_abbreviated_model_name(results.config['baseline_model_name'])}")
+            tags.append(f"activations_model_{get_abbreviated_model_name(results.config['activations_model_name'])}")
             clearml_logger.add_tags(tags)
 
             # Use serializer for clean data extraction
