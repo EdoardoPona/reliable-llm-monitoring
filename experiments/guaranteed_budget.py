@@ -170,12 +170,13 @@ def run_guaranteed_budget_experiment(args: argparse.Namespace | None = None) -> 
         probe_scores,
         baseline_scores,
         thresholds,
-        risk=BudgetCostRisk,
+        risks=BudgetCostRisk,
         merge_strategy=config.cascade_merge_strategy,
     )
 
     # Compute p-values using the risk's appropriate bound (binomial for budget cost)
-    p_values = eval_result.compute_p_values(alpha=config.budget)
+    p_values_dict = eval_result.compute_p_values(alpha=config.budget)
+    p_values = p_values_dict["Budget Cost"]
 
     # run FST to find hyperparameters that guarantee budget control
     # the risks (and p-values) are already in the order in which we want them
@@ -198,7 +199,7 @@ def run_guaranteed_budget_experiment(args: argparse.Namespace | None = None) -> 
             test_size=len(test_dataset),
             probe_reduction_strategy=config.reduction_strategy,
             thresholds=eval_result.thresholds,
-            empirical_budget_risks=eval_result.empirical_risks,
+            empirical_budget_risks=eval_result["Budget Cost"],
             p_values=p_values,
             delta=delta,
             reliable_hyperparameters=list(reliable_hyperparameters),
@@ -254,7 +255,7 @@ def run_guaranteed_budget_experiment(args: argparse.Namespace | None = None) -> 
             test_size=len(test_dataset),
             probe_reduction_strategy=config.reduction_strategy,
             thresholds=eval_result.thresholds,
-            empirical_budget_risks=eval_result.empirical_risks,
+            empirical_budget_risks=eval_result["Budget Cost"],
             p_values=p_values,
             delta=delta,
             reliable_hyperparameters=list(reliable_hyperparameters),

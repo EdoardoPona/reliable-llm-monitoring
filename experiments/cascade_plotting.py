@@ -13,6 +13,49 @@ from cascade_comparison import CascadeComparisonResults
 from matplotlib.figure import Figure
 
 
+def plot_pareto_frontier(results: CascadeComparisonResults) -> Figure:
+    """Plot Pareto frontier from optimization set evaluation.
+
+    Note: This function should only be called when results.opt_evaluation_risks
+    and results.pareto_mask are not None.
+    """
+    assert results.opt_evaluation_risks is not None, "opt_evaluation_risks must not be None"
+    assert results.pareto_mask is not None, "pareto_mask must not be None"
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    # Get 2D empirical risks array (n_thresholds, 2)
+    empirical_risks_2d = results.opt_evaluation_risks.get_empirical_risks_array()
+    pareto_mask = results.pareto_mask
+
+    # Plot all points
+    ax.scatter(
+        empirical_risks_2d[:, 0],
+        empirical_risks_2d[:, 1],
+        alpha=0.5,
+        s=80,
+        c="gray",
+        label="Dominated",
+    )
+
+    # Highlight Pareto-efficient points
+    ax.scatter(
+        empirical_risks_2d[pareto_mask, 0],
+        empirical_risks_2d[pareto_mask, 1],
+        s=100,
+        c="red",
+        label="Pareto-efficient",
+    )
+
+    ax.set_xlabel("Budget Cost")
+    ax.set_ylabel("1-Accuracy")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    return fig
+
+
 def plot_overall_performance_comparison(results: CascadeComparisonResults) -> Figure:
     """Generate bar chart comparing overall performance metrics across all approaches.
 

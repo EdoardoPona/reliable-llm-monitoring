@@ -25,17 +25,17 @@ from dotenv import load_dotenv
 from models_under_pressure.experiments.monitoring_cascade import get_abbreviated_model_name
 
 from reliable_monitoring.cascade import offline_batch_cascade, run_llm_baseline
-from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset
-from reliable_monitoring.learn_then_test import fixed_sequence_testing
+from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset, split_dataset
+from reliable_monitoring.learn_then_test import fixed_sequence_testing, is_pareto
 from reliable_monitoring.probes import SequenceProbe
-from reliable_monitoring.risks import BudgetCostRisk, evaluate_threshold_risks
+from reliable_monitoring.risks import AccuracyRisk, BudgetCostRisk, ThresholdEvaluationResult, evaluate_threshold_risks
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DEBUG_SAMPLE_SIZE = 32
+DEBUG_SAMPLE_SIZE = 256
 
 
 @dataclass
@@ -188,6 +188,11 @@ class CascadeComparisonResults:
     fixed_overall_accuracy: float = scalar_field()
     fixed_overall_f1_score: float = scalar_field()
     fixed_overall_roc_auc: float = scalar_field()
+
+    calib_evaluation_risks: ThresholdEvaluationResult = artifact_field()
+    opt_evaluation_risks: ThresholdEvaluationResult | None = artifact_field()
+
+    pareto_mask: np.ndarray | None = artifact_field()  # Boolean mask
 
     # Derived statistics
     adaptive_budget_costs: np.ndarray = derived_field(
@@ -347,6 +352,16 @@ def run_cascade_comparison_experiment(args: argparse.Namespace) -> CascadeCompar
     logger.info(f"Calibration dataset size: {len(calib_dataset)}")
     logger.info(f"Test dataset size: {len(test_dataset)}")
 
+    if config.pareto_testing:
+        logger.info("Using Pareto testing")
+        # split the calibration dataset into two halves: one for optimisation the other for calibration
+        calib_dataset, opt_dataset = split_dataset(
+            calib_dataset,
+            proportions=[0.5, 0.5],
+            shuffle=True,
+            seed=seed,
+        )
+
     # Load or train probe
     logger.info("Fitting probe...")
     probe = SequenceProbe(reduction_strategy=config.reduction_strategy)
@@ -366,6 +381,17 @@ def run_cascade_comparison_experiment(args: argparse.Namespace) -> CascadeCompar
         baseline_batch_size=config.baseline_batch_size,
     )
 
+    if config.pareto_testing:
+        logger.info("Computing probe scores on optimisation dataset...")
+        opt_probe_scores = probe.predict(opt_dataset)
+
+        logger.info("Computing baseline scores on optimisation dataset...")
+        opt_baseline_scores = run_llm_baseline(
+            baseline_model_name=config.baseline_model_name,
+            dataset=opt_dataset,
+            baseline_batch_size=config.baseline_batch_size,
+        )
+
     # Evaluate empirical risks
     thresholds = np.linspace(
         getattr(config, "threshold_start", 0.5),
@@ -373,19 +399,60 @@ def run_cascade_comparison_experiment(args: argparse.Namespace) -> CascadeCompar
         getattr(config, "threshold_steps", 10),
     )
 
-    eval_result = evaluate_threshold_risks(
+    calib_eval_result = evaluate_threshold_risks(
         calib_probe_scores,
         calib_baseline_scores,
         thresholds,
-        risk=BudgetCostRisk,
+        risks=BudgetCostRisk,
         merge_strategy=config.cascade_merge_strategy,
     )
 
     # Compute p-values using the risk's appropriate bound (binomial for budget cost)
-    p_values = eval_result.compute_p_values(alpha=config.budget)
+    all_p_values = calib_eval_result.compute_p_values(alpha=config.budget)["Budget Cost"]
+
+    if config.pareto_testing:
+        logger.info("Performing Pareto testing with multiple risks...")
+
+        # Step 1: Evaluate both risks on optimization set only
+        opt_eval_result = evaluate_threshold_risks(
+            opt_probe_scores,
+            opt_baseline_scores,
+            thresholds,
+            risks=[BudgetCostRisk, AccuracyRisk],
+            dataset=opt_dataset,  # Required for AccuracyRisk
+            merge_strategy=config.cascade_merge_strategy,
+        )
+
+        # Step 2: Extract empirical risks into 2D array for Pareto computation
+        empirical_risks_2d = opt_eval_result.get_empirical_risks_array()
+        logger.info(f"Empirical risks shape: {empirical_risks_2d.shape}")
+
+        # Step 3: Find Pareto-efficient thresholds (minimize both risks)
+        pareto_mask = is_pareto(empirical_risks_2d, maximize=False)
+        n_pareto = pareto_mask.sum()
+        logger.info(f"Found {n_pareto}/{len(thresholds)} Pareto-efficient thresholds")
+
+        if n_pareto == 0:
+            logger.warning("No Pareto-efficient points found! Falling back to all thresholds.")
+            pareto_mask = np.ones(len(thresholds), dtype=bool)
+
+        # Step 4: Extract p-values and thresholds for only Pareto-efficient points
+        # Use the already-computed p-values from calib_eval_result (BudgetCostRisk only)
+        p_values = all_p_values[pareto_mask]
+        pareto_thresholds = thresholds[pareto_mask]
+
+        logger.info(f"P-values array length: {len(p_values)} (reduced from {len(thresholds)})")
+
+    else:
+        p_values = all_p_values
+        pareto_thresholds = thresholds  # No filtering
+        opt_eval_result = None
+        pareto_mask = None
+
+    # hypothesis testing to find reliable hyperparameters
+    delta = 1 - config.guarantee_probability
 
     # Apply fixed-sequence testing
-    delta = 1 - config.guarantee_probability
     reliable_hyperparams = fixed_sequence_testing(
         p_values=p_values,
         delta=delta,
@@ -397,8 +464,11 @@ def run_cascade_comparison_experiment(args: argparse.Namespace) -> CascadeCompar
         return None
 
     # Use most aggressive reliable threshold
-    best_idx = reliable_hyperparams[-1]
-    reliable_threshold = float(eval_result.thresholds[best_idx])
+    # For Pareto: reliable_hyperparams indexes into pareto_thresholds
+    # For non-Pareto: reliable_hyperparams indexes into thresholds (same thing)
+    best_idx = reliable_hyperparams[-1]  # TODO: generalise and allow choice of selection strategy
+    reliable_threshold = float(pareto_thresholds[best_idx])
+
     logger.info(f"Found reliable threshold: {reliable_threshold}")
 
     # Compute test scores
@@ -633,6 +703,10 @@ def run_cascade_comparison_experiment(args: argparse.Namespace) -> CascadeCompar
         fixed_overall_accuracy=fixed_overall_accuracy,
         fixed_overall_f1_score=fixed_overall_f1,
         fixed_overall_roc_auc=fixed_overall_roc_auc,
+        # Evaluation results
+        calib_evaluation_risks=calib_eval_result,
+        opt_evaluation_risks=opt_eval_result,
+        pareto_mask=pareto_mask,
     )
 
 
@@ -667,6 +741,7 @@ if __name__ == "__main__":
             plot_metric_boxplots,
             plot_overall_performance_comparison,
             plot_paired_method_comparison,
+            plot_pareto_frontier,
             plot_probe_uncertainty_vs_metrics,
             plot_summary_comparison,
         )
@@ -691,6 +766,12 @@ if __name__ == "__main__":
 
         # Cascade vs Probe performance
         fig_cascade_vs_probe = plot_cascade_vs_probe_performance(results)
+
+        # Pareto frontier (only if Pareto testing was used)
+        if results.opt_evaluation_risks is not None and results.pareto_mask is not None:
+            fig_pareto = plot_pareto_frontier(results)
+        else:
+            fig_pareto = None
 
         # Log to ClearML if enabled
         if clearml_logger:
@@ -756,6 +837,14 @@ if __name__ == "__main__":
                 series="Cascade vs Probe Performance",
                 figure=fig_cascade_vs_probe,
             )
+
+            # Log Pareto frontier only if it exists
+            if fig_pareto is not None:
+                clearml_logger.log_figure(
+                    title="Pareto Frontier",
+                    series="Pareto Frontier",
+                    figure=fig_pareto,
+                )
 
             # Close figures to free memory
             import matplotlib.pyplot as plt
