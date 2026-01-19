@@ -241,11 +241,6 @@ def parse_args():
 
     parser = argparse.ArgumentParser(description="Cascade Comparison Experiment")
     parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Run in debug mode with smaller datasets.",
-    )
-    parser.add_argument(
         "--config",
         type=str,
         default=str(default_config_path),
@@ -313,10 +308,12 @@ def compute_batch_statistics(
     )
 
 
-def run_cascade_comparison_experiment(args: argparse.Namespace) -> CascadeComparisonResults | None:
-    """Run the cascade comparison experiment."""
-    config = load_config(args.config)
+def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None:
+    """Run the cascade comparison experiment.
 
+    Args:
+        config: Configuration object loaded from YAML file.
+    """
     seed = config.seed
     np.random.seed(seed)
 
@@ -342,7 +339,8 @@ def run_cascade_comparison_experiment(args: argparse.Namespace) -> CascadeCompar
         activation_config=activation_config,
     )
 
-    if args.debug:
+    debug_mode = getattr(config, "debug", False)
+    if debug_mode:
         logger.warning("Running in debug mode with smaller datasets.")
         train_dataset = sample_from_dataset(train_dataset, DEBUG_SAMPLE_SIZE, seed=seed)
         calib_dataset = sample_from_dataset(calib_dataset, DEBUG_SAMPLE_SIZE, seed=seed)
@@ -632,7 +630,7 @@ def run_cascade_comparison_experiment(args: argparse.Namespace) -> CascadeCompar
     return CascadeComparisonResults(
         config=vars(config),
         seed=seed,
-        debug_mode=args.debug,
+        debug_mode=debug_mode,
         test_size=len(test_dataset),
         cascade_batch_size=cascade_batch_size,
         num_batches=num_batches,
@@ -718,6 +716,9 @@ if __name__ == "__main__":
 
     args = parse_args()
 
+    # Load configuration
+    config = load_config(args.config)
+
     # Initialize ClearML logger if enabled
     clearml_logger = None
     if args.use_clearml:
@@ -728,7 +729,7 @@ if __name__ == "__main__":
         )
 
     # Run experiment
-    results = run_cascade_comparison_experiment(args)
+    results = run_cascade_comparison_experiment(config)
 
     # Skip logging if experiment failed (no reliable threshold found)
     if results is None:
@@ -780,13 +781,14 @@ if __name__ == "__main__":
 
             # Add tags
             tags = []
-            if results.debug_mode:
+            if args.debug_mode:
                 tags.append("debug")
-            tags.append(f"budget_{results.budget:.2f}")
-            tags.append(f"probe_{results.config['reduction_strategy']}")
-            tags.append(f"merge_{results.config['cascade_merge_strategy']}")
-            tags.append(f"baseline_model_{get_abbreviated_model_name(results.config['baseline_model_name'])}")
-            tags.append(f"activations_model_{get_abbreviated_model_name(results.config['activations_model_name'])}")
+            tags.append(f"budget-{results.budget:.2f}")
+            tags.append(f"probe-{results.config['reduction_strategy']}")
+            tags.append(f"merge-{results.config['cascade_merge_strategy']}")
+            tags.append(f"baseline_model-{get_abbreviated_model_name(results.config['baseline_model_name'])}")
+            tags.append(f"activations_model-{get_abbreviated_model_name(results.config['activations_model_name'])}")
+            tags.append(f"pareto_testing-{args.pareto_testing}")
             clearml_logger.add_tags(tags)
 
             # Use serializer for clean data extraction
