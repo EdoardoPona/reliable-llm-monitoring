@@ -22,7 +22,7 @@ from clearml_serialization import (
 )
 from config import load_config
 from dotenv import load_dotenv
-from models_under_pressure.experiments.monitoring_cascade import get_abbreviated_model_name
+from matplotlib.figure import Figure
 
 from reliable_monitoring.cascade import offline_batch_cascade, run_llm_baseline
 from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset, split_dataset
@@ -708,11 +708,132 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
     )
 
 
+def make_figures(results: CascadeComparisonResults) -> dict[str, Figure | None | dict[str, Figure]]:
+    """Generate all figures for the cascade comparison results."""
+    # Compute all the figures
+    from cascade_plotting import (
+        plot_batch_distributions,
+        plot_cascade_vs_probe_performance,
+        plot_metric_boxplots,
+        plot_overall_performance_comparison,
+        plot_paired_method_comparison,
+        plot_pareto_frontier,
+        plot_probe_uncertainty_vs_metrics,
+        plot_summary_comparison,
+    )
+
+    figures: dict[str, Figure | None | dict[str, Figure]] = {}
+    # Overall performance comparison
+    figures["overall"] = plot_overall_performance_comparison(results)
+    # Summary bar chart
+    figures["summary"] = plot_summary_comparison(results)
+    # Distribution histograms
+    figures["distributions"] = plot_batch_distributions(results)
+    # Probe uncertainty correlation
+    figures["probe_uncertainty"] = plot_probe_uncertainty_vs_metrics(results)
+    # Paired method comparison
+    figures["paired"] = plot_paired_method_comparison(results)
+    # Box plots
+    figures["boxes"] = plot_metric_boxplots(results)
+    # Cascade vs Probe performance
+    figures["cascade_vs_probe"] = plot_cascade_vs_probe_performance(results)
+
+    # Pareto frontier (only if Pareto testing was used)
+    if results.opt_evaluation_risks is not None and results.pareto_mask is not None:
+        figures["pareto"] = plot_pareto_frontier(results)
+    else:
+        figures["pareto"] = None
+    return figures
+
+
+def log_to_clearml(
+    clearml_logger: "ClearMLLogger",
+    results: CascadeComparisonResults,
+    figures: dict[str, Figure | None | dict[str, Figure]],
+):
+    """log the experiment results to ClearML"""
+    # Log configuration
+    clearml_logger.connect_configuration(results.config)
+
+    # Add tags
+    tags = []
+    if args.debug_mode:
+        tags.append("debug")
+    tags.append(f"budget-{results.budget:.2f}")
+    tags.append(f"probe-{results.config['reduction_strategy']}")
+    tags.append(f"merge-{results.config['cascade_merge_strategy']}")
+    tags.append(f"pareto_testing-{args.pareto_testing}")
+    clearml_logger.add_tags(tags)
+
+    # Use serializer for clean data extraction
+    serializer = ClearMLSerializer()
+    clearml_logger.log_scalars(serializer.to_clearml_scalars(results))
+    clearml_logger.log_artifacts(serializer.to_clearml_artifacts(results))
+
+    logger.info("Generating comparison plots...")
+
+    clearml_logger.log_figure(
+        title="Comparison",
+        series="Overall Performance",
+        figure=figures["overall"],
+    )
+
+    clearml_logger.log_figure(
+        title="Comparison",
+        series="Summary Statistics",
+        figure=figures["summary"],
+    )
+    if figures["distributions"] is not None:
+        for metric_name, fig in figures["distributions"].items():  # type: ignore
+            clearml_logger.log_figure(
+                title="Distributions",
+                series=metric_name,
+                figure=fig,
+            )
+
+    clearml_logger.log_figure(
+        title="Analysis",
+        series="Probe Uncertainty vs Performance",
+        figure=figures["probe_uncertainty"],
+    )
+
+    clearml_logger.log_figure(
+        title="Analysis",
+        series="Paired Method Comparison",
+        figure=figures["paired"],
+    )
+
+    clearml_logger.log_figure(
+        title="Comparison",
+        series="Metric Ranges",
+        figure=figures["boxes"],
+    )
+
+    clearml_logger.log_figure(
+        title="Analysis",
+        series="Cascade vs Probe Performance",
+        figure=figures["cascade_vs_probe"],
+    )
+
+    # Log Pareto frontier only if it exists
+    if figures["pareto"] is not None:
+        clearml_logger.log_figure(
+            title="Pareto Frontier",
+            series="Pareto Frontier",
+            figure=figures["pareto"],
+        )
+
+    # Close figures to free memory
+    import matplotlib.pyplot as plt
+
+    plt.close("all")
+
+    logger.info("All plots generated and logged to ClearML")
+    clearml_logger.finalize()
+
+
 if __name__ == "__main__":
     import os
-
-    from clearml_logger import ClearMLLogger
-    from clearml_serialization import ClearMLSerializer
 
     args = parse_args()
 
@@ -722,6 +843,9 @@ if __name__ == "__main__":
     # Initialize ClearML logger if enabled
     clearml_logger = None
     if args.use_clearml:
+        from clearml_logger import ClearMLLogger
+        from clearml_serialization import ClearMLSerializer
+
         clearml_logger = ClearMLLogger(
             project_name=os.environ.get("CLEARML_PROJECT_NAME", "reliable-llm-monitoring"),
             task_name="cascade_comparison_experiment",
@@ -735,125 +859,9 @@ if __name__ == "__main__":
     if results is None:
         logger.warning("Experiment failed: no reliable threshold found.")
     else:
-        # Compute all the figures
-        from cascade_plotting import (
-            plot_batch_distributions,
-            plot_cascade_vs_probe_performance,
-            plot_metric_boxplots,
-            plot_overall_performance_comparison,
-            plot_paired_method_comparison,
-            plot_pareto_frontier,
-            plot_probe_uncertainty_vs_metrics,
-            plot_summary_comparison,
-        )
+        figures = make_figures(results)
 
-        # Overall performance comparison
-        fig_overall = plot_overall_performance_comparison(results)
-
-        # Summary bar chart
-        fig_summary = plot_summary_comparison(results)
-
-        # Distribution histograms
-        fig_dists = plot_batch_distributions(results)
-
-        # Probe uncertainty correlation
-        fig_probe_uncertainty = plot_probe_uncertainty_vs_metrics(results)
-
-        # Paired method comparison
-        fig_paired = plot_paired_method_comparison(results)
-
-        # Box plots
-        fig_boxes = plot_metric_boxplots(results)
-
-        # Cascade vs Probe performance
-        fig_cascade_vs_probe = plot_cascade_vs_probe_performance(results)
-
-        # Pareto frontier (only if Pareto testing was used)
-        if results.opt_evaluation_risks is not None and results.pareto_mask is not None:
-            fig_pareto = plot_pareto_frontier(results)
-        else:
-            fig_pareto = None
-
-        # Log to ClearML if enabled
-        if clearml_logger:
-            # Log configuration
-            clearml_logger.connect_configuration(results.config)
-
-            # Add tags
-            tags = []
-            if args.debug_mode:
-                tags.append("debug")
-            tags.append(f"budget-{results.budget:.2f}")
-            tags.append(f"probe-{results.config['reduction_strategy']}")
-            tags.append(f"merge-{results.config['cascade_merge_strategy']}")
-            tags.append(f"baseline_model-{get_abbreviated_model_name(results.config['baseline_model_name'])}")
-            tags.append(f"activations_model-{get_abbreviated_model_name(results.config['activations_model_name'])}")
-            tags.append(f"pareto_testing-{args.pareto_testing}")
-            clearml_logger.add_tags(tags)
-
-            # Use serializer for clean data extraction
-            serializer = ClearMLSerializer()
-            clearml_logger.log_scalars(serializer.to_clearml_scalars(results))
-            clearml_logger.log_artifacts(serializer.to_clearml_artifacts(results))
-
-            logger.info("Generating comparison plots...")
-
-            clearml_logger.log_figure(
-                title="Comparison",
-                series="Overall Performance",
-                figure=fig_overall,
-            )
-
-            clearml_logger.log_figure(
-                title="Comparison",
-                series="Summary Statistics",
-                figure=fig_summary,
-            )
-            for metric_name, fig in fig_dists.items():
-                clearml_logger.log_figure(
-                    title="Distributions",
-                    series=metric_name,
-                    figure=fig,
-                )
-
-            clearml_logger.log_figure(
-                title="Analysis",
-                series="Probe Uncertainty vs Performance",
-                figure=fig_probe_uncertainty,
-            )
-
-            clearml_logger.log_figure(
-                title="Analysis",
-                series="Paired Method Comparison",
-                figure=fig_paired,
-            )
-
-            clearml_logger.log_figure(
-                title="Comparison",
-                series="Metric Ranges",
-                figure=fig_boxes,
-            )
-
-            clearml_logger.log_figure(
-                title="Analysis",
-                series="Cascade vs Probe Performance",
-                figure=fig_cascade_vs_probe,
-            )
-
-            # Log Pareto frontier only if it exists
-            if fig_pareto is not None:
-                clearml_logger.log_figure(
-                    title="Pareto Frontier",
-                    series="Pareto Frontier",
-                    figure=fig_pareto,
-                )
-
-            # Close figures to free memory
-            import matplotlib.pyplot as plt
-
-            plt.close("all")
-
-            logger.info("All plots generated and logged to ClearML")
-            clearml_logger.finalize()
+        if clearml_logger is not None:
+            log_to_clearml(clearml_logger, results, figures)
 
     logger.info("Experiment complete!")
