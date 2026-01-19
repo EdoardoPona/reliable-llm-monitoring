@@ -241,7 +241,7 @@ def split_dataset(
     dataset: LabelledDataset,
     proportions: Sequence[float],
     shuffle: bool = True,
-    random_seed: int | None = None,
+    seed: int | None = None,
 ) -> list[LabelledDataset]:
     """
     Split a LabelledDataset into multiple subsets according to specified proportions.
@@ -251,7 +251,7 @@ def split_dataset(
         proportions: A sequence of floats (e.g. [0.6, 0.2, 0.2]) that sum to 1.0.
                     Determines the relative sizes of the returned subsets.
         shuffle: Whether to shuffle the dataset before splitting. Default: True
-        random_seed: Seed for reproducibility. If None, uses random state.
+        seed: Seed for reproducibility. If None, uses random state.
 
     Returns:
         A list of LabelledDataset objects split according to proportions.
@@ -265,9 +265,9 @@ def split_dataset(
     if not np.isclose(total, 1.0):
         raise ValueError(f"Proportions must sum to 1.0, got {total}")
 
-    if random_seed is not None:
-        random.seed(random_seed)
-        np.random.seed(random_seed)
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
 
     # Create indices
     indices = list(range(len(dataset)))
