@@ -25,28 +25,33 @@ logger = logging.getLogger(__name__)
 
 BASE_CONFIG = {
     # Fixed values (do not change across experiments)
-    "budget": 0.4,
-    "cascade_merge_strategy": "avg",
-    "guarantee_probability": 0.95,
+    # "budget": 0.4,
+    # "cascade_merge_strategy": "avg",
+    "guarantee_probability": 0.9,
     "reduction_strategy": "mean",
     "cascade_batch_size": 128,
     "baseline_batch_size": 16,
     "activations_model_name": "meta-llama/Llama-3.2-1B-Instruct",
+    # "baseline_model_name": "meta-llama/Llama-3.2-1B-Instruct",
     "activations_layer": 11,
-    "baseline_model_name": "meta-llama/Llama-3.2-1B-Instruct",
     "train_dataset_path": "${DATA_DIR}/training/prompts_4x/train.jsonl",
     "calib_dataset_path": "${DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl",
     "test_dataset_path": "${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl",
     "seed": 42,
-    "debug": True,
+    "debug": False,
 }
 
 # Values to sweep over. Order matters (insertion order defines iteration order).
 SWEEP_CONFIG = {
     # Examples:
-    # "budget": [0.25, 0.4, 0.6],
-    # "cascade_merge_strategy": ["avg", "replace"],
+    "budget": [0.25, 0.5, 0.75],
+    "cascade_merge_strategy": ["avg", "replace"],
     "pareto_testing": [True, False],
+    "baseline_model_name": [
+        "meta-llama/Llama-3.2-1B-Instruct",
+        "meta-llama/Llama-3.2-3B-Instruct",
+        "meta-llama/Llama-3.1-8B-Instruct",
+    ],
 }
 
 
