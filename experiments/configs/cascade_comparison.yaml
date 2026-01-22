@@ -14,7 +14,7 @@ cascade_batch_size: 32
 
 # Batch size for baseline model inference
 # this cannot be less than 2, and should be even to avoid losing data
-baseline_batch_size: 16
+baseline_batch_size: 32
 
 # The strategy to merge probe and baseline scores in the cascade
 cascade_merge_strategy: avg
@@ -39,3 +39,7 @@ test_dataset_path: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
 
 # Random seed for reproducibility
 seed: 42
+
+debug: true
+
+pareto_testing: false

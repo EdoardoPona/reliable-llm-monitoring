@@ -35,7 +35,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DEBUG_SAMPLE_SIZE = 256
+DEBUG_SAMPLE_SIZE = 64
 
 
 @dataclass
@@ -757,12 +757,12 @@ def log_to_clearml(
 
     # Add tags
     tags = []
-    if args.debug_mode:
+    if results.debug_mode:
         tags.append("debug")
     tags.append(f"budget-{results.budget:.2f}")
     tags.append(f"probe-{results.config['reduction_strategy']}")
     tags.append(f"merge-{results.config['cascade_merge_strategy']}")
-    tags.append(f"pareto_testing-{args.pareto_testing}")
+    tags.append(f"pareto_testing-{results.config['pareto_testing']}")
     clearml_logger.add_tags(tags)
 
     # Use serializer for clean data extraction
@@ -862,6 +862,6 @@ if __name__ == "__main__":
         figures = make_figures(results)
 
         if clearml_logger is not None:
-            log_to_clearml(clearml_logger, results, figures)
+            log_to_clearml(clearml_logger, results=results, figures=figures)
 
     logger.info("Experiment complete!")
