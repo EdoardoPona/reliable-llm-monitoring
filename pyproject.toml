@@ -27,8 +27,7 @@ build-backend = "hatchling.build"
 packages = ["reliable_monitoring"]
 
 [tool.uv.sources.models-under-pressure]
-path = "/Users/ep/Documents/research/vrcp_proj/models-under-pressure"
-editable = true
+git = "ssh://git@github.com/EdoardoPona/models-under-pressure.git"
 
 [tool.ruff]
 line-length = 120
