@@ -173,6 +173,10 @@ def run_guaranteed_budget_experiment(args: argparse.Namespace | None = None) -> 
         risks=BudgetCostRisk,
         merge_strategy=config.cascade_merge_strategy,
     )
+    
+    logger.info("Empirical budget risks computed.")
+    for thr, risk in zip(eval_result.thresholds, eval_result["Budget Cost"], strict=True):
+        logger.info(f"Threshold: {thr:.4f}, Empirical Budget Risk: {risk:.4f}")
 
     # Compute p-values using the risk's appropriate bound (binomial for budget cost)
     p_values_dict = eval_result.compute_p_values(alpha=config.budget)
