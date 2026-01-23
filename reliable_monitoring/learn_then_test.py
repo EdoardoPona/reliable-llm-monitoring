@@ -1,7 +1,7 @@
 import numpy as np
 
 
-def is_pareto(costs, *, maximize: bool = False):
+def is_pareto(costs, *, maximize: bool = False) -> np.ndarray:
     """
     Return a boolean mask indicating Pareto-efficient points.
 
@@ -32,7 +32,7 @@ def is_pareto(costs, *, maximize: bool = False):
     return is_efficient
 
 
-def fixed_sequence_testing(p_values, delta):
+def fixed_sequence_testing(p_values: np.ndarray, delta: float) -> list[int]:
     """
     Fixed-sequence testing for an *ordered* 1D sequence of p-values.
 
