@@ -202,8 +202,8 @@ def _compute_raw_activations(
 
     Returns:
         Tuple of (activations, inputs) where activations is a tensor of shape
-        (n_samples, seq_len, hidden_dim) and inputs contains input_ids and
-        attention_mask tensors.
+        (n_layers, n_samples, seq_len, hidden_dim) and inputs contains
+        input_ids and attention_mask tensors.
     """
     # Returns activations with shape (n_layers, n_samples, seq_len, hidden_dim)
     return model.get_batched_activations_for_layers(
