@@ -86,8 +86,8 @@ def reduce_activations(
             - Dict mapping names to strategies:
               {"mean": "mean", "max": "max"} → adds "activations_mean" and "activations_max"
               {"custom": my_fn} → adds "activations_custom" field
-        activation_field: Name of field containing raw activations (default: "activations")
-        mask_field: Name of field containing attention mask (default: "attention_mask")
+        activation_field: Name of field containing raw activations
+        mask_field: Name of field containing attention mask
         drop_raw: If True, remove raw activation field after reduction to save memory
         batch_size: Batch size for reduction computation
         device: Device to use for computation (auto-detected if None)
@@ -312,11 +312,11 @@ def load_dataset(
         drop_raw_after_reduction: If True, remove raw activations after computing
             reductions to save memory (only applies if compute_reductions=True)
         reduction_batch_size: Batch size for reduction computation
-        auto_compute: If True, compute activations if not present (default False)
-        cleanup_after_load: If True, delete activation files after loading (default False)
+        auto_compute: If True, compute activations if not present
+        cleanup_after_load: If True, delete activation files after loading
         model: Model for activation computation - either model name (str) or
             pre-loaded LLMModel instance. Uses activation_config.model_name if None.
-        compute_batch_size: Batch size for activation computation (default 4)
+        compute_batch_size: Batch size for activation computation
 
     Returns:
         Loaded dataset with optional activation fields
