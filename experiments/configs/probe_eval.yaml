@@ -1,6 +1,6 @@
 # Probe Evaluation Experiment Configuration
 
-# Required for config validation
+# Experiment budget
 budget: 0.5
 
 # Dataset paths
