@@ -1,12 +1,18 @@
+from __future__ import annotations
+
 import random
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
 from models_under_pressure.activation_store import ActivationStore
 from models_under_pressure.interfaces.dataset import LabelledDataset
+
+if TYPE_CHECKING:
+    from models_under_pressure.model import LLMModel
 
 
 @dataclass
@@ -26,6 +32,32 @@ class ActivationConfig:
     model_name: str
     layer: int
     aggregation_strategy: None | str | dict[str, Callable | None] = None
+
+
+@dataclass
+class EvalDataset:
+    """
+    A paired dev/test dataset for evaluation.
+    These should always be statistically exchangeable (we use them as calibration sets).
+    """
+    name: str
+    dev: Path
+    test: Path
+
+
+# Paths relative to BASE_DATA_DIR
+TRAIN_DATASET = Path("training/prompts_4x/train.jsonl")
+
+EVAL_DATASETS: list[EvalDataset] = [
+    EvalDataset("anthropic_balanced", Path("evals/dev/anthropic_balanced_apr_23.jsonl"), Path("evals/test/anthropic_test_balanced_apr_23.jsonl")),
+    EvalDataset("anthropic_raw", Path("evals/dev/anthropic_raw_apr_23.jsonl"), Path("evals/test/anthropic_test_raw_apr_23.jsonl")),
+    EvalDataset("mt_balanced", Path("evals/dev/mt_balanced_apr_30.jsonl"), Path("evals/test/mt_test_balanced_apr_30.jsonl")),
+    EvalDataset("mt_raw", Path("evals/dev/mt_raw_apr_30.jsonl"), Path("evals/test/mt_test_raw_apr_30.jsonl")),
+    EvalDataset("mts_balanced", Path("evals/dev/mts_balanced_apr_22.jsonl"), Path("evals/test/mts_test_balanced_apr_22.jsonl")),
+    EvalDataset("mts_raw", Path("evals/dev/mts_raw_apr_22.jsonl"), Path("evals/test/mts_test_raw_apr_22.jsonl")),
+    EvalDataset("toolace_balanced", Path("evals/dev/toolace_balanced_apr_22.jsonl"), Path("evals/test/toolace_test_balanced_apr_22.jsonl")),
+    EvalDataset("toolace_raw", Path("evals/dev/toolace_raw_apr_22.jsonl"), Path("evals/test/toolace_test_raw_apr_22.jsonl")),
+]
 
 
 def reduce_activations(
@@ -145,13 +177,127 @@ def reduce_activations(
     return dataset
 
 
+def _load_model(model: str | LLMModel, batch_size: int) -> LLMModel:
+    """Load model if given as string, otherwise return as-is."""
+    if isinstance(model, str):
+        from models_under_pressure.model import LLMModel as LLMModelClass
+
+        return LLMModelClass.load(model, batch_size=batch_size)
+    return model
+
+
+def _get_model_name(model: str | LLMModel) -> str:
+    """Get model name from string or LLMModel instance."""
+    if isinstance(model, str):
+        return model
+    return model.name
+
+
+def _compute_raw_activations(
+    dataset: LabelledDataset,
+    model: LLMModel,
+    layer: int,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Compute activations using a loaded model.
+
+    Returns:
+        Tuple of (activations, inputs) where activations is a tensor of shape
+        (n_samples, seq_len, hidden_dim) and inputs contains input_ids and
+        attention_mask tensors.
+    """
+    # Returns activations with shape (n_layers, n_samples, seq_len, hidden_dim)
+    return model.get_batched_activations_for_layers(
+        dataset=dataset,
+        layers=[layer],
+    )
+
+
+def enrich_with_activations(
+    dataset: LabelledDataset,
+    activations: torch.Tensor,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+) -> LabelledDataset:
+    """Attach activation tensors directly to a dataset.
+
+    Args:
+        dataset: Dataset to enrich
+        activations: Activation tensor of shape (n_samples, seq_len, hidden_dim)
+        input_ids: Input IDs tensor
+        attention_mask: Attention mask tensor
+
+    Returns:
+        Dataset with activation fields attached
+    """
+    return dataset.assign(
+        activations=activations,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+    )
+
+
+def compute_activations(
+    dataset_path: Path,
+    model: str | LLMModel,
+    layer: int,
+    *,
+    batch_size: int = 4,
+) -> None:
+    """Compute and store activations for a dataset.
+
+    Args:
+        dataset_path: Path to the dataset file
+        model: Model name (str) or pre-loaded LLMModel instance
+        layer: Layer number to extract activations from
+        batch_size: Batch size for processing (only used if model is a str)
+    """
+    from models_under_pressure.activation_store import ActivationsSpec
+
+    model_name = _get_model_name(model)
+
+    store = ActivationStore()
+    spec = ActivationsSpec(model_name=model_name, dataset_path=dataset_path, layer=layer)
+
+    if store.exists(spec):
+        return  # Already computed
+
+    loaded_model = _load_model(model, batch_size)
+    dataset = LabelledDataset.load_from(dataset_path)
+    activations, inputs = _compute_raw_activations(dataset, loaded_model, layer)
+
+    store.save(model_name, dataset_path, [layer], activations, inputs)
+
+
+def cleanup_activations(
+    dataset_path: Path,
+    model_name: str,
+    layer: int,
+) -> None:
+    """Delete stored activations for a dataset/model/layer combination.
+
+    Args:
+        dataset_path: Path to the dataset file
+        model_name: Name of the model
+        layer: Layer number
+    """
+    from models_under_pressure.activation_store import ActivationsSpec
+
+    store = ActivationStore()
+    spec = ActivationsSpec(model_name=model_name, dataset_path=dataset_path, layer=layer)
+    store.sync(add_specs=[], remove_specs=[spec])
+
+
 def load_dataset(
     dataset_path: Path,
     activation_config: ActivationConfig | None,
     *,
     compute_reductions: bool = False,
     drop_raw_after_reduction: bool = False,
-    reduction_batch_size: int = 256,
+    reduction_batch_size: int = 512,
+    auto_compute: bool = False,
+    cleanup_after_load: bool = False,
+    model: str | LLMModel | None = None,
+    compute_batch_size: int = 32,
 ) -> LabelledDataset:
     """Load dataset with optional activation enrichment and reduction.
 
@@ -166,9 +312,17 @@ def load_dataset(
         drop_raw_after_reduction: If True, remove raw activations after computing
             reductions to save memory (only applies if compute_reductions=True)
         reduction_batch_size: Batch size for reduction computation
+        auto_compute: If True, compute activations if not present (default False)
+        cleanup_after_load: If True, delete activation files after loading (default False)
+        model: Model for activation computation - either model name (str) or
+            pre-loaded LLMModel instance. Uses activation_config.model_name if None.
+        compute_batch_size: Batch size for activation computation (default 4)
 
     Returns:
         Loaded dataset with optional activation fields
+
+    Raises:
+        FileNotFoundError: If activations not found and auto_compute=False
 
     Examples:
         # Load without activations
@@ -177,6 +331,14 @@ def load_dataset(
         # Load with raw activations only
         config = ActivationConfig(model="llama", layer=11)
         dataset = load_dataset(path, config)
+
+        # Auto-compute activations if missing
+        config = ActivationConfig(model="llama", layer=11)
+        dataset = load_dataset(path, config, auto_compute=True)
+
+        # Load and cleanup activation files after loading
+        config = ActivationConfig(model="llama", layer=11)
+        dataset = load_dataset(path, config, cleanup_after_load=True)
 
         # Load and immediately compute reduction, keep raw
         config = ActivationConfig(model="llama", layer=11, aggregation_strategy="mean")
@@ -191,20 +353,81 @@ def load_dataset(
             drop_raw_after_reduction=True
         )
         # Only has "activations_mean", raw "activations" dropped
+
+        # Compute in-memory (no disk I/O) when auto-computing ephemeral activations
+        config = ActivationConfig(model="llama", layer=11)
+        dataset = load_dataset(path, config, auto_compute=True, cleanup_after_load=True)
+        # Activations computed in memory, never written to disk
     """
     dataset = LabelledDataset.load_from(dataset_path)
     if not activation_config:
         return dataset
 
-    # Load and attach precomputed activations
-    store = ActivationStore()  # uses DATA_DIR/activations via config
-    dataset = store.enrich(
-        dataset=dataset,
-        path=dataset_path,
+    from models_under_pressure.activation_store import ActivationsSpec
+
+    store = ActivationStore()
+    spec = ActivationsSpec(
         model_name=activation_config.model_name,
+        dataset_path=dataset_path,
         layer=activation_config.layer,
-        mmap=True,  # Use memory-mapped files for large datasets
     )
+
+    activations_exist = store.exists(spec)
+
+    # Use in-memory computation when we'd compute and immediately delete (no point saving)
+    use_in_memory = auto_compute and cleanup_after_load and not activations_exist
+
+    if use_in_memory:
+        # Compute activations in memory without disk I/O
+        loaded_model = _load_model(
+            model if model is not None else activation_config.model_name,
+            compute_batch_size,
+        )
+        activations, inputs = _compute_raw_activations(
+            dataset, loaded_model, activation_config.layer
+        )
+        # activations has shape (n_layers, n_samples, seq_len, hidden_dim)
+        # Extract the single layer with [0]
+        dataset = enrich_with_activations(
+            dataset,
+            activations[0],
+            inputs["input_ids"],
+            inputs["attention_mask"],
+        )
+    else:
+        # Standard path: load from disk, computing first if needed
+        if not activations_exist:
+            if not auto_compute:
+                raise FileNotFoundError(
+                    f"Activations not found for {activation_config.model_name} "
+                    f"layer {activation_config.layer} on {dataset_path}. "
+                    f"Set auto_compute=True to compute them automatically."
+                )
+            compute_activations(
+                dataset_path=dataset_path,
+                model=model if model is not None else activation_config.model_name,
+                layer=activation_config.layer,
+                batch_size=compute_batch_size,
+            )
+            # Recreate store to pick up newly saved activations
+            store = ActivationStore()
+
+        # Load and attach activations from disk
+        dataset = store.enrich(
+            dataset=dataset,
+            path=dataset_path,
+            model_name=activation_config.model_name,
+            layer=activation_config.layer,
+            mmap=True,
+        )
+
+        # Cleanup if requested
+        if cleanup_after_load:
+            cleanup_activations(
+                dataset_path=dataset_path,
+                model_name=activation_config.model_name,
+                layer=activation_config.layer,
+            )
 
     # Compute reductions if requested and configured
     if compute_reductions and activation_config.aggregation_strategy is not None:
