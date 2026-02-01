@@ -39,6 +39,10 @@ BASE_CONFIG = {
     "test_dataset_path": "${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl",
     "seed": 42,
     "debug": False,
+    "threshold_start": 0.75,
+    "threshold_end": 1.0,
+    "threshold_steps": 25,
+    "calibrate_probe": False,
 }
 
 # Values to sweep over. Order matters (insertion order defines iteration order).
@@ -50,7 +54,7 @@ SWEEP_CONFIG = {
     "baseline_model_name": [
         "meta-llama/Llama-3.2-1B-Instruct",
         "meta-llama/Llama-3.2-3B-Instruct",
-        "meta-llama/Llama-3.1-8B-Instruct",
+        # "meta-llama/Llama-3.1-8B-Instruct",
     ],
 }
 
