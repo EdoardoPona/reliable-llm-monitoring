@@ -9,14 +9,14 @@ dev_dataset_path: ${DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl
 test_dataset_path: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
 
 # Probe configuration
-reduction_strategy: mean
+reduction_strategy: last
 
 # Activation configuration
 activations_model_name: meta-llama/Llama-3.2-1B-Instruct
 activations_layer: 11
 
 # Whether to automatically compute activations if they don't exist
-auto_compute_activations: false
+auto_compute_activations: true
 
 # Whether to delete activation files after loading to free disk space
 cleanup_activations_after_load: false
@@ -28,5 +28,5 @@ seed: 42
 debug: false
 
 # Batch sizes
-activation_batch_size: 64  # Batch size for computing activations
+activation_batch_size: 32  # Batch size for computing activations
 reduction_batch_size: 512  # Batch size for reduction operations

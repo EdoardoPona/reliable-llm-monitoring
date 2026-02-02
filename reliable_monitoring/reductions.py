@@ -139,22 +139,31 @@ def reduce_last(
     activations: torch.Tensor,
     attention_mask: torch.Tensor,
 ) -> torch.Tensor:
-    """Take the last non-masked token for each sequence.
+    """Take the last token with non-zero activations for each sequence.
 
-    Extracts the representation of the final valid (non-masked) token
-    in each sequence. Useful for autoregressive models.
+    Finds the last position with non-zero activations rather than relying
+    on the attention mask, which may not accurately reflect activation boundaries
+    due to batch processing in the upstream activation computation.
 
     Args:
         activations: Input activations, shape (batch, seq_len, hidden_dim)
         attention_mask: Binary mask for valid tokens, shape (batch, seq_len)
+            Note: This parameter is kept for API compatibility but not used.
 
     Returns:
         Last-token activations, shape (batch, hidden_dim)
     """
-    # Get the index of the last non-masked token for each sequence
-    lengths = attention_mask.sum(dim=1).long() - 1  # -1 for 0-indexing
+    # Find positions with non-zero activations (sum of absolute values > 0)
+    nonzero_mask = activations.abs().sum(dim=-1) > 0  # (batch, seq_len)
+    seq_len = activations.size(1)
+
+    # Find last non-zero position by flipping and using argmax
+    # argmax returns first occurrence, so on flipped tensor it finds last non-zero
+    flipped = nonzero_mask.flip(dims=[1])
+    last_nonzero_idx = seq_len - 1 - flipped.long().argmax(dim=1)
+
     batch_indices = torch.arange(activations.size(0), device=activations.device)
-    return activations[batch_indices, lengths]  # (batch, hidden_dim)
+    return activations[batch_indices, last_nonzero_idx]  # (batch, hidden_dim)
 
 
 @register_reduction("first")
