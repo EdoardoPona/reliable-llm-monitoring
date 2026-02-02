@@ -11,6 +11,7 @@ from typing import Protocol, runtime_checkable
 import numpy as np
 import torch
 from models_under_pressure.interfaces.dataset import LabelledDataset
+from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 
 
@@ -43,6 +44,15 @@ class Probe(Protocol):
 
         Returns:
             Array of probabilities for positive class, shape (n_samples,)
+        """
+        ...
+
+    def calibrate(self, dataset: LabelledDataset, method: str = "platt-scaling") -> None:
+        """Calibrate the probe's probability outputs.
+
+        Args:
+            dataset: Dataset with labels and features in other_fields
+            method: Calibration method - "platt-scaling" or "isotonic-regression"
         """
         ...
 
@@ -79,6 +89,7 @@ class LinearProbe:
         """
         self.activation_field = activation_field
         self.clf = LogisticRegression(max_iter=max_iter, **sklearn_kwargs)
+        self.calibration_clf: LogisticRegression | IsotonicRegression | None = None
 
     def fit(self, dataset: LabelledDataset) -> None:
         """Train the probe on reduced activations.
@@ -130,7 +141,54 @@ class LinearProbe:
         if isinstance(X, torch.Tensor):
             X = X.numpy()
 
-        return self.clf.predict_proba(X)[:, 1]
+        scores = self.clf.predict_proba(X)[:, 1]
+
+        # Apply calibration if fitted
+        if self.calibration_clf is not None:
+            if isinstance(self.calibration_clf, IsotonicRegression):
+                scores = self.calibration_clf.predict(scores)
+            else:
+                scores = self.calibration_clf.predict_proba(scores.reshape(-1, 1))[:, 1]
+
+        return scores
+
+    def calibrate(self, dataset: LabelledDataset, method: str = "platt-scaling") -> None:
+        """Calibrate the probe's probability outputs.
+
+        Args:
+            dataset: Dataset with self.activation_field in other_fields
+            method: Calibration method - "platt-scaling" or "isotonic-regression"
+
+        Raises:
+            ValueError: If the required activation field is missing or method is invalid
+        """
+        if method not in ("platt-scaling", "isotonic-regression"):
+            raise ValueError(f"Unknown calibration method: {method}")
+
+        if self.activation_field not in dataset.other_fields:
+            raise ValueError(
+                f"Dataset missing field '{self.activation_field}'. "
+                f"Did you forget to call reduce_activations()? "
+                f"Available fields: {list(dataset.other_fields.keys())}"
+            )
+
+        X = dataset.other_fields[self.activation_field]
+        y = dataset.labels_numpy()
+
+        # Convert to numpy if tensor
+        if isinstance(X, torch.Tensor):
+            X = X.numpy()
+
+        # Get current probe scores
+        scores = self.clf.predict_proba(X)[:, 1]
+
+        # Fit calibration model
+        if method == "platt-scaling":
+            self.calibration_clf = LogisticRegression(max_iter=1000)
+            self.calibration_clf.fit(scores.reshape(-1, 1), y)
+        else:  # isotonic-regression
+            self.calibration_clf = IsotonicRegression(out_of_bounds="clip")
+            self.calibration_clf.fit(scores, y)
 
 
 class SequenceProbe:
@@ -168,6 +226,7 @@ class SequenceProbe:
         self.reduction_strategy = reduction_strategy
         self.batch_size = batch_size
         self.clf = LogisticRegression(max_iter=max_iter, **sklearn_kwargs)
+        self.calibration_clf: LogisticRegression | IsotonicRegression | None = None
 
     def _get_reduced_activations(self, dataset: LabelledDataset) -> np.ndarray:
         """Compute reduced activations from raw sequence activations."""
@@ -235,4 +294,46 @@ class SequenceProbe:
             raise ValueError("Dataset missing 'attention_mask' field")
 
         X = self._get_reduced_activations(dataset)
-        return self.clf.predict_proba(X)[:, 1]
+        scores = self.clf.predict_proba(X)[:, 1]
+
+        # Apply calibration if fitted
+        if self.calibration_clf is not None:
+            if isinstance(self.calibration_clf, IsotonicRegression):
+                scores = self.calibration_clf.predict(scores)
+            else:
+                scores = self.calibration_clf.predict_proba(scores.reshape(-1, 1))[:, 1]
+
+        return scores
+
+    def calibrate(self, dataset: LabelledDataset, method: str = "platt-scaling") -> None:
+        """Calibrate the probe's probability outputs.
+
+        Args:
+            dataset: Dataset with "activations" and "attention_mask" fields
+            method: Calibration method - "platt-scaling" or "isotonic-regression"
+
+        Raises:
+            ValueError: If required fields are missing or method is invalid
+        """
+        if method not in ("platt-scaling", "isotonic-regression"):
+            raise ValueError(f"Unknown calibration method: {method}")
+
+        if "activations" not in dataset.other_fields:
+            raise ValueError("Dataset missing 'activations' field")
+        if "attention_mask" not in dataset.other_fields:
+            raise ValueError("Dataset missing 'attention_mask' field")
+
+        X = self._get_reduced_activations(dataset)
+        y = dataset.labels_numpy()
+
+        # Get current probe scores
+        scores = self.clf.predict_proba(X)[:, 1]
+
+        # Fit calibration model
+        if method == "platt-scaling":
+            self.calibration_clf = LogisticRegression(max_iter=1000)
+            self.calibration_clf.fit(scores.reshape(-1, 1), y)
+        else:  # isotonic-regression
+            self.calibration_clf = IsotonicRegression(out_of_bounds="clip")
+            self.calibration_clf.fit(scores, y)
+

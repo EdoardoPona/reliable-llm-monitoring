@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 from matplotlib.figure import Figure
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 
-from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset
+from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset, split_dataset
 from reliable_monitoring.probes import SequenceProbe
 
 load_dotenv()
@@ -186,12 +186,26 @@ def run_probe_eval(config) -> ProbeEvalResults:
         dev_dataset = sample_from_dataset(dev_dataset, min(DEBUG_SAMPLE_SIZE, len(dev_dataset)), seed=seed)
         test_dataset = sample_from_dataset(test_dataset, min(DEBUG_SAMPLE_SIZE, len(test_dataset)), seed=seed)
 
+    calibration_method = getattr(config, "calibration_method", None)
+    if calibration_method:
+        logger.info(f"Preparing dev dataset split for probe calibration ({calibration_method})")
+        dev_dataset, probe_calib_dataset = split_dataset(
+            dev_dataset,
+            proportions=[0.7, 0.3],
+            shuffle=True,
+            seed=seed,
+        ) 
+
     logger.info(f"Train size: {len(train_dataset)}, Dev size: {len(dev_dataset)}, Test size: {len(test_dataset)}")
 
     # Train probe
     logger.info(f"Fitting probe with reduction strategy: {config.reduction_strategy}")
     probe = SequenceProbe(reduction_strategy=config.reduction_strategy)
     probe.fit(train_dataset)
+
+    if calibration_method:
+        logger.info(f"Calibrating probe probabilities with {calibration_method}")
+        probe.calibrate(probe_calib_dataset, method=calibration_method)
 
     # Get predictions
     train_scores = probe.predict(train_dataset)
@@ -333,6 +347,10 @@ def log_to_clearml(
 
     # Layer
     tags.append(f"layer-{results.layer}")
+
+    # calibration
+    calibration_method = results.config.get("calibration_method")
+    tags.append(f"calibration-{calibration_method}" if calibration_method else "not-calibrated")
 
     clearml_logger.add_tags(tags)
 

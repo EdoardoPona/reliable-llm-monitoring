@@ -31,3 +31,5 @@ debug: false
 # Batch sizes
 activation_batch_size: 32  # Batch size for computing activations
 reduction_batch_size: 512  # Batch size for reduction operations
+
+calibration_method: isotonic-regression # Options: platt-scaling, isotonic-regression, or null
