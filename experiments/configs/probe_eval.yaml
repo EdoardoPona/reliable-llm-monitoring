@@ -9,7 +9,8 @@ dev_dataset_path: ${DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl
 test_dataset_path: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
 
 # Probe configuration
-reduction_strategy: last
+# reduction_strategy: last
+reduction_strategy: mean  
 
 # Activation configuration
 activations_model_name: meta-llama/Llama-3.2-1B-Instruct

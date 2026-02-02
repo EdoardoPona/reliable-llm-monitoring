@@ -236,6 +236,37 @@ def enrich_with_activations(
     )
 
 
+def _apply_attention_mask_to_activations(dataset: LabelledDataset) -> LabelledDataset:
+    """Zero out activations at padding positions.
+
+    This matches the behavior of models-under-pressure Activation.__post_init__,
+    which multiplies activations by the attention mask to zero out padding.
+
+    The ActivationStore.enrich() path bypasses the Activation class, so we need
+    to apply this masking explicitly after loading.
+
+    Args:
+        dataset: Dataset with 'activations' and 'attention_mask' fields
+
+    Returns:
+        Dataset with masked activations
+    """
+    activations = dataset.other_fields["activations"]
+    attention_mask = dataset.other_fields["attention_mask"]
+
+    # Apply mask: activations *= attention_mask[:, :, None]
+    if isinstance(activations, torch.Tensor):
+        mask = attention_mask
+        if not isinstance(mask, torch.Tensor):
+            mask = torch.tensor(mask)
+        masked_activations = activations * mask.unsqueeze(-1)
+    else:
+        # Handle numpy arrays
+        masked_activations = activations * np.expand_dims(attention_mask, -1)
+
+    return dataset.assign(activations=masked_activations)
+
+
 def compute_activations(
     dataset_path: Path,
     model: str | LLMModel,
@@ -428,6 +459,10 @@ def load_dataset(
                 model_name=activation_config.model_name,
                 layer=activation_config.layer,
             )
+
+    # Apply attention mask to zero out padding positions
+    # This matches models-under-pressure Activation.__post_init__ behavior
+    dataset = _apply_attention_mask_to_activations(dataset)
 
     # Compute reductions if requested and configured
     if compute_reductions and activation_config.aggregation_strategy is not None:

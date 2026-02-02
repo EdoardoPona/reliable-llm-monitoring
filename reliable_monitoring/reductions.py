@@ -89,10 +89,13 @@ def reduce_mean(
     activations: torch.Tensor,
     attention_mask: torch.Tensor,
 ) -> torch.Tensor:
-    """Average over sequence dimension, respecting attention mask.
+    """Average over valid tokens in the sequence.
 
-    Computes the mean of activations for each sample, but only over
-    the non-masked (valid) tokens.
+    Computes the mean of activations over positions where attention_mask=1.
+    Assumes padding positions have already been zeroed at load time
+    (done in dataset._apply_attention_mask_to_activations).
+
+    This matches the approach used in models-under-pressure.
 
     Args:
         activations: Input activations, shape (batch, seq_len, hidden_dim)
@@ -101,8 +104,9 @@ def reduce_mean(
     Returns:
         Mean-reduced activations, shape (batch, hidden_dim)
     """
-    masked_acts = activations * attention_mask.unsqueeze(-1)
-    sum_acts = masked_acts.sum(dim=1)  # (batch, hidden_dim)
+    # Sum activations (padding already zeroed at load time)
+    sum_acts = activations.sum(dim=1)  # (batch, hidden_dim)
+    # Divide by number of valid tokens
     lengths = attention_mask.sum(dim=1, keepdim=True).clamp(min=1)  # Avoid div by zero
     return sum_acts / lengths
 
@@ -112,10 +116,12 @@ def reduce_max(
     activations: torch.Tensor,
     attention_mask: torch.Tensor,
 ) -> torch.Tensor:
-    """Max pooling over sequence dimension, respecting attention mask.
+    """Max pooling over valid tokens in the sequence.
 
     Takes the maximum value across the sequence dimension for each feature,
-    ignoring masked positions.
+    only considering positions where attention_mask=1. Padding positions
+    are set to -inf to ensure they don't affect the max (important when
+    valid activations could be negative).
 
     Args:
         activations: Input activations, shape (batch, seq_len, hidden_dim)
@@ -124,10 +130,10 @@ def reduce_max(
     Returns:
         Max-pooled activations, shape (batch, hidden_dim)
     """
-    # Set masked positions to -inf so they don't affect max
-    mask_expanded = attention_mask.unsqueeze(-1).expand_as(activations)
+    # Set padding positions to -inf so they don't affect max
+    mask_expanded = attention_mask.bool().unsqueeze(-1).expand_as(activations)
     masked_acts = torch.where(
-        mask_expanded.bool(),
+        mask_expanded,
         activations,
         torch.tensor(float("-inf"), dtype=activations.dtype, device=activations.device),
     )
@@ -139,31 +145,30 @@ def reduce_last(
     activations: torch.Tensor,
     attention_mask: torch.Tensor,
 ) -> torch.Tensor:
-    """Take the last token with non-zero activations for each sequence.
+    """Take the last valid token for each sequence.
 
-    Finds the last position with non-zero activations rather than relying
-    on the attention mask, which may not accurately reflect activation boundaries
-    due to batch processing in the upstream activation computation.
+    Finds the last position with non-zero activations. Since padding is zeroed
+    at load time, non-zero positions are guaranteed to be valid tokens.
+    This handles the case where mask=1 but activations weren't computed (zeros).
 
     Args:
         activations: Input activations, shape (batch, seq_len, hidden_dim)
         attention_mask: Binary mask for valid tokens, shape (batch, seq_len)
-            Note: This parameter is kept for API compatibility but not used.
 
     Returns:
         Last-token activations, shape (batch, hidden_dim)
     """
-    # Find positions with non-zero activations (sum of absolute values > 0)
+    # Find last non-zero position (after zeroing, non-zero = valid)
     nonzero_mask = activations.abs().sum(dim=-1) > 0  # (batch, seq_len)
     seq_len = activations.size(1)
 
     # Find last non-zero position by flipping and using argmax
     # argmax returns first occurrence, so on flipped tensor it finds last non-zero
     flipped = nonzero_mask.flip(dims=[1])
-    last_nonzero_idx = seq_len - 1 - flipped.long().argmax(dim=1)
+    last_valid_idx = seq_len - 1 - flipped.long().argmax(dim=1)
 
     batch_indices = torch.arange(activations.size(0), device=activations.device)
-    return activations[batch_indices, last_nonzero_idx]  # (batch, hidden_dim)
+    return activations[batch_indices, last_valid_idx]  # (batch, hidden_dim)
 
 
 @register_reduction("first")
@@ -200,8 +205,11 @@ def apply_reduction_batched(
     a reduction function to each batch. This prevents OOM errors when working
     with large datasets or GPUs with limited memory.
 
+    Note: Assumes activations have already been masked (padding positions zeroed)
+    at load time via _apply_attention_mask_to_activations in dataset.py.
+
     Args:
-        activations: Raw activations with sequence dimension
+        activations: Activations with sequence dimension (padding already zeroed)
         attention_mask: Mask indicating valid tokens
         reduction_fn: Function to apply for reduction
         batch_size: Number of samples to process at once

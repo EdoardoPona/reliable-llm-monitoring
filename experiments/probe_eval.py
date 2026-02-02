@@ -123,8 +123,8 @@ def run_probe_eval(config) -> ProbeEvalResults:
         layer=config.activations_layer,
     )
 
-    auto_compute = getattr(config, "auto_compute_activations", False)
-    cleanup_after_load = getattr(config, "cleanup_activations_after_load", False)
+    auto_compute = getattr(config, "auto_compute_activations", True)
+    cleanup_after_load = getattr(config, "cleanup_activations_after_load", True)
     debug_mode = getattr(config, "debug", False)
 
     # Batch sizes for various operations
@@ -146,7 +146,7 @@ def run_probe_eval(config) -> ProbeEvalResults:
         Path(config.train_dataset_path),
         activation_config=activation_config,
         auto_compute=auto_compute,
-        cleanup_after_load=False,  # Keep train activations
+        cleanup_after_load=cleanup_after_load,
         model=shared_model,
         compute_batch_size=activation_batch_size,
         reduction_batch_size=reduction_batch_size,

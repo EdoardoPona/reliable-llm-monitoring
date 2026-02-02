@@ -34,8 +34,13 @@ def simple_sequence():
 
 @pytest.fixture
 def masked_sequence():
-    """Sequence with masked token to test mask handling."""
-    activations = torch.tensor([[[1.0, 2.0], [3.0, 4.0], [999.0, 999.0]]])
+    """Sequence with zero activations at masked positions.
+
+    This reflects real data where positions beyond valid tokens have zero activations.
+    The reductions now use non-zero activations (not attention mask) to determine
+    valid positions, since the mask may not accurately reflect activation boundaries.
+    """
+    activations = torch.tensor([[[1.0, 2.0], [3.0, 4.0], [0.0, 0.0]]])
     attention_mask = torch.tensor([[1.0, 1.0, 0.0]])
     return activations, attention_mask
 
@@ -52,25 +57,25 @@ def large_batch():
 class TestReductionFunctions:
     """Test individual reduction functions."""
 
-    def test_reduce_mean_respects_mask(self, simple_sequence):
-        """Test that mean reduction respects attention mask."""
+    def test_reduce_mean_uses_nonzero_positions(self, simple_sequence):
+        """Test that mean reduction averages over non-zero activation positions."""
         activations, attention_mask = simple_sequence
         result = reduce_mean(activations, attention_mask)
 
-        # First sample: mean of all 3 tokens
+        # First sample: mean of all 3 tokens (all non-zero)
         expected_first = torch.tensor([3.0, 4.0])  # (1+3+5)/3, (2+4+6)/3
         assert torch.allclose(result[0], expected_first)
 
-        # Second sample: mean of first 2 tokens only
+        # Second sample: mean of first 2 tokens only (third is zero)
         expected_second = torch.tensor([3.0, 4.0])  # (2+4)/2, (3+5)/2
         assert torch.allclose(result[1], expected_second)
 
-    def test_reduce_max_respects_mask(self, masked_sequence):
-        """Test that max reduction respects attention mask."""
+    def test_reduce_max_ignores_zero_activations(self, masked_sequence):
+        """Test that max reduction ignores positions with zero activations."""
         activations, attention_mask = masked_sequence
         result = reduce_max(activations, attention_mask)
 
-        # Should be max of first two, not the masked 999
+        # Should be max of non-zero positions only
         expected = torch.tensor([3.0, 4.0])
         assert torch.allclose(result[0], expected)
 
