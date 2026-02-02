@@ -1,3 +1,6 @@
+**Python setup**
+This project is setup using `uv`, do not use native python or other environment managers.
+
 **Linting and Formatting**
 After all code changes, you should check formatting and linting by running `./lint.sh`
 

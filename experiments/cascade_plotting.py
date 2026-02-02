@@ -851,3 +851,95 @@ def plot_gain_per_budget(results: CascadeComparisonResults, metric: str = "accur
 
     plt.tight_layout()
     return fig
+
+
+def plot_probe_score_histograms(results: CascadeComparisonResults) -> dict[str, Figure]:
+    """Plot probe score histograms for train, calibration, and test datasets.
+
+    Each figure overlays two histograms by target label:
+    - Target 0 in blue
+    - Target 1 in red
+
+    Returns:
+        Dictionary mapping dataset name to matplotlib figure
+    """
+    figures: dict[str, Figure] = {}
+
+    datasets = {
+        "train": (results.train_probe_scores, results.train_labels),
+        "calibration": (results.calib_probe_scores, results.calib_labels),
+        "test": (results.test_probe_scores, results.test_labels),
+    }
+
+    for name, (scores, labels) in datasets.items():
+        fig, ax = plt.subplots(figsize=(10, 6))
+        labels = np.asarray(labels)
+        scores = np.asarray(scores)
+
+        scores_0 = scores[labels == 0]
+        scores_1 = scores[labels == 1]
+
+        bins = max(10, int(np.sqrt(len(scores))/2)) if len(scores) > 0 else 10
+
+        ax.hist(scores_0, bins=bins, alpha=0.6, label="Target 0", color="steelblue", edgecolor="black")
+        ax.hist(scores_1, bins=bins, alpha=0.6, label="Target 1", color="red", edgecolor="black")
+
+        ax.set_title(f"Probe Score Distribution ({name.title()} Set)", fontweight="bold")
+        ax.set_xlabel("Probe Score", fontweight="bold")
+        ax.set_ylabel("Frequency", fontweight="bold")
+        ax.legend(loc="best")
+        ax.grid(axis="y", alpha=0.3)
+        ax.set_axisbelow(True)
+
+        plt.tight_layout()
+        figures[name] = fig
+
+    return figures
+
+
+def plot_reliability_diagrams(results: CascadeComparisonResults, n_bins: int = 10) -> dict[str, Figure]:
+    """Plot reliability diagrams (calibration plots) for probe scores.
+
+    Generates one plot per dataset (train/calibration/test) with:
+    - Reliability curve (mean predicted vs fraction positive)
+    - Diagonal line for perfect calibration
+
+    Args:
+        results: CascadeComparisonResults
+        n_bins: Number of bins for calibration curve
+
+    Returns:
+        Dictionary mapping dataset name to matplotlib figure
+    """
+    from sklearn.calibration import calibration_curve
+
+    figures: dict[str, Figure] = {}
+
+    datasets = {
+        "train": (results.train_probe_scores, results.train_labels),
+        "calibration": (results.calib_probe_scores, results.calib_labels),
+        "test": (results.test_probe_scores, results.test_labels),
+    }
+
+    for name, (scores, labels) in datasets.items():
+        scores = np.asarray(scores)
+        labels = np.asarray(labels)
+
+        frac_pos, mean_pred = calibration_curve(labels, scores, n_bins=n_bins, strategy="uniform")
+
+        fig, ax = plt.subplots(figsize=(7, 6))
+        ax.plot([0, 1], [0, 1], "k--", label="Perfectly calibrated")
+        ax.plot(mean_pred, frac_pos, marker="o", linewidth=2, color="steelblue", label="Probe")
+
+        ax.set_title(f"Reliability Diagram ({name.title()} Set)", fontweight="bold")
+        ax.set_xlabel("Mean Predicted Probability", fontweight="bold")
+        ax.set_ylabel("Fraction of Positives", fontweight="bold")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="best")
+
+        plt.tight_layout()
+        figures[name] = fig
+
+    return figures

@@ -1,10 +1,10 @@
 # Guaranteed Budget Experiment Configuration
 
 # The budget to guarantee control over
-budget: 0.3
+budget: 0.5
 
 # The probability with which the budget is guaranteed (1-FWER)
-guarantee_probability: 0.95
+guarantee_probability: 0.9
 
 # The strategy to reduce the sequence of activations to a fixed size vector
 reduction_strategy: mean

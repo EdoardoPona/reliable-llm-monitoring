@@ -35,7 +35,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DEBUG_SAMPLE_SIZE = 64
+DEBUG_SAMPLE_SIZE = 256
 
 
 @dataclass
@@ -188,6 +188,14 @@ class CascadeComparisonResults:
     fixed_overall_accuracy: float = scalar_field()
     fixed_overall_f1_score: float = scalar_field()
     fixed_overall_roc_auc: float = scalar_field()
+
+    # Probe score distributions
+    train_probe_scores: np.ndarray = artifact_field()
+    calib_probe_scores: np.ndarray = artifact_field()
+    test_probe_scores: np.ndarray = artifact_field()
+    train_labels: np.ndarray = artifact_field()
+    calib_labels: np.ndarray = artifact_field()
+    test_labels: np.ndarray = artifact_field()
 
     calib_evaluation_risks: ThresholdEvaluationResult = artifact_field()
     opt_evaluation_risks: ThresholdEvaluationResult | None = artifact_field()
@@ -350,6 +358,15 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
     logger.info(f"Calibration dataset size: {len(calib_dataset)}")
     logger.info(f"Test dataset size: {len(test_dataset)}")
 
+    if config.calibrate_probe:
+        logger.info("Preparing train dataset split for probe score calibration")
+        train_dataset, probe_calib_dataset = split_dataset(
+            train_dataset,
+            proportions=[0.8, 0.2],
+            shuffle=True,
+            seed=seed,
+        )
+
     if config.pareto_testing:
         logger.info("Using Pareto testing")
         # split the calibration dataset into two halves: one for optimisation the other for calibration
@@ -365,12 +382,21 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
     probe = SequenceProbe(reduction_strategy=config.reduction_strategy)
     probe.fit(train_dataset)
 
+    if config.calibrate_probe:
+        logger.info("Calibrating probe scores on held-out probe calibration dataset...")
+        # probe.calibrate(probe_calib_dataset)
+
+    logger.info("Computing probe scores on training dataset for histogram logging...")
+    train_probe_scores = probe.predict(train_dataset)
+    train_labels = train_dataset.labels_numpy()
+
     # Determine reliable threshold
     logger.info("Learning reliable threshold from calibration data...")
 
     # Compute calibration scores
     logger.info("Computing probe scores on calibration dataset...")
     calib_probe_scores = probe.predict(calib_dataset)
+    calib_labels = calib_dataset.labels_numpy()
 
     logger.info("Computing baseline scores on calibration dataset...")
     calib_baseline_scores = run_llm_baseline(
@@ -404,6 +430,10 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
         risks=BudgetCostRisk,
         merge_strategy=config.cascade_merge_strategy,
     )
+
+    logger.info("Empirical budget risks computed.")
+    for thr, risk in zip(calib_eval_result.thresholds, calib_eval_result["Budget Cost"], strict=True):
+        logger.info(f"Threshold: {thr:.4f}, Empirical Budget Risk: {risk:.4f}")
 
     # Compute p-values using the risk's appropriate bound (binomial for budget cost)
     all_p_values = calib_eval_result.compute_p_values(alpha=config.budget)["Budget Cost"]
@@ -472,6 +502,7 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
     # Compute test scores
     logger.info("Computing probe scores on test dataset...")
     test_probe_scores = probe.predict(test_dataset)
+    test_labels = test_dataset.labels_numpy()
 
     logger.info("Computing baseline scores on test dataset...")
     test_baseline_scores = run_llm_baseline(
@@ -480,8 +511,6 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
         baseline_batch_size=config.baseline_batch_size,
     )
 
-    # Extract test labels for performance metrics
-    test_labels = test_dataset.labels_numpy()
     logger.info(f"Extracted test labels: {len(test_labels)} labels")
 
     # Run batch cascades
@@ -701,6 +730,13 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
         fixed_overall_accuracy=fixed_overall_accuracy,
         fixed_overall_f1_score=fixed_overall_f1,
         fixed_overall_roc_auc=fixed_overall_roc_auc,
+        # Probe score distributions
+        train_probe_scores=train_probe_scores,
+        calib_probe_scores=calib_probe_scores,
+        test_probe_scores=test_probe_scores,
+        train_labels=train_labels,
+        calib_labels=calib_labels,
+        test_labels=test_labels,
         # Evaluation results
         calib_evaluation_risks=calib_eval_result,
         opt_evaluation_risks=opt_eval_result,
@@ -718,7 +754,9 @@ def make_figures(results: CascadeComparisonResults) -> dict[str, Figure | None |
         plot_overall_performance_comparison,
         plot_paired_method_comparison,
         plot_pareto_frontier,
+        plot_probe_score_histograms,
         plot_probe_uncertainty_vs_metrics,
+        plot_reliability_diagrams,
         plot_summary_comparison,
     )
 
@@ -737,6 +775,12 @@ def make_figures(results: CascadeComparisonResults) -> dict[str, Figure | None |
     figures["boxes"] = plot_metric_boxplots(results)
     # Cascade vs Probe performance
     figures["cascade_vs_probe"] = plot_cascade_vs_probe_performance(results)
+
+    # Probe score histograms (train/calibration/test)
+    figures["probe_score_hists"] = plot_probe_score_histograms(results)
+
+    # Reliability diagrams (train/calibration/test)
+    figures["reliability_diagrams"] = plot_reliability_diagrams(results)
 
     # Pareto frontier (only if Pareto testing was used)
     if results.opt_evaluation_risks is not None and results.pareto_mask is not None:
@@ -763,6 +807,7 @@ def log_to_clearml(
     tags.append(f"probe-{results.config['reduction_strategy']}")
     tags.append(f"merge-{results.config['cascade_merge_strategy']}")
     tags.append(f"pareto_testing-{results.config['pareto_testing']}")
+    tags.append(f"calibrate_probe-{results.config.get('calibrate_probe', False)}")
     clearml_logger.add_tags(tags)
 
     # Use serializer for clean data extraction
@@ -814,6 +859,22 @@ def log_to_clearml(
         series="Cascade vs Probe Performance",
         figure=figures["cascade_vs_probe"],
     )
+
+    if figures.get("probe_score_hists") is not None:
+        for dataset_name, fig in figures["probe_score_hists"].items():  # type: ignore
+            clearml_logger.log_figure(
+                title="Probe Score Histograms",
+                series=f"Probe Scores ({dataset_name})",
+                figure=fig,
+            )
+
+    if figures.get("reliability_diagrams") is not None:
+        for dataset_name, fig in figures["reliability_diagrams"].items():  # type: ignore
+            clearml_logger.log_figure(
+                title="Reliability Diagrams",
+                series=f"Probe Reliability ({dataset_name})",
+                figure=fig,
+            )
 
     # Log Pareto frontier only if it exists
     if figures["pareto"] is not None:

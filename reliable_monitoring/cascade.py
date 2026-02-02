@@ -189,6 +189,7 @@ def run_llm_baseline(
     baseline_model_name: str,
     dataset: LabelledDataset,
     baseline_batch_size: int = 16,
+    suppress_progress: bool = True,
 ) -> np.ndarray:
     """
     Run the baseline LLM model on the given dataset and return the high-stakes probabilities.
@@ -196,14 +197,27 @@ def run_llm_baseline(
         baseline_model_name: The name of the baseline model to use (from the McKenzie et al. codebase).
         dataset: The dataset to run the baseline model on.
         baseline_batch_size: The batch size to use when calling the baseline model.
+        suppress_progress: Whether to suppress progress/log output from the baseline runner.
     Returns:
         A numpy array of high-stakes probabilities from the baseline model.
     """
+    import contextlib
+    import io
+
     prompt_key = get_model_baseline_prompt(get_abbreviated_model_name(baseline_model_name))
     prompt_config = likelihood_continuation_prompts[prompt_key]
     model = LLMModel.load(LOCAL_MODELS[get_abbreviated_model_name(baseline_model_name)])
     baseline_model = LikelihoodContinuationBaseline(model, prompt_config=prompt_config)
-    baseline_results = baseline_model.likelihood_classify_dataset(dataset, batch_size=baseline_batch_size)  # type: ignore - this is an issue in the mup codebase
+
+    if suppress_progress:
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            baseline_results = baseline_model.likelihood_classify_dataset(
+                dataset, batch_size=baseline_batch_size # type: ignore - this is an issue in the mup codebase
+            )  
+    else:
+        baseline_results = baseline_model.likelihood_classify_dataset(
+            dataset, batch_size=baseline_batch_size # type: ignore - this is an issue in the mup codebase
+        )  
     baseline_high_stakes_prob = np.array(baseline_results.other_fields["high_stakes_score"])
     return baseline_high_stakes_prob
 

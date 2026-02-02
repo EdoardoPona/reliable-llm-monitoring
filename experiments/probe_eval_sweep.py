@@ -31,7 +31,7 @@ BASE_CONFIG = {
     "activations_layer": 11,
     "train_dataset_path": "${DATA_DIR}/training/prompts_4x/train.jsonl",
     "seed": 42,
-    "debug": True,
+    "debug": False,
     "auto_compute_activations": True,
     "cleanup_activations_after_load": True,
     # Batch sizes
