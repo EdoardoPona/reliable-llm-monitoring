@@ -36,9 +36,5 @@ def load_config(config_path):
     # Expand environment variables in all config values
     config = expand_env_vars(config)
 
-    # Validate that required fields are present
-    if "budget" not in config or config["budget"] is None:
-        raise ValueError("budget is a required configuration parameter")
-
     # Convert to SimpleNamespace for attribute-style access
     return SimpleNamespace(**config)
