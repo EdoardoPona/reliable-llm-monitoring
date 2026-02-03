@@ -236,9 +236,7 @@ class TestLoadDatasetAutoCompute:
     @patch("reliable_monitoring.dataset.compute_activations")
     @patch("reliable_monitoring.dataset.ActivationStore")
     @patch("reliable_monitoring.dataset.LabelledDataset.load_from")
-    def test_computes_when_missing_and_auto_compute_true(
-        self, mock_load_from, mock_store_class, mock_compute
-    ):
+    def test_computes_when_missing_and_auto_compute_true(self, mock_load_from, mock_store_class, mock_compute):
         """Activations are computed when missing and auto_compute=True."""
         mock_load_from.return_value = MagicMock()
         mock_store = MagicMock()
@@ -277,9 +275,7 @@ class TestLoadDatasetAutoCompute:
     @patch("reliable_monitoring.dataset.cleanup_activations")
     @patch("reliable_monitoring.dataset.ActivationStore")
     @patch("reliable_monitoring.dataset.LabelledDataset.load_from")
-    def test_cleanup_not_called_when_not_requested(
-        self, mock_load_from, mock_store_class, mock_cleanup
-    ):
+    def test_cleanup_not_called_when_not_requested(self, mock_load_from, mock_store_class, mock_cleanup):
         """cleanup_activations is not called when cleanup_after_load=False."""
         mock_load_from.return_value = MagicMock()
         mock_store = MagicMock()
@@ -311,9 +307,7 @@ class TestComputeActivations:
     @patch("models_under_pressure.model.LLMModel.load")
     @patch("reliable_monitoring.dataset.LabelledDataset.load_from")
     @patch("reliable_monitoring.dataset.ActivationStore")
-    def test_loads_model_when_given_string(
-        self, mock_store_class, mock_load_from, mock_model_load, mock_spec_class
-    ):
+    def test_loads_model_when_given_string(self, mock_store_class, mock_load_from, mock_model_load, mock_spec_class):
         """Loads model when model parameter is a string."""
         mock_store = MagicMock()
         mock_store.exists.return_value = False
@@ -333,9 +327,7 @@ class TestComputeActivations:
     @patch("models_under_pressure.model.LLMModel.load")
     @patch("reliable_monitoring.dataset.LabelledDataset.load_from")
     @patch("reliable_monitoring.dataset.ActivationStore")
-    def test_uses_model_instance_directly(
-        self, mock_store_class, mock_load_from, mock_model_load, mock_spec_class
-    ):
+    def test_uses_model_instance_directly(self, mock_store_class, mock_load_from, mock_model_load, mock_spec_class):
         """Uses model instance directly without loading when given LLMModel."""
         mock_store = MagicMock()
         mock_store.exists.return_value = False
