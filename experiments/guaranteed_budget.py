@@ -173,7 +173,7 @@ def run_guaranteed_budget_experiment(args: argparse.Namespace | None = None) -> 
         risks=BudgetCostRisk,
         merge_strategy=config.cascade_merge_strategy,
     )
-    
+
     logger.info("Empirical budget risks computed.")
     for thr, risk in zip(eval_result.thresholds, eval_result["Budget Cost"], strict=True):
         logger.info(f"Threshold: {thr:.4f}, Empirical Budget Risk: {risk:.4f}")
