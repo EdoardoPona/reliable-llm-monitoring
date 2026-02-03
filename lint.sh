@@ -1,8 +1,8 @@
 echo "Running formatting checks..."
-ruff format
+uv run ruff format
 
 echo "Running linting checks..."
-ruff check --fix
+uv run ruff check --fix
 
 echo "Running type checks..."
-uv run ty check
+uv run ty check reliable_monitoring experiments
