@@ -191,3 +191,50 @@ def plot_score_histogram(
 
     plt.tight_layout()
     return fig
+
+
+def plot_roc_curve(
+    scores: np.ndarray,
+    labels: np.ndarray,
+    title: str = "ROC Curve",
+) -> Figure:
+    """Plot ROC curve for binary classification.
+
+    Args:
+        scores: Predicted probabilities
+        labels: True binary labels
+        title: Plot title
+
+    Returns:
+        Matplotlib figure
+    """
+    from sklearn.metrics import roc_auc_score, roc_curve
+
+    scores = np.asarray(scores)
+    labels = np.asarray(labels)
+
+    fpr, tpr, _ = roc_curve(labels, scores)
+    auc = roc_auc_score(labels, scores)
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+
+    # Plot ROC curve
+    ax.plot(fpr, tpr, color="steelblue", linewidth=2, label=f"ROC curve (AUC = {auc:.4f})")
+
+    # Plot diagonal (random classifier)
+    ax.plot([0, 1], [0, 1], "k--", linewidth=1.5, alpha=0.7, label="Random classifier")
+
+    # Fill under curve
+    ax.fill_between(fpr, tpr, alpha=0.2, color="steelblue")
+
+    ax.set_xlabel("False Positive Rate", fontweight="bold")
+    ax.set_ylabel("True Positive Rate", fontweight="bold")
+    ax.set_title(title, fontweight="bold")
+    ax.set_xlim(-0.02, 1.02)
+    ax.set_ylim(-0.02, 1.02)
+    ax.legend(loc="lower right")
+    ax.grid(True, alpha=0.3)
+    ax.set_aspect("equal")
+
+    plt.tight_layout()
+    return fig

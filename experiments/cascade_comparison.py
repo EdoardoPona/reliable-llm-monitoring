@@ -197,6 +197,10 @@ class CascadeComparisonResults:
     calib_labels: np.ndarray = artifact_field()
     test_labels: np.ndarray = artifact_field()
 
+    # Baseline and cascade scores for ROC curves
+    test_baseline_scores: np.ndarray = artifact_field()
+    adaptive_final_scores: np.ndarray = artifact_field()
+
     calib_evaluation_risks: ThresholdEvaluationResult = artifact_field()
     opt_evaluation_risks: ThresholdEvaluationResult | None = artifact_field()
 
@@ -358,11 +362,12 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
     logger.info(f"Calibration dataset size: {len(calib_dataset)}")
     logger.info(f"Test dataset size: {len(test_dataset)}")
 
-    if config.calibrate_probe:
-        logger.info("Preparing train dataset split for probe score calibration")
-        train_dataset, probe_calib_dataset = split_dataset(
-            train_dataset,
-            proportions=[0.8, 0.2],
+    calibration_method = getattr(config, "calibration_method", None)
+    if calibration_method is not None:
+        logger.info(f"Preparing dev dataset split for probe calibration ({calibration_method})")
+        calib_dataset, probe_calib_dataset = split_dataset(
+            calib_dataset,
+            proportions=[0.7, 0.3],
             shuffle=True,
             seed=seed,
         )
@@ -382,9 +387,9 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
     probe = SequenceProbe(reduction_strategy=config.reduction_strategy)
     probe.fit(train_dataset)
 
-    if config.calibrate_probe:
+    if calibration_method is not None:
         logger.info("Calibrating probe scores on held-out probe calibration dataset...")
-        # probe.calibrate(probe_calib_dataset)
+        probe.calibrate(probe_calib_dataset, method=calibration_method)
 
     logger.info("Computing probe scores on training dataset for histogram logging...")
     train_probe_scores = probe.predict(train_dataset)
@@ -737,6 +742,9 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
         train_labels=train_labels,
         calib_labels=calib_labels,
         test_labels=test_labels,
+        # Baseline and cascade scores for ROC curves
+        test_baseline_scores=test_baseline_scores,
+        adaptive_final_scores=adaptive_result.final_scores,
         # Evaluation results
         calib_evaluation_risks=calib_eval_result,
         opt_evaluation_risks=opt_eval_result,
@@ -757,6 +765,7 @@ def make_figures(results: CascadeComparisonResults) -> dict[str, Figure | None |
         plot_probe_score_histograms,
         plot_probe_uncertainty_vs_metrics,
         plot_reliability_diagrams,
+        plot_roc_curves,
         plot_summary_comparison,
     )
 
@@ -787,6 +796,10 @@ def make_figures(results: CascadeComparisonResults) -> dict[str, Figure | None |
         figures["pareto"] = plot_pareto_frontier(results)
     else:
         figures["pareto"] = None
+
+    # ROC curves (probe, baseline, cascade)
+    figures["roc_curves"] = plot_roc_curves(results)
+
     return figures
 
 
@@ -883,6 +896,15 @@ def log_to_clearml(
             series="Pareto Frontier",
             figure=figures["pareto"],
         )
+
+    # Log ROC curves
+    if figures.get("roc_curves") is not None:
+        for score_type, fig in figures["roc_curves"].items():  # type: ignore
+            clearml_logger.log_figure(
+                title="ROC Curves",
+                series=f"ROC ({score_type.title()})",
+                figure=fig,
+            )
 
     # Close figures to free memory
     import matplotlib.pyplot as plt

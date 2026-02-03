@@ -879,7 +879,7 @@ def plot_probe_score_histograms(results: CascadeComparisonResults) -> dict[str, 
         scores_0 = scores[labels == 0]
         scores_1 = scores[labels == 1]
 
-        bins = max(10, int(np.sqrt(len(scores))/2)) if len(scores) > 0 else 10
+        bins = max(10, int(np.sqrt(len(scores)) / 2)) if len(scores) > 0 else 10
 
         ax.hist(scores_0, bins=bins, alpha=0.6, label="Target 0", color="steelblue", edgecolor="black")
         ax.hist(scores_1, bins=bins, alpha=0.6, label="Target 1", color="red", edgecolor="black")
@@ -941,5 +941,68 @@ def plot_reliability_diagrams(results: CascadeComparisonResults, n_bins: int = 1
 
         plt.tight_layout()
         figures[name] = fig
+
+    return figures
+
+
+def plot_roc_curves(results: CascadeComparisonResults) -> dict[str, Figure]:
+    """Plot ROC curves for probe, baseline, and cascade scores.
+
+    Generates three ROC curve plots:
+    - Probe only: Using probe scores on test set
+    - Baseline only: Using baseline (LLM) scores on test set
+    - Cascade: Using adaptive cascade final scores on test set
+
+    Each plot shows:
+    - ROC curve with AUC value
+    - Diagonal line (random classifier)
+    - Filled area under curve
+
+    Args:
+        results: CascadeComparisonResults from experiment
+
+    Returns:
+        Dictionary mapping score type to matplotlib figure
+    """
+    from sklearn.metrics import roc_auc_score, roc_curve
+
+    figures: dict[str, Figure] = {}
+
+    score_sets = {
+        "probe": (results.test_probe_scores, "Probe Only"),
+        "baseline": (results.test_baseline_scores, "Baseline Only"),
+        "cascade": (results.adaptive_final_scores, "Adaptive Cascade"),
+    }
+
+    labels = np.asarray(results.test_labels)
+
+    for key, (scores, title) in score_sets.items():
+        scores = np.asarray(scores)
+
+        fpr, tpr, _ = roc_curve(labels, scores)
+        auc = roc_auc_score(labels, scores)
+
+        fig, ax = plt.subplots(figsize=(8, 7))
+
+        # Plot ROC curve
+        ax.plot(fpr, tpr, color="steelblue", linewidth=2, label=f"ROC curve (AUC = {auc:.4f})")
+
+        # Plot diagonal (random classifier)
+        ax.plot([0, 1], [0, 1], "k--", linewidth=1.5, alpha=0.7, label="Random classifier")
+
+        # Fill under curve
+        ax.fill_between(fpr, tpr, alpha=0.2, color="steelblue")
+
+        ax.set_xlabel("False Positive Rate", fontweight="bold")
+        ax.set_ylabel("True Positive Rate", fontweight="bold")
+        ax.set_title(f"ROC Curve - {title}", fontweight="bold")
+        ax.set_xlim(-0.02, 1.02)
+        ax.set_ylim(-0.02, 1.02)
+        ax.legend(loc="lower right")
+        ax.grid(True, alpha=0.3)
+        ax.set_aspect("equal")
+
+        plt.tight_layout()
+        figures[key] = fig
 
     return figures

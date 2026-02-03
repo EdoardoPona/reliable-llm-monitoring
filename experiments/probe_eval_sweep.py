@@ -102,7 +102,9 @@ def build_sweep_configs(base_config: dict, sweep_config: dict) -> list[SweepRun]
             )
 
         # Remove dataset paths from sweep_config for normal processing
-        other_sweep_config = {k: v for k, v in sweep_config.items() if k not in ("dev_dataset_path", "test_dataset_path")}
+        other_sweep_config = {
+            k: v for k, v in sweep_config.items() if k not in ("dev_dataset_path", "test_dataset_path")
+        }
 
         # Build configs with paired datasets
         sweep_runs: list[SweepRun] = []

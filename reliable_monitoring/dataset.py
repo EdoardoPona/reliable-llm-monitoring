@@ -40,6 +40,7 @@ class EvalDataset:
     A paired dev/test dataset for evaluation.
     These should always be statistically exchangeable (we use them as calibration sets).
     """
+
     name: str
     dev: Path
     test: Path
@@ -49,14 +50,32 @@ class EvalDataset:
 TRAIN_DATASET = Path("training/prompts_4x/train.jsonl")
 
 EVAL_DATASETS: list[EvalDataset] = [
-    EvalDataset("anthropic_balanced", Path("evals/dev/anthropic_balanced_apr_23.jsonl"), Path("evals/test/anthropic_test_balanced_apr_23.jsonl")),
-    EvalDataset("anthropic_raw", Path("evals/dev/anthropic_raw_apr_23.jsonl"), Path("evals/test/anthropic_test_raw_apr_23.jsonl")),
-    EvalDataset("mt_balanced", Path("evals/dev/mt_balanced_apr_30.jsonl"), Path("evals/test/mt_test_balanced_apr_30.jsonl")),
+    EvalDataset(
+        "anthropic_balanced",
+        Path("evals/dev/anthropic_balanced_apr_23.jsonl"),
+        Path("evals/test/anthropic_test_balanced_apr_23.jsonl"),
+    ),
+    EvalDataset(
+        "anthropic_raw",
+        Path("evals/dev/anthropic_raw_apr_23.jsonl"),
+        Path("evals/test/anthropic_test_raw_apr_23.jsonl"),
+    ),
+    EvalDataset(
+        "mt_balanced", Path("evals/dev/mt_balanced_apr_30.jsonl"), Path("evals/test/mt_test_balanced_apr_30.jsonl")
+    ),
     EvalDataset("mt_raw", Path("evals/dev/mt_raw_apr_30.jsonl"), Path("evals/test/mt_test_raw_apr_30.jsonl")),
-    EvalDataset("mts_balanced", Path("evals/dev/mts_balanced_apr_22.jsonl"), Path("evals/test/mts_test_balanced_apr_22.jsonl")),
+    EvalDataset(
+        "mts_balanced", Path("evals/dev/mts_balanced_apr_22.jsonl"), Path("evals/test/mts_test_balanced_apr_22.jsonl")
+    ),
     EvalDataset("mts_raw", Path("evals/dev/mts_raw_apr_22.jsonl"), Path("evals/test/mts_test_raw_apr_22.jsonl")),
-    EvalDataset("toolace_balanced", Path("evals/dev/toolace_balanced_apr_22.jsonl"), Path("evals/test/toolace_test_balanced_apr_22.jsonl")),
-    EvalDataset("toolace_raw", Path("evals/dev/toolace_raw_apr_22.jsonl"), Path("evals/test/toolace_test_raw_apr_22.jsonl")),
+    EvalDataset(
+        "toolace_balanced",
+        Path("evals/dev/toolace_balanced_apr_22.jsonl"),
+        Path("evals/test/toolace_test_balanced_apr_22.jsonl"),
+    ),
+    EvalDataset(
+        "toolace_raw", Path("evals/dev/toolace_raw_apr_22.jsonl"), Path("evals/test/toolace_test_raw_apr_22.jsonl")
+    ),
 ]
 
 
@@ -258,7 +277,9 @@ def _apply_attention_mask_to_activations(dataset: LabelledDataset) -> LabelledDa
     if isinstance(activations, torch.Tensor):
         mask = attention_mask
         if not isinstance(mask, torch.Tensor):
-            mask = torch.tensor(mask)
+            mask = torch.tensor(mask, device=activations.device)
+        elif mask.device != activations.device:
+            mask = mask.to(activations.device)
         masked_activations = activations * mask.unsqueeze(-1)
     else:
         # Handle numpy arrays
@@ -325,8 +346,8 @@ def load_dataset(
     compute_reductions: bool = False,
     drop_raw_after_reduction: bool = False,
     reduction_batch_size: int = 512,
-    auto_compute: bool = False,
-    cleanup_after_load: bool = False,
+    auto_compute: bool = True,
+    cleanup_after_load: bool = True,
     model: str | LLMModel | None = None,
     compute_batch_size: int = 32,
 ) -> LabelledDataset:
@@ -414,9 +435,7 @@ def load_dataset(
             model if model is not None else activation_config.model_name,
             compute_batch_size,
         )
-        activations, inputs = _compute_raw_activations(
-            dataset, loaded_model, activation_config.layer
-        )
+        activations, inputs = _compute_raw_activations(dataset, loaded_model, activation_config.layer)
         # activations has shape (n_layers, n_samples, seq_len, hidden_dim)
         # Extract the single layer with [0]
         dataset = enrich_with_activations(

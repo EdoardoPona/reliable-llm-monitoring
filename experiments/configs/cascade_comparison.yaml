@@ -14,7 +14,7 @@ cascade_batch_size: 128
 
 # Batch size for baseline model inference
 # this cannot be less than 2, and should be even to avoid losing data
-baseline_batch_size: 16
+baseline_batch_size: 8
 
 # The strategy to merge probe and baseline scores in the cascade
 # cascade_merge_strategy: avg
@@ -27,9 +27,9 @@ activations_model_name: meta-llama/Llama-3.2-1B-Instruct
 activations_layer: 11
 
 # The name of the LLM model to use as the baseline in the cascade
-baseline_model_name: meta-llama/Llama-3.2-1B-Instruct
+# baseline_model_name: meta-llama/Llama-3.2-1B-Instruct
 # baseline_model_name: meta-llama/Llama-3.2-3B-Instruct
-# baseline_model_name: meta-llama/Llama-3.1-8B-Instruct
+baseline_model_name: meta-llama/Llama-3.1-8B-Instruct
 
 # Path to the training dataset for fitting the probe
 train_dataset_path: ${DATA_DIR}/training/prompts_4x/train.jsonl
@@ -43,7 +43,7 @@ test_dataset_path: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
 # Random seed for reproducibility
 seed: 42
 
-debug: True
+debug: False
 
 pareto_testing: true
 
@@ -53,4 +53,4 @@ threshold_end: 1.0
 
 threshold_steps: 20
 
-calibrate_probe: true  
+calibration_method: isotonic-regression

@@ -187,14 +187,14 @@ def run_probe_eval(config) -> ProbeEvalResults:
         test_dataset = sample_from_dataset(test_dataset, min(DEBUG_SAMPLE_SIZE, len(test_dataset)), seed=seed)
 
     calibration_method = getattr(config, "calibration_method", None)
-    if calibration_method:
+    if calibration_method is not None:
         logger.info(f"Preparing dev dataset split for probe calibration ({calibration_method})")
         dev_dataset, probe_calib_dataset = split_dataset(
             dev_dataset,
             proportions=[0.7, 0.3],
             shuffle=True,
             seed=seed,
-        ) 
+        )
 
     logger.info(f"Train size: {len(train_dataset)}, Dev size: {len(dev_dataset)}, Test size: {len(test_dataset)}")
 
@@ -279,6 +279,7 @@ def make_figures(results: ProbeEvalResults) -> dict[str, Figure]:
         plot_calibration_summary,
         plot_performance_summary,
         plot_reliability_diagram,
+        plot_roc_curve,
         plot_score_histogram,
     )
 
@@ -312,6 +313,11 @@ def make_figures(results: ProbeEvalResults) -> dict[str, Figure]:
         results.test_scores, results.test_labels, title="Score Distribution (Test)"
     )
 
+    # ROC curves
+    figures["roc_train"] = plot_roc_curve(results.train_scores, results.train_labels, title="ROC Curve (Train)")
+    figures["roc_dev"] = plot_roc_curve(results.dev_scores, results.dev_labels, title="ROC Curve (Dev)")
+    figures["roc_test"] = plot_roc_curve(results.test_scores, results.test_labels, title="ROC Curve (Test)")
+
     return figures
 
 
@@ -339,7 +345,9 @@ def log_to_clearml(
     tags.append(f"reduction-{results.reduction_strategy}")
 
     # Dataset name (extract from path, e.g., "anthropic_balanced" from full path)
-    dataset_name = Path(results.dev_dataset_path).stem.replace("_apr_23", "").replace("_apr_22", "").replace("_apr_30", "")
+    dataset_name = (
+        Path(results.dev_dataset_path).stem.replace("_apr_23", "").replace("_apr_22", "").replace("_apr_30", "")
+    )
     tags.append(f"dataset-{dataset_name}")
 
     # Probe architecture
@@ -374,6 +382,10 @@ def log_to_clearml(
     clearml_logger.log_figure(title="Score Distributions", series="Train", figure=figures["histogram_train"])
     clearml_logger.log_figure(title="Score Distributions", series="Dev", figure=figures["histogram_dev"])
     clearml_logger.log_figure(title="Score Distributions", series="Test", figure=figures["histogram_test"])
+
+    clearml_logger.log_figure(title="ROC Curves", series="Train", figure=figures["roc_train"])
+    clearml_logger.log_figure(title="ROC Curves", series="Dev", figure=figures["roc_dev"])
+    clearml_logger.log_figure(title="ROC Curves", series="Test", figure=figures["roc_test"])
 
     # Close figures
     import matplotlib.pyplot as plt
