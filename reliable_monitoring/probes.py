@@ -336,4 +336,3 @@ class SequenceProbe:
         else:  # isotonic-regression
             self.calibration_clf = IsotonicRegression(out_of_bounds="clip")
             self.calibration_clf.fit(scores, y)
-
