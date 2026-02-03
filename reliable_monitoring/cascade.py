@@ -1,10 +1,18 @@
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import numpy as np
-from models_under_pressure.baselines.continuation import LikelihoodContinuationBaseline, likelihood_continuation_prompts
-from models_under_pressure.config import LOCAL_MODELS
-from models_under_pressure.experiments.monitoring_cascade import get_abbreviated_model_name, get_model_baseline_prompt
+from models_under_pressure.baselines.continuation import (
+    LikelihoodContinuationBaseline,
+    likelihood_continuation_prompts,
+)
+from models_under_pressure.baselines.finetune import FinetunedClassifier
+from models_under_pressure.config import LOCAL_MODELS, FinetuneBaselineConfig
+from models_under_pressure.experiments.monitoring_cascade import (
+    get_abbreviated_model_name,
+    get_model_baseline_prompt,
+)
 from models_under_pressure.interfaces.dataset import LabelledDataset
 from models_under_pressure.model import LLMModel
 
@@ -185,19 +193,23 @@ def select_examples_for_baseline(
     return strategy_fn(probe_scores, **kwargs)
 
 
-def run_llm_baseline(
+def run_prompted_baseline(
     baseline_model_name: str,
     dataset: LabelledDataset,
     baseline_batch_size: int = 16,
     suppress_progress: bool = True,
 ) -> np.ndarray:
-    """
-    Run the baseline LLM model on the given dataset and return the high-stakes probabilities.
+    """Run the prompted (likelihood continuation) baseline on the given dataset.
+
+    This baseline uses log-likelihood comparison of "high-stakes" vs "low-stakes"
+    text completions to classify examples.
+
     Args:
         baseline_model_name: The name of the baseline model to use (from the McKenzie et al. codebase).
         dataset: The dataset to run the baseline model on.
         baseline_batch_size: The batch size to use when calling the baseline model.
         suppress_progress: Whether to suppress progress/log output from the baseline runner.
+
     Returns:
         A numpy array of high-stakes probabilities from the baseline model.
     """
@@ -212,14 +224,97 @@ def run_llm_baseline(
     if suppress_progress:
         with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
             baseline_results = baseline_model.likelihood_classify_dataset(
-                dataset, batch_size=baseline_batch_size # type: ignore - this is an issue in the mup codebase
-            )  
+                dataset,  # type: ignore - this is an issue in the mup codebase
+                batch_size=baseline_batch_size,
+            )
     else:
         baseline_results = baseline_model.likelihood_classify_dataset(
-            dataset, batch_size=baseline_batch_size # type: ignore - this is an issue in the mup codebase
-        )  
+            dataset,  # type: ignore - this is an issue in the mup codebase
+            batch_size=baseline_batch_size,
+        )
     baseline_high_stakes_prob = np.array(baseline_results.other_fields["high_stakes_score"])
     return baseline_high_stakes_prob
+
+
+def run_finetuned_baseline(
+    checkpoint_path: str | Path,
+    finetune_config: FinetuneBaselineConfig,
+    dataset: LabelledDataset,
+    test_batch_size: int = 1,
+    suppress_progress: bool = True,
+) -> np.ndarray:
+    """Run the fine-tuned baseline on the given dataset.
+
+    This baseline uses a model that was fine-tuned with a classification head
+    to directly predict high-stakes vs low-stakes.
+
+    Args:
+        checkpoint_path: Path to the fine-tuned model checkpoint.
+        finetune_config: Configuration for the fine-tuned classifier. Must include
+            at minimum: model_name_or_path (str) and num_classes (int, typically 2).
+        dataset: The dataset to run the baseline model on.
+        test_batch_size: The batch size to use for inference.
+        suppress_progress: Whether to suppress progress/log output.
+
+    Returns:
+        A numpy array of high-stakes probabilities from the fine-tuned model.
+    """
+    import contextlib
+    import io
+
+    import torch
+
+    checkpoint_path = Path(checkpoint_path)
+
+    # Override test_batch_size in config if provided
+    config_dict = finetune_config.model_dump()
+    config_dict["test_batch_size"] = test_batch_size
+    finetune_config = FinetuneBaselineConfig(**config_dict)
+
+    # Create classifier and load checkpoint
+    classifier = FinetunedClassifier(finetune_config)
+    classifier.initialize_model_and_classifier()
+
+    # Load checkpoint based on strategy
+    trainer_strategy = finetune_config.get("Trainer", {}).get("strategy", "")
+
+    if suppress_progress:
+        redirect_context = contextlib.redirect_stdout(io.StringIO())
+    else:
+        redirect_context = contextlib.nullcontext()
+
+    with redirect_context:
+        if trainer_strategy.startswith("fsdp"):
+            if checkpoint_path.is_dir():
+                raise NotImplementedError("Loading FSDP directory checkpoints is not implemented yet")
+            else:
+                full_sd = torch.load(checkpoint_path, map_location="cpu")["state_dict"]
+                classifier.classifier.load_state_dict(full_sd, strict=False)
+        elif trainer_strategy == "deepspeed_stage_2_offload":
+            from models_under_pressure.baselines.finetune import (
+                get_bf16_state_dict_from_zero_checkpoint,
+            )
+
+            state_dict = get_bf16_state_dict_from_zero_checkpoint(checkpoint_path)
+            classifier.classifier.load_state_dict(state_dict, strict=False)
+        else:
+            state_dict = torch.load(checkpoint_path, map_location="cpu")
+            if "state_dict" in state_dict:
+                state_dict = state_dict["state_dict"]
+            classifier.classifier.load_state_dict(state_dict, strict=False)
+
+    # Convert to bfloat16 and set to eval mode
+    classifier.classifier.to(dtype=torch.bfloat16)
+    classifier.classifier.eval()
+
+    # Run inference
+    if suppress_progress:
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            high_stakes_probs = np.array(classifier.predict_proba(dataset))
+    else:
+        high_stakes_probs = np.array(classifier.predict_proba(dataset))
+
+    return high_stakes_probs
 
 
 def run_online_cascade(
@@ -253,7 +348,7 @@ def run_online_cascade(
     # Use boolean array to select examples where we need to call the baseline
     baseline_indices = np.where(to_call_baseline)[0].tolist()
     dataset_to_call_baseline = dataset[baseline_indices]
-    baseline_high_stakes_prob = run_llm_baseline(
+    baseline_high_stakes_prob = run_prompted_baseline(
         baseline_model_name=baseline_model_name,
         dataset=dataset_to_call_baseline,
         baseline_batch_size=baseline_batch_size,
