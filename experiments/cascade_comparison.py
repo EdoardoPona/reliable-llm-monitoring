@@ -27,13 +27,14 @@ from matplotlib.figure import Figure
 from reliable_monitoring.cascade import offline_batch_cascade, run_llm_baseline
 from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset, split_dataset
 from reliable_monitoring.learn_then_test import fixed_sequence_testing, is_pareto
-from reliable_monitoring.probes import SequenceProbe
 from reliable_monitoring.risks import (
     RISK_RGISTRY,
     BudgetCostRisk,
     ThresholdEvaluationResult,
     evaluate_threshold_risks,
 )
+from reliable_monitoring.probes import DegradedProbe, SequenceProbe
+
 
 load_dotenv()
 
@@ -337,6 +338,11 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
     cascade_batch_size = config.cascade_batch_size
     budget = config.budget
 
+    degrade_enabled = getattr(config, "probe_degradation_enabled", False)
+
+    if degrade_enabled:
+        logger.warning("Probe degradation enabled (fixed settings).")
+
     activation_config = ActivationConfig(
         model_name=config.activations_model_name,
         layer=config.activations_layer,
@@ -389,7 +395,8 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
 
     # Load or train probe
     logger.info("Fitting probe...")
-    probe = SequenceProbe(reduction_strategy=config.reduction_strategy)
+    base_probe = SequenceProbe(reduction_strategy=config.reduction_strategy)
+    probe = DegradedProbe(base_probe, enabled=degrade_enabled, seed=seed)
     probe.fit(train_dataset)
 
     if calibration_method is not None:
@@ -834,6 +841,7 @@ def log_to_clearml(
     if results.config.get("pareto_testing", False):
         tags.append(f"opt_risk-{results.config.get('opt_risk', 'accuracy_error')}")
         
+    tags.append(f"probe-degraded-{results.config.get('probe_degradation_enabled', False)}")
     clearml_logger.add_tags(tags)
 
     # Use serializer for clean data extraction

@@ -336,3 +336,34 @@ class SequenceProbe:
         else:  # isotonic-regression
             self.calibration_clf = IsotonicRegression(out_of_bounds="clip")
             self.calibration_clf.fit(scores, y)
+
+
+class DegradedProbe:
+    """Wrapper that optionally degrades probe predictions with fixed settings.
+
+    This is intended for temporary delegation testing when baselines are weak.
+        Degradation is applied only to outputs of predict():
+            - Randomly flip scores (score -> 1 - score) with probability 0.2.
+        This is uniform across confidence levels.
+    """
+
+    def __init__(self, probe: Probe, enabled: bool = False, seed: int | None = None):
+        self.probe = probe
+        self.enabled = enabled
+        self.rng = np.random.default_rng(seed)
+
+    def fit(self, dataset: LabelledDataset) -> None:
+        self.probe.fit(dataset)
+
+    def predict(self, dataset: LabelledDataset) -> np.ndarray:
+        scores = self.probe.predict(dataset)
+        if not self.enabled:
+            return scores
+
+        degraded = scores.astype(float, copy=True)
+        flip_mask = self.rng.random(degraded.shape[0]) < 0.3
+        degraded[flip_mask] = 1.0 - degraded[flip_mask]
+        return np.clip(degraded, 0.0, 1.0)
+
+    def calibrate(self, dataset: LabelledDataset, method: str = "platt-scaling") -> None:
+        self.probe.calibrate(dataset, method=method)
