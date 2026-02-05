@@ -66,28 +66,44 @@ class Risk:
     """
 
     name: str
+    description: str
     empirical_computation: Callable[[RiskEvaluationContext], float]
     p_value_bound_fn: BoundFunction
 
 
+RISK_RGISTRY: dict[str, Risk] = {}  # Global registry for Risk instances by name
+
+def register_risk(risk: Risk) -> None:
+    """Register a Risk instance in the global registry."""
+    if risk.name in RISK_RGISTRY:
+        raise ValueError(f"Risk with name '{risk.name}' already registered.")
+    RISK_RGISTRY[risk.name] = risk
+
+
 # Pre-made Risk instances with sensible defaults
 BudgetCostRisk = Risk(
-    name="Budget Cost",
+    name="budget",
+    description="Budget Cost",
     empirical_computation=budget_cost_computation,
     p_value_bound_fn=binomial,
 )
+register_risk(BudgetCostRisk)
 
 AccuracyRisk = Risk(
-    name="Error Rate (1 - Accuracy)",
+    name="accuracy_error",
+    description="Error Rate (1 - Accuracy)",
     empirical_computation=accuracy_computation,
     p_value_bound_fn=hb_p_value,
 )
+register_risk(AccuracyRisk)
 
 RocAucRisk = Risk(
-    name="Negative ROC AUC (1 - AUC)",
+    name="roc_auc_error",
+    description="Negative ROC AUC (1 - AUC)",
     empirical_computation=roc_auc_computation,
     p_value_bound_fn=hb_p_value,
 )
+register_risk(RocAucRisk)
 
 
 @dataclass

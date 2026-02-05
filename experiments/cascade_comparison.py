@@ -28,7 +28,12 @@ from reliable_monitoring.cascade import offline_batch_cascade, run_llm_baseline
 from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset, split_dataset
 from reliable_monitoring.learn_then_test import fixed_sequence_testing, is_pareto
 from reliable_monitoring.probes import SequenceProbe
-from reliable_monitoring.risks import AccuracyRisk, BudgetCostRisk, ThresholdEvaluationResult, evaluate_threshold_risks
+from reliable_monitoring.risks import (
+    RISK_RGISTRY,
+    BudgetCostRisk,
+    ThresholdEvaluationResult,
+    evaluate_threshold_risks,
+)
 
 load_dotenv()
 
@@ -437,22 +442,26 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
     )
 
     logger.info("Empirical budget risks computed.")
-    for thr, risk in zip(calib_eval_result.thresholds, calib_eval_result["Budget Cost"], strict=True):
+    for thr, risk in zip(calib_eval_result.thresholds, calib_eval_result["budget"], strict=True):
         logger.info(f"Threshold: {thr:.4f}, Empirical Budget Risk: {risk:.4f}")
 
     # Compute p-values using the risk's appropriate bound (binomial for budget cost)
-    all_p_values = calib_eval_result.compute_p_values(alpha=config.budget)["Budget Cost"]
+    all_p_values = calib_eval_result.compute_p_values(alpha=config.budget)["budget"]
 
     if config.pareto_testing:
         logger.info("Performing Pareto testing with multiple risks...")
+        OptRisk = RISK_RGISTRY.get(
+            getattr(config, "opt_risk", 'accuracy_error')
+        )
+        assert OptRisk is not None, f"Invalid opt risk specified: {config.opt_risk}"
 
         # Step 1: Evaluate both risks on optimization set only
         opt_eval_result = evaluate_threshold_risks(
             opt_probe_scores,
             opt_baseline_scores,
             thresholds,
-            risks=[BudgetCostRisk, AccuracyRisk],
-            dataset=opt_dataset,  # Required for AccuracyRisk
+            risks=[BudgetCostRisk, OptRisk],
+            dataset=opt_dataset,  # Required for RocAucRisk
             merge_strategy=config.cascade_merge_strategy,
         )
 
@@ -820,7 +829,11 @@ def log_to_clearml(
     tags.append(f"probe-{results.config['reduction_strategy']}")
     tags.append(f"merge-{results.config['cascade_merge_strategy']}")
     tags.append(f"pareto_testing-{results.config['pareto_testing']}")
-    tags.append(f"calibrate_probe-{results.config.get('calibrate_probe', False)}")
+    calibration_method = results.config.get("calibration_method")
+    tags.append(f"calibration-{calibration_method}" if calibration_method else "not-calibrated")
+    if results.config.get("pareto_testing", False):
+        tags.append(f"opt_risk-{results.config.get('opt_risk', 'accuracy_error')}")
+        
     clearml_logger.add_tags(tags)
 
     # Use serializer for clean data extraction
