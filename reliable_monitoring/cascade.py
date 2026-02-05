@@ -116,12 +116,14 @@ def select_fixed_budget_rate(probe_scores: np.ndarray, rate: float, **kwargs) ->
         raise ValueError("fixed_budget_rate strategy requires 'rate' parameter")
     if not (0 < rate <= 1):
         raise ValueError(f"rate must be in (0, 1], got {rate}")
-
-    lower_percentile = (0.5 - rate / 2) * 100
-    upper_percentile = (0.5 + rate / 2) * 100
-    lower_bound = np.percentile(probe_scores, lower_percentile)
-    upper_bound = np.percentile(probe_scores, upper_percentile)
-    return (probe_scores >= lower_bound) & (probe_scores <= upper_bound)
+    n_samples = len(probe_scores)
+    sorted_indices = np.argsort(probe_scores)
+    lower_rank = int((1 - rate) / 2 * n_samples)
+    upper_rank = int((1 + rate) / 2 * n_samples)
+    mask = np.zeros(n_samples, dtype=bool)
+    selected_indices = sorted_indices[lower_rank:upper_rank]
+    mask[selected_indices] = True
+    return mask
 
 
 @register_selection_strategy("fixed_budget_amount")
