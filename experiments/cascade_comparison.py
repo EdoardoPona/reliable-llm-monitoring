@@ -27,14 +27,13 @@ from matplotlib.figure import Figure
 from reliable_monitoring.cascade import offline_batch_cascade, run_llm_baseline
 from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset, split_dataset
 from reliable_monitoring.learn_then_test import fixed_sequence_testing, is_pareto
+from reliable_monitoring.probes import DegradedProbe, SequenceProbe
 from reliable_monitoring.risks import (
     RISK_RGISTRY,
     BudgetCostRisk,
     ThresholdEvaluationResult,
     evaluate_threshold_risks,
 )
-from reliable_monitoring.probes import DegradedProbe, SequenceProbe
-
 
 load_dotenv()
 
@@ -457,9 +456,7 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
 
     if config.pareto_testing:
         logger.info("Performing Pareto testing with multiple risks...")
-        OptRisk = RISK_RGISTRY.get(
-            getattr(config, "opt_risk", 'accuracy_error')
-        )
+        OptRisk = RISK_RGISTRY.get(getattr(config, "opt_risk", "accuracy_error"))
         assert OptRisk is not None, f"Invalid opt risk specified: {config.opt_risk}"
 
         # Step 1: Evaluate both risks on optimization set only
@@ -840,7 +837,7 @@ def log_to_clearml(
     tags.append(f"calibration-{calibration_method}" if calibration_method else "not-calibrated")
     if results.config.get("pareto_testing", False):
         tags.append(f"opt_risk-{results.config.get('opt_risk', 'accuracy_error')}")
-        
+
     tags.append(f"probe-degraded-{results.config.get('probe_degradation_enabled', False)}")
     clearml_logger.add_tags(tags)
 
