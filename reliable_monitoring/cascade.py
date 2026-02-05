@@ -214,12 +214,14 @@ def run_llm_baseline(
     if suppress_progress:
         with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
             baseline_results = baseline_model.likelihood_classify_dataset(
-                dataset, batch_size=baseline_batch_size # type: ignore - this is an issue in the mup codebase
-            )  
+                dataset, # type: ignore - this is an issue in the mup codebase
+                batch_size=baseline_batch_size,  
+            )
     else:
         baseline_results = baseline_model.likelihood_classify_dataset(
-            dataset, batch_size=baseline_batch_size # type: ignore - this is an issue in the mup codebase
-        )  
+            dataset, # type: ignore - this is an issue in the mup codebase
+            batch_size=baseline_batch_size,  
+        )
     baseline_high_stakes_prob = np.array(baseline_results.other_fields["high_stakes_score"])
     return baseline_high_stakes_prob
 
