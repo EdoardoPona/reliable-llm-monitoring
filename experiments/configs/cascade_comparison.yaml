@@ -46,6 +46,8 @@ seed: 42
 debug: False
 
 pareto_testing: true
+opt_risk: roc_auc_error
+# opt_risk: accuracy_error
 
 threshold_start: 0.7
 
@@ -54,3 +56,7 @@ threshold_end: 1.0
 threshold_steps: 20
 
 calibration_method: isotonic-regression
+# calibration_method: platt-scaling 
+
+# Optional: artificially degrade probe performance for delegation testing
+probe_degradation_enabled: true
