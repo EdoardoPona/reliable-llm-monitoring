@@ -373,8 +373,18 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
     logger.info(f"Test dataset size: {len(test_dataset)}")
 
     calibration_method = getattr(config, "calibration_method", None)
-    if calibration_method is not None:
-        logger.info(f"Preparing dev dataset split for probe calibration ({calibration_method})")
+    threshold_method = getattr(config, "threshold_method", "linear")
+
+    if calibration_method is not None and threshold_method == "percentile_budget":
+        raise ValueError(
+            "calibration_method and threshold_method='percentile_budget' are mutually exclusive. "
+            "percentile_budget uses the probe calibration split for threshold computation instead."
+        )
+
+    needs_probe_calib_split = calibration_method is not None or threshold_method == "percentile_budget"
+    if needs_probe_calib_split:
+        split_reason = calibration_method if calibration_method else "percentile_budget thresholds"
+        logger.info(f"Preparing dev dataset split ({split_reason})")
         calib_dataset, probe_calib_dataset = split_dataset(
             calib_dataset,
             proportions=[0.7, 0.3],
@@ -432,12 +442,25 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
             baseline_batch_size=config.baseline_batch_size,
         )
 
+    # Generate candidate thresholds
+    if threshold_method == "percentile_budget":
+        logger.info("Computing percentile-based thresholds from probe calibration data...")
+        probe_calib_scores = probe.predict(probe_calib_dataset)
+        confidence = np.maximum(probe_calib_scores, 1 - probe_calib_scores)
+        n_steps = getattr(config, "threshold_steps", 10)
+        quantile_levels = np.linspace(1 / n_steps, 1.0, n_steps)
+        thresholds = np.quantile(confidence, quantile_levels)
+        thresholds = np.clip(thresholds, 0.5, 1.0)
+        thresholds = np.unique(thresholds)
+        logger.info(f"Percentile-based thresholds ({len(thresholds)} unique): {thresholds}")
+    else:
+        thresholds = np.linspace(
+            getattr(config, "threshold_start", 0.5),
+            getattr(config, "threshold_end", 1.0),
+            getattr(config, "threshold_steps", 10),
+        )
+
     # Evaluate empirical risks
-    thresholds = np.linspace(
-        getattr(config, "threshold_start", 0.5),
-        getattr(config, "threshold_end", 1.0),
-        getattr(config, "threshold_steps", 10),
-    )
 
     calib_eval_result = evaluate_threshold_risks(
         calib_probe_scores,

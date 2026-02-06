@@ -1,4 +1,8 @@
-# Cascade Comparison Experiment Configuration
+# Cascade Comparison Experiment Configuration — Percentile Budget Thresholds
+#
+# This config uses percentile_budget threshold generation instead of probe
+# score calibration. Thresholds are chosen so that each successive threshold
+# increases the empirical budget by 1/threshold_steps on the calibration split.
 
 # The budget to guarantee control over
 budget: 0.25
@@ -17,7 +21,6 @@ cascade_batch_size: 128
 baseline_batch_size: 8
 
 # The strategy to merge probe and baseline scores in the cascade
-# cascade_merge_strategy: avg
 cascade_merge_strategy: replace
 
 # The name of the LLM model to use for computing activations
@@ -27,8 +30,6 @@ activations_model_name: meta-llama/Llama-3.2-1B-Instruct
 activations_layer: 11
 
 # The name of the LLM model to use as the baseline in the cascade
-# baseline_model_name: meta-llama/Llama-3.2-1B-Instruct
-# baseline_model_name: meta-llama/Llama-3.2-3B-Instruct
 baseline_model_name: meta-llama/Llama-3.1-8B-Instruct
 
 # Path to the training dataset for fitting the probe
@@ -46,23 +47,18 @@ seed: 42
 debug: False
 
 pareto_testing: true
-# opt_risk: roc_auc_error
-opt_risk: accuracy_error
+# opt_risk: accuracy_error
+opt_risk: roc_auc_error
 
+# Threshold generation method: 'percentile_budget'
+# Thresholds are quantiles of the probe confidence distribution on the
+# calibration split, so each step increases budget by 1/threshold_steps.
+# Mutually exclusive with calibration_method (no probe score calibration).
+threshold_method: percentile_budget
 threshold_steps: 20
 
-# Threshold generation method: 'linear' or 'percentile_budget'
-# linear: evenly spaced thresholds between threshold_start and threshold_end
-# percentile_budget: thresholds chosen so budget increases by 1/threshold_steps each step
-#   (estimated on calibration split). Mutually exclusive with calibration_method.
-threshold_method: linear
-
-# Only used when threshold_method is 'linear'
-threshold_start: 0.7
-threshold_end: 1.0
-
-calibration_method: isotonic-regression
-# calibration_method: platt-scaling
+# calibration_method must NOT be set when using percentile_budget
+# calibration_method: isotonic-regression
 
 # Optional: artificially degrade probe performance for delegation testing
 probe_degradation_enabled: true
