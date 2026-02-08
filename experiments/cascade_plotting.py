@@ -48,7 +48,8 @@ def plot_pareto_frontier(results: CascadeComparisonResults) -> Figure:
     )
 
     ax.set_xlabel("Budget Cost")
-    ax.set_ylabel("1-Accuracy")
+    opt_risk_name = results.config.get("opt_risk", "accuracy_error")
+    ax.set_ylabel(opt_risk_name)
     ax.legend()
     ax.grid(True, alpha=0.3)
 

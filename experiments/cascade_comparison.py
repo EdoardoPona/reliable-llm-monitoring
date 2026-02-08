@@ -27,7 +27,7 @@ from matplotlib.figure import Figure
 from reliable_monitoring.cascade import offline_batch_cascade, run_llm_baseline
 from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset, split_dataset
 from reliable_monitoring.learn_then_test import fixed_sequence_testing, is_pareto
-from reliable_monitoring.probes import SequenceProbe
+from reliable_monitoring.probes import DegradedProbe, SequenceProbe
 from reliable_monitoring.risks import (
     RISK_RGISTRY,
     BudgetCostRisk,
@@ -337,6 +337,11 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
     cascade_batch_size = config.cascade_batch_size
     budget = config.budget
 
+    degrade_enabled = getattr(config, "probe_degradation_enabled", False)
+
+    if degrade_enabled:
+        logger.warning("Probe degradation enabled (fixed settings).")
+
     activation_config = ActivationConfig(
         model_name=config.activations_model_name,
         layer=config.activations_layer,
@@ -368,33 +373,63 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
     logger.info(f"Test dataset size: {len(test_dataset)}")
 
     calibration_method = getattr(config, "calibration_method", None)
-    if calibration_method is not None:
-        logger.info(f"Preparing dev dataset split for probe calibration ({calibration_method})")
-        calib_dataset, probe_calib_dataset = split_dataset(
-            calib_dataset,
-            proportions=[0.7, 0.3],
-            shuffle=True,
-            seed=seed,
+    threshold_method = getattr(config, "threshold_method", "linear")
+
+    if calibration_method is not None and threshold_method == "percentile_budget":
+        raise ValueError(
+            "calibration_method and threshold_method='percentile_budget' are mutually exclusive. "
+            "percentile_budget uses the probe calibration split for threshold computation instead."
         )
 
+    needs_auxiliary_data = calibration_method is not None or threshold_method == "percentile_budget"
+
+    # --- Data splitting ---
+    # When Pareto testing is enabled, auxiliary operations (probe calibration,
+    # percentile threshold computation) are folded into the Pareto opt split
+    # to maximise the calibration set available for hypothesis testing.
     if config.pareto_testing:
-        logger.info("Using Pareto testing")
-        # split the calibration dataset into two halves: one for optimisation the other for calibration
+        pareto_proportion = getattr(config, "pareto_split_proportion", 0.2)
+        logger.info(
+            f"Splitting calibration data for Pareto testing "
+            f"(opt={pareto_proportion:.0%}, calib={1 - pareto_proportion:.0%})"
+        )
         calib_dataset, opt_dataset = split_dataset(
             calib_dataset,
-            proportions=[0.5, 0.5],
+            proportions=[1 - pareto_proportion, pareto_proportion],
             shuffle=True,
             seed=seed,
         )
+        if needs_auxiliary_data:
+            logger.info("Auxiliary operations (calibration/threshold generation) will use opt split")
+        auxiliary_dataset = opt_dataset if needs_auxiliary_data else None
+    elif needs_auxiliary_data:
+        auxiliary_proportion = getattr(config, "auxiliary_split_proportion", 0.15)
+        aux_reason = "probe calibration" if calibration_method else "percentile thresholds"
+        logger.info(
+            f"Splitting calibration data for {aux_reason} "
+            f"(auxiliary={auxiliary_proportion:.0%}, calib={1 - auxiliary_proportion:.0%})"
+        )
+        calib_dataset, auxiliary_dataset = split_dataset(
+            calib_dataset,
+            proportions=[1 - auxiliary_proportion, auxiliary_proportion],
+            shuffle=True,
+            seed=seed,
+        )
+    else:
+        auxiliary_dataset = None
+
+    logger.info(f"Effective calibration set size for hypothesis testing: {len(calib_dataset)}")
 
     # Load or train probe
     logger.info("Fitting probe...")
-    probe = SequenceProbe(reduction_strategy=config.reduction_strategy)
+    base_probe = SequenceProbe(reduction_strategy=config.reduction_strategy)
+    probe = DegradedProbe(base_probe, enabled=degrade_enabled, seed=seed)
     probe.fit(train_dataset)
 
     if calibration_method is not None:
-        logger.info("Calibrating probe scores on held-out probe calibration dataset...")
-        probe.calibrate(probe_calib_dataset, method=calibration_method)
+        assert auxiliary_dataset is not None
+        logger.info(f"Calibrating probe scores ({calibration_method}) on auxiliary dataset...")
+        probe.calibrate(auxiliary_dataset, method=calibration_method)
 
     logger.info("Computing probe scores on training dataset for histogram logging...")
     train_probe_scores = probe.predict(train_dataset)
@@ -426,12 +461,32 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
             baseline_batch_size=config.baseline_batch_size,
         )
 
+    # Generate candidate thresholds
+    if threshold_method == "percentile_budget":
+        logger.info("Computing percentile-based thresholds from auxiliary data...")
+        if config.pareto_testing:
+            # Reuse already-computed opt scores (auxiliary = opt)
+            percentile_scores = opt_probe_scores
+        else:
+            assert auxiliary_dataset is not None
+            percentile_scores = probe.predict(auxiliary_dataset)
+        confidence = np.maximum(percentile_scores, 1 - percentile_scores)
+        n_steps = getattr(config, "threshold_steps", 10)
+        percentile_budget_min = getattr(config, "percentile_budget_min", budget / 2)
+        percentile_budget_max = getattr(config, "percentile_budget_max", min(2 * budget, 1.0))
+        quantile_levels = np.linspace(percentile_budget_min, percentile_budget_max, n_steps)
+        thresholds = np.quantile(confidence, quantile_levels)
+        thresholds = np.clip(thresholds, 0.5, 1.0)
+        thresholds = np.unique(thresholds)
+        logger.info(f"Percentile-based thresholds ({len(thresholds)} unique): {thresholds}")
+    else:
+        thresholds = np.linspace(
+            getattr(config, "threshold_start", 0.5),
+            getattr(config, "threshold_end", 1.0),
+            getattr(config, "threshold_steps", 10),
+        )
+
     # Evaluate empirical risks
-    thresholds = np.linspace(
-        getattr(config, "threshold_start", 0.5),
-        getattr(config, "threshold_end", 1.0),
-        getattr(config, "threshold_steps", 10),
-    )
 
     calib_eval_result = evaluate_threshold_risks(
         calib_probe_scores,
@@ -450,9 +505,7 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
 
     if config.pareto_testing:
         logger.info("Performing Pareto testing with multiple risks...")
-        OptRisk = RISK_RGISTRY.get(
-            getattr(config, "opt_risk", 'accuracy_error')
-        )
+        OptRisk = RISK_RGISTRY.get(getattr(config, "opt_risk", "accuracy_error"))
         assert OptRisk is not None, f"Invalid opt risk specified: {config.opt_risk}"
 
         # Step 1: Evaluate both risks on optimization set only
@@ -833,7 +886,8 @@ def log_to_clearml(
     tags.append(f"calibration-{calibration_method}" if calibration_method else "not-calibrated")
     if results.config.get("pareto_testing", False):
         tags.append(f"opt_risk-{results.config.get('opt_risk', 'accuracy_error')}")
-        
+
+    tags.append(f"probe-degraded-{results.config.get('probe_degradation_enabled', False)}")
     clearml_logger.add_tags(tags)
 
     # Use serializer for clean data extraction

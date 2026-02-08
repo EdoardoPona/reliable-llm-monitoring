@@ -73,6 +73,7 @@ class Risk:
 
 RISK_RGISTRY: dict[str, Risk] = {}  # Global registry for Risk instances by name
 
+
 def register_risk(risk: Risk) -> None:
     """Register a Risk instance in the global registry."""
     if risk.name in RISK_RGISTRY:
