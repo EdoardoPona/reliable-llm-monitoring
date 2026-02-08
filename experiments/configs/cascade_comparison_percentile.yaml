@@ -50,12 +50,26 @@ pareto_testing: true
 # opt_risk: accuracy_error
 opt_risk: roc_auc_error
 
+# Proportion of calibration data used for the Pareto optimisation split.
+# When Pareto testing is enabled, auxiliary operations (percentile threshold
+# generation) are folded into this split to maximise the data available
+# for hypothesis testing.
+pareto_split_proportion: 0.15
+
 # Threshold generation method: 'percentile_budget'
 # Thresholds are quantiles of the probe confidence distribution on the
-# calibration split, so each step increases budget by 1/threshold_steps.
+# auxiliary split, so each step increases budget by 1/threshold_steps.
 # Mutually exclusive with calibration_method (no probe score calibration).
 threshold_method: percentile_budget
 threshold_steps: 20
+# Max budget quantile to include in the threshold grid.
+# Defaults to min(2 * budget, 1.0) if not set. Thresholds beyond
+# the target budget will never pass the hypothesis test.
+# Budget quantile range for the threshold grid.
+# Defaults: min = budget/2, max = min(2*budget, 1.0)
+# Concentrates thresholds around the target budget.
+percentile_budget_min: 0.125
+percentile_budget_max: 0.5
 
 # calibration_method must NOT be set when using percentile_budget
 # calibration_method: isotonic-regression

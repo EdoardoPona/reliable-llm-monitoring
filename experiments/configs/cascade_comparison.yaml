@@ -49,6 +49,12 @@ pareto_testing: true
 # opt_risk: roc_auc_error
 opt_risk: accuracy_error
 
+# Proportion of calibration data used for the Pareto optimisation split.
+# When Pareto testing is enabled, auxiliary operations (probe calibration,
+# percentile threshold generation) are folded into this split to maximise
+# the data available for hypothesis testing.
+pareto_split_proportion: 0.2
+
 threshold_steps: 20
 
 # Threshold generation method: 'linear' or 'percentile_budget'
@@ -63,6 +69,11 @@ threshold_end: 1.0
 
 calibration_method: isotonic-regression
 # calibration_method: platt-scaling
+
+# Proportion of calibration data used for auxiliary operations (probe calibration
+# or percentile thresholds) when Pareto testing is NOT enabled.
+# When Pareto IS enabled, auxiliary ops use the Pareto opt split instead.
+# auxiliary_split_proportion: 0.15
 
 # Optional: artificially degrade probe performance for delegation testing
 probe_degradation_enabled: true

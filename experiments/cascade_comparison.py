@@ -381,26 +381,44 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
             "percentile_budget uses the probe calibration split for threshold computation instead."
         )
 
-    needs_probe_calib_split = calibration_method is not None or threshold_method == "percentile_budget"
-    if needs_probe_calib_split:
-        split_reason = calibration_method if calibration_method else "percentile_budget thresholds"
-        logger.info(f"Preparing dev dataset split ({split_reason})")
-        calib_dataset, probe_calib_dataset = split_dataset(
-            calib_dataset,
-            proportions=[0.7, 0.3],
-            shuffle=True,
-            seed=seed,
-        )
+    needs_auxiliary_data = calibration_method is not None or threshold_method == "percentile_budget"
 
+    # --- Data splitting ---
+    # When Pareto testing is enabled, auxiliary operations (probe calibration,
+    # percentile threshold computation) are folded into the Pareto opt split
+    # to maximise the calibration set available for hypothesis testing.
     if config.pareto_testing:
-        logger.info("Using Pareto testing")
-        # split the calibration dataset into two halves: one for optimisation the other for calibration
+        pareto_proportion = getattr(config, "pareto_split_proportion", 0.2)
+        logger.info(
+            f"Splitting calibration data for Pareto testing "
+            f"(opt={pareto_proportion:.0%}, calib={1 - pareto_proportion:.0%})"
+        )
         calib_dataset, opt_dataset = split_dataset(
             calib_dataset,
-            proportions=[0.5, 0.5],
+            proportions=[1 - pareto_proportion, pareto_proportion],
             shuffle=True,
             seed=seed,
         )
+        if needs_auxiliary_data:
+            logger.info("Auxiliary operations (calibration/threshold generation) will use opt split")
+        auxiliary_dataset = opt_dataset if needs_auxiliary_data else None
+    elif needs_auxiliary_data:
+        auxiliary_proportion = getattr(config, "auxiliary_split_proportion", 0.15)
+        aux_reason = "probe calibration" if calibration_method else "percentile thresholds"
+        logger.info(
+            f"Splitting calibration data for {aux_reason} "
+            f"(auxiliary={auxiliary_proportion:.0%}, calib={1 - auxiliary_proportion:.0%})"
+        )
+        calib_dataset, auxiliary_dataset = split_dataset(
+            calib_dataset,
+            proportions=[1 - auxiliary_proportion, auxiliary_proportion],
+            shuffle=True,
+            seed=seed,
+        )
+    else:
+        auxiliary_dataset = None
+
+    logger.info(f"Effective calibration set size for hypothesis testing: {len(calib_dataset)}")
 
     # Load or train probe
     logger.info("Fitting probe...")
@@ -409,8 +427,9 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
     probe.fit(train_dataset)
 
     if calibration_method is not None:
-        logger.info("Calibrating probe scores on held-out probe calibration dataset...")
-        probe.calibrate(probe_calib_dataset, method=calibration_method)
+        assert auxiliary_dataset is not None
+        logger.info(f"Calibrating probe scores ({calibration_method}) on auxiliary dataset...")
+        probe.calibrate(auxiliary_dataset, method=calibration_method)
 
     logger.info("Computing probe scores on training dataset for histogram logging...")
     train_probe_scores = probe.predict(train_dataset)
@@ -444,11 +463,18 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
 
     # Generate candidate thresholds
     if threshold_method == "percentile_budget":
-        logger.info("Computing percentile-based thresholds from probe calibration data...")
-        probe_calib_scores = probe.predict(probe_calib_dataset)
-        confidence = np.maximum(probe_calib_scores, 1 - probe_calib_scores)
+        logger.info("Computing percentile-based thresholds from auxiliary data...")
+        if config.pareto_testing:
+            # Reuse already-computed opt scores (auxiliary = opt)
+            percentile_scores = opt_probe_scores
+        else:
+            assert auxiliary_dataset is not None
+            percentile_scores = probe.predict(auxiliary_dataset)
+        confidence = np.maximum(percentile_scores, 1 - percentile_scores)
         n_steps = getattr(config, "threshold_steps", 10)
-        quantile_levels = np.linspace(1 / n_steps, 1.0, n_steps)
+        percentile_budget_min = getattr(config, "percentile_budget_min", budget / 2)
+        percentile_budget_max = getattr(config, "percentile_budget_max", min(2 * budget, 1.0))
+        quantile_levels = np.linspace(percentile_budget_min, percentile_budget_max, n_steps)
         thresholds = np.quantile(confidence, quantile_levels)
         thresholds = np.clip(thresholds, 0.5, 1.0)
         thresholds = np.unique(thresholds)
