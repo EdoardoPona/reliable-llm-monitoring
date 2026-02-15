@@ -1,0 +1,66 @@
+# SGT Cascade Experiment
+#
+# Uses Sequential Graphical Testing (Bretz et al. 2009) to discover all
+# (threshold, alpha) pairs for which the chosen risk is guaranteed,
+# then selects the tightest achievable guarantee.
+
+# Which risk to guarantee via hypothesis testing.
+# Available: "budget", "accuracy_error", "roc_auc_error"
+guaranteed_risk: accuracy_error
+
+# The probability with which the guarantee holds (1-FWER)
+guarantee_probability: 0.9
+
+# Alpha grid: risk levels to test simultaneously
+alpha_start: 0.05
+alpha_end: 0.5
+alpha_steps: 10
+
+# Graph topology for SGT: "lattice" or "uniform_lattice"
+sgt_graph_type: lattice
+
+# The strategy to reduce the sequence of activations to a fixed size vector
+reduction_strategy: mean
+
+# Batch size for cascade comparison
+cascade_batch_size: 128
+
+# Batch size for baseline model inference
+# this cannot be less than 2, and should be even to avoid losing data
+baseline_batch_size: 8
+
+# The strategy to merge probe and baseline scores in the cascade
+cascade_merge_strategy: replace
+
+# The name of the LLM model to use for computing activations
+activations_model_name: meta-llama/Llama-3.2-1B-Instruct
+
+# The layer of the LLM model to use for computing activations
+activations_layer: 11
+
+# The name of the LLM model to use as the baseline in the cascade
+baseline_model_name: meta-llama/Llama-3.1-8B-Instruct
+
+# Path to the training dataset for fitting the probe
+train_dataset_path: ${DATA_DIR}/training/prompts_4x/train.jsonl
+
+# Path to the calibration dataset (used to learn reliable threshold)
+calib_dataset_path: ${DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl
+
+# Path to the test dataset for comparing cascade strategies
+test_dataset_path: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
+
+# Random seed for reproducibility
+seed: 42
+
+debug: False
+
+# Candidate thresholds: linearly spaced in [threshold_start, threshold_end]
+threshold_start: 0.5
+threshold_end: 1.0
+threshold_steps: 20
+
+# Optional: artificially degrade probe performance for delegation testing
+probe_degradation_enabled: true
+
+calibration_method: "isotonic-regression"
