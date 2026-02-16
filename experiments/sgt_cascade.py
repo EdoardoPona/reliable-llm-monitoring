@@ -23,11 +23,15 @@ from clearml_serialization import (
 from config import load_config
 from dotenv import load_dotenv
 
-from reliable_monitoring.bounds import compute_p_values_from_bounds
 from reliable_monitoring.cascade import offline_batch_cascade, run_llm_baseline
 from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset, split_dataset
-from reliable_monitoring.graphical_test_graphs import lattice_graph, uniform_lattice_graph
-from reliable_monitoring.learn_then_test import GraphicalTestResult, graphical_testing
+from reliable_monitoring.graphical_test_graphs import lattice_graph, row_chain_graph, uniform_lattice_graph
+from reliable_monitoring.learn_then_test import (
+    GraphicalTestResult,
+    Hypothesis,
+    compute_p_values,
+    graphical_testing,
+)
 from reliable_monitoring.probes import DegradedProbe, SequenceProbe
 from reliable_monitoring.risks import (
     RISK_RGISTRY,
@@ -46,6 +50,7 @@ DEBUG_SAMPLE_SIZE = 256
 GRAPH_FACTORIES = {
     "lattice": lattice_graph,
     "uniform_lattice": uniform_lattice_graph,
+    "row_chain": row_chain_graph,
 }
 
 
@@ -275,22 +280,49 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
     ordered_alphas = alpha_grid[alpha_order]
     ordered_empirical = calib_eval_result[guaranteed_risk_name][threshold_order]
 
-    # Build flat arrays: one entry per hypothesis (row-major flattening)
-    flat_empirical = np.repeat(ordered_empirical, n_a)
-    flat_alphas = np.tile(ordered_alphas, n_t)
+    # Row dimension: controls which parameter varies across rows of the
+    # graph and which varies within each row (columns).
+    #   "threshold" (default): rows=thresholds, cols=alphas
+    #       → "for each budget level, what is the best reliability?"
+    #   "alpha": rows=alphas, cols=thresholds
+    #       → "for each reliability target, what is the best budget?"
+    row_dim = getattr(config, "sgt_row_dimension", "threshold")
 
-    flat_p_values = compute_p_values_from_bounds(
-        flat_empirical,
-        calib_eval_result.n_samples,
-        flat_alphas,
-        bound_fn=GuaranteedRisk.p_value_bound_fn,
-    )
+    n_samples = calib_eval_result.n_samples
+    bound_fn = GuaranteedRisk.p_value_bound_fn
+
+    if row_dim == "threshold":
+        n_rows, n_cols = n_t, n_a
+        hypotheses = [
+            Hypothesis(
+                p_value_fn=lambda r=risk, a=alpha: float(bound_fn(r, n_samples, a)),
+                params={"threshold": float(ordered_thresholds[t_idx]), "alpha": float(alpha)},
+            )
+            for t_idx, risk in enumerate(ordered_empirical)
+            for alpha in ordered_alphas
+        ]
+    elif row_dim == "alpha":
+        n_rows, n_cols = n_a, n_t
+        hypotheses = [
+            Hypothesis(
+                p_value_fn=lambda r=risk, a=alpha: float(bound_fn(r, n_samples, a)),
+                params={"threshold": float(ordered_thresholds[t_idx]), "alpha": float(alpha)},
+            )
+            for alpha in ordered_alphas
+            for t_idx, risk in enumerate(ordered_empirical)
+        ]
+    else:
+        raise ValueError(f"Invalid sgt_row_dimension: '{row_dim}'. Use 'threshold' or 'alpha'.")
+
+    logger.info(f"SGT row dimension: {row_dim} ({n_rows} rows × {n_cols} cols)")
+
+    flat_p_values = compute_p_values(hypotheses)
 
     # Build graph
     graph_type = getattr(config, "sgt_graph_type", "lattice")
     if graph_type not in GRAPH_FACTORIES:
         raise ValueError(f"Unknown sgt_graph_type: '{graph_type}'. Available: {list(GRAPH_FACTORIES.keys())}")
-    weights, transitions = GRAPH_FACTORIES[graph_type](n_t, n_a)
+    weights, transitions = GRAPH_FACTORIES[graph_type](n_rows, n_cols)
 
     # Run graphical testing
     logger.info(f"Running graphical testing (graph={graph_type})...")
@@ -301,7 +333,10 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
         return None
 
     # Map flat indices back to (threshold_idx, alpha_idx) pairs
-    rejected_pairs = [(idx // n_a, idx % n_a) for idx in sgt_result.rejected]
+    if row_dim == "threshold":
+        rejected_pairs = [(idx // n_cols, idx % n_cols) for idx in sgt_result.rejected]
+    else:
+        rejected_pairs = [(idx % n_cols, idx // n_cols) for idx in sgt_result.rejected]
     logger.info(f"SGT rejected {len(rejected_pairs)}/{n_t * n_a} hypotheses")
 
     # Log achievable guarantees per alpha level

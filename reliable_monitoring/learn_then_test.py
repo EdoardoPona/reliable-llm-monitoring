@@ -1,6 +1,48 @@
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
+
+
+@dataclass
+class Hypothesis:
+    """A single hypothesis with a pre-filled p-value computation.
+
+    Makes hypotheses first-class citizens: each carries its own callable
+    that returns a p-value (with all parameters baked in), plus metadata
+    describing what it represents.
+
+    Attributes:
+        p_value_fn: Zero-argument callable that returns the p-value for
+            this hypothesis.  All parameters (empirical risk, sample size,
+            alpha, bound function, …) are already captured.
+        params: Arbitrary metadata describing the hypothesis, e.g.
+            ``{"threshold": 0.7, "alpha": 0.3}``.
+    """
+
+    p_value_fn: Callable[[], float]
+    params: dict[str, Any] = field(default_factory=dict)
+
+    def p_value(self) -> float:
+        """Compute and return the p-value for this hypothesis."""
+        return float(self.p_value_fn())
+
+
+def compute_p_values(hypotheses: list[Hypothesis]) -> np.ndarray:
+    """Compute p-values for a list of hypotheses.
+
+    Parameters
+    ----------
+    hypotheses : list[Hypothesis]
+        Each hypothesis carries a pre-filled ``p_value_fn``.
+
+    Returns
+    -------
+    np.ndarray, shape (m,)
+        One p-value per hypothesis.
+    """
+    return np.array([h.p_value() for h in hypotheses])
 
 
 @dataclass

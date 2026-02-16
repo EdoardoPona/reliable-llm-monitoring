@@ -1,0 +1,44 @@
+# SGT Cascade: Best budget (threshold) per reliability target
+#
+# Row-chain graph with rows = alphas (reliability targets).
+# For each alpha, chains across thresholds from easiest to hardest.
+# Each alpha row has an independent delta budget (1/n_alphas),
+# with surplus from fully-rejected rows cascading to the next.
+#
+# Question answered: "for each reliability target, what is the most
+# aggressive budget (threshold) we can achieve?"
+
+guaranteed_risk: accuracy_error
+guarantee_probability: 0.9
+
+# Alpha grid
+alpha_start: 0.05
+alpha_end: 0.5
+alpha_steps: 10
+
+# Row-chain: rows = alphas, cols = thresholds
+sgt_graph_type: row_chain
+sgt_row_dimension: alpha
+
+reduction_strategy: mean
+cascade_batch_size: 128
+baseline_batch_size: 8
+cascade_merge_strategy: replace
+
+activations_model_name: meta-llama/Llama-3.2-1B-Instruct
+activations_layer: 11
+baseline_model_name: meta-llama/Llama-3.1-8B-Instruct
+
+train_dataset_path: ${DATA_DIR}/training/prompts_4x/train.jsonl
+calib_dataset_path: ${DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl
+test_dataset_path: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
+
+seed: 42
+debug: False
+
+threshold_start: 0.5
+threshold_end: 1.0
+threshold_steps: 20
+
+probe_degradation_enabled: true
+calibration_method: "isotonic-regression"

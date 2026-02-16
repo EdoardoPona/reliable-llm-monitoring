@@ -5,8 +5,6 @@ and
 https://github.com/bracha-laufer/pareto-testing
 """
 
-from collections.abc import Callable
-
 import numpy as np
 from scipy.optimize import brentq
 from scipy.stats import binom
@@ -71,50 +69,6 @@ def hb_p_value(r_hat, n, alpha):
 
     hoeffding_p_value = np.exp(-n * h1(np.minimum(r_hat, alpha), alpha))
     return np.fmin(bentkus_p_value, hoeffding_p_value)
-
-
-def compute_p_values_from_bounds(
-    empirical_risks: np.ndarray,
-    n_samples: int,
-    alphas: np.ndarray,
-    bound_fn: Callable[[np.ndarray | float, int, float], np.ndarray],
-) -> np.ndarray:
-    """Compute p-values for hypotheses with per-hypothesis alpha levels.
-
-    Each hypothesis *k* tests whether the true risk exceeds ``alphas[k]``,
-    given observed ``empirical_risks[k]``.  This is fully generic: it
-    does not assume any particular parameter structure (grid, chain, etc.).
-
-    Parameters
-    ----------
-    empirical_risks : np.ndarray, shape (m,)
-        Observed empirical risk for each hypothesis.
-    n_samples : int
-        Number of calibration samples used to estimate the risks.
-    alphas : np.ndarray, shape (m,)
-        Risk level for each hypothesis (each hypothesis may have a
-        different alpha).
-    bound_fn : callable
-        Statistical bound with signature ``(r_hat, n, alpha) -> p_values``
-        (e.g. :func:`hb_p_value` or :func:`binomial`).  ``r_hat`` may be
-        an array but ``alpha`` is a scalar.
-
-    Returns
-    -------
-    np.ndarray, shape (m,)
-        One p-value per hypothesis.
-    """
-    empirical_risks = np.asarray(empirical_risks, dtype=float)
-    alphas = np.asarray(alphas, dtype=float)
-    m = len(empirical_risks)
-    p_values = np.empty(m, dtype=float)
-
-    # Group by alpha to batch calls (bound_fn takes scalar alpha)
-    for alpha_val in np.unique(alphas):
-        mask = alphas == alpha_val
-        p_values[mask] = np.atleast_1d(bound_fn(empirical_risks[mask], n_samples, float(alpha_val)))
-
-    return p_values
 
 
 def HB_mu_plus(muhat, n, delta, maxiters):

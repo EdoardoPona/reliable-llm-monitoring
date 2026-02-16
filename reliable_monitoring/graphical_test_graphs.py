@@ -65,6 +65,42 @@ def lattice_graph(n_rows: int, n_cols: int) -> tuple[np.ndarray, np.ndarray]:
     return weights, transitions
 
 
+def row_chain_graph(n_rows: int, n_cols: int) -> tuple[np.ndarray, np.ndarray]:
+    """Independent chain per row with surplus transfer between rows.
+
+    Each row receives equal initial weight (``1 / n_rows``) at its
+    first node.  Within a row, hypotheses are tested sequentially
+    (chain: ``g[r*n_cols+c, r*n_cols+c+1] = 1``).  If every hypothesis
+    in row *r* is rejected, its surplus weight flows to the first
+    hypothesis of row *r+1*.
+
+    This answers questions like "for each row-level, what is the best
+    column-level we can achieve?" — each row has its own reserved
+    budget and cannot be starved by earlier rows.
+
+    The *transpose* query ("for each column-level, what is the best
+    row-level?") is obtained by swapping ``n_rows`` and ``n_cols``
+    and arranging hypotheses accordingly.
+    """
+    m = n_rows * n_cols
+    weights = np.zeros(m)
+    transitions = np.zeros((m, m))
+
+    for r in range(n_rows):
+        # First node of each row gets an equal share
+        weights[r * n_cols] = 1.0 / n_rows
+
+        # Chain within the row
+        for c in range(n_cols - 1):
+            transitions[r * n_cols + c, r * n_cols + c + 1] = 1.0
+
+        # Surplus transfer: end of row r → start of row r+1
+        if r < n_rows - 1:
+            transitions[r * n_cols + n_cols - 1, (r + 1) * n_cols] = 1.0
+
+    return weights, transitions
+
+
 def uniform_lattice_graph(n_rows: int, n_cols: int) -> tuple[np.ndarray, np.ndarray]:
     """Lattice graph with uniform initial weights.
 

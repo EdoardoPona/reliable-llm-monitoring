@@ -5,6 +5,8 @@ import pytest
 
 from reliable_monitoring.graphical_test_graphs import chain_graph, lattice_graph
 from reliable_monitoring.learn_then_test import (
+    Hypothesis,
+    compute_p_values,
     fixed_sequence_testing,
     graphical_testing,
 )
@@ -181,3 +183,44 @@ class TestLatticeGraphicalTesting:
         result = graphical_testing(pv, w, g, delta=0.1)
         # Origin (0,0) should be rejected; its neighbors get weight
         assert 0 in result.rejected
+
+
+# ---------------------------------------------------------------------------
+# Hypothesis wrapper and compute_p_values
+# ---------------------------------------------------------------------------
+
+
+class TestHypothesis:
+    def test_p_value_returns_float(self):
+        h = Hypothesis(p_value_fn=lambda: 0.05, params={"alpha": 0.1})
+        assert h.p_value() == 0.05
+        assert isinstance(h.p_value(), float)
+
+    def test_params_metadata(self):
+        h = Hypothesis(p_value_fn=lambda: 0.5, params={"threshold": 0.7, "alpha": 0.3})
+        assert h.params == {"threshold": 0.7, "alpha": 0.3}
+
+    def test_default_empty_params(self):
+        h = Hypothesis(p_value_fn=lambda: 0.1)
+        assert h.params == {}
+
+    def test_compute_p_values(self):
+        hypotheses = [Hypothesis(p_value_fn=lambda v=v: v) for v in [0.01, 0.05, 0.9]]
+        pv = compute_p_values(hypotheses)
+        np.testing.assert_array_almost_equal(pv, [0.01, 0.05, 0.9])
+
+    def test_compute_p_values_empty(self):
+        pv = compute_p_values([])
+        assert len(pv) == 0
+
+    def test_hypothesis_with_graphical_testing(self):
+        """Hypothesis objects integrate with graphical_testing via compute_p_values."""
+        hypotheses = [
+            Hypothesis(p_value_fn=lambda: 0.001, params={"i": 0}),
+            Hypothesis(p_value_fn=lambda: 0.002, params={"i": 1}),
+            Hypothesis(p_value_fn=lambda: 0.9, params={"i": 2}),
+        ]
+        pv = compute_p_values(hypotheses)
+        w, g = chain_graph(len(hypotheses))
+        result = graphical_testing(pv, w, g, delta=0.1)
+        assert result.rejected == [0, 1]
