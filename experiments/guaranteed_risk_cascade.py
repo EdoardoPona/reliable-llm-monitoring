@@ -235,6 +235,8 @@ def run_guaranteed_risk_cascade_experiment(config) -> GuaranteedRiskCascadeResul
         baseline_model_name=config.baseline_model_name,
         dataset=calib_dataset,
         baseline_batch_size=config.baseline_batch_size,
+        local=not getattr(config, "use_modal", False),
+        gpu=getattr(config, "modal_gpu", None),
     )
 
     if pareto_testing:
@@ -245,6 +247,8 @@ def run_guaranteed_risk_cascade_experiment(config) -> GuaranteedRiskCascadeResul
             baseline_model_name=config.baseline_model_name,
             dataset=opt_dataset,
             baseline_batch_size=config.baseline_batch_size,
+            local=not getattr(config, "use_modal", False),
+            gpu=getattr(config, "modal_gpu", None),
         )
 
     # --- Candidate thresholds (linear in score space) ---
@@ -370,6 +374,8 @@ def run_guaranteed_risk_cascade_experiment(config) -> GuaranteedRiskCascadeResul
         baseline_model_name=config.baseline_model_name,
         dataset=test_dataset,
         baseline_batch_size=config.baseline_batch_size,
+        local=not getattr(config, "use_modal", False),
+        gpu=getattr(config, "modal_gpu", None),
     )
 
     logger.info(f"Running adaptive cascade (threshold={reliable_threshold})...")

@@ -36,4 +36,10 @@ activation_batch_size: 32  # Batch size for computing activations
 reduction_batch_size: 512  # Batch size for reduction operations
 
 # calibration_method: isotonic-regression # Options: platt-scaling, isotonic-regression, or null
-calibration_method: null 
+calibration_method: null
+
+# Whether to use Modal cloud GPUs for baseline inference
+use_modal: false
+
+# Override GPU type for Modal (null = auto-select based on model)
+modal_gpu: null

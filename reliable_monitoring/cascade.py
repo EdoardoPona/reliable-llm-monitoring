@@ -192,17 +192,34 @@ def run_llm_baseline(
     dataset: LabelledDataset,
     baseline_batch_size: int = 16,
     suppress_progress: bool = True,
+    local: bool = True,
+    gpu: str | None = None,
 ) -> np.ndarray:
     """
     Run the baseline LLM model on the given dataset and return the high-stakes probabilities.
+
+    Dispatches to local inference or Modal cloud GPU based on the ``local`` flag.
+
     Args:
         baseline_model_name: The name of the baseline model to use (from the McKenzie et al. codebase).
         dataset: The dataset to run the baseline model on.
         baseline_batch_size: The batch size to use when calling the baseline model.
-        suppress_progress: Whether to suppress progress/log output from the baseline runner.
+        suppress_progress: Whether to suppress progress/log output from the baseline runner (local only).
+        local: If True, run inference locally. If False, run on Modal cloud GPU.
+        gpu: Override GPU type for Modal (e.g. "A100-80GB"). Ignored when local=True.
     Returns:
         A numpy array of high-stakes probabilities from the baseline model.
     """
+    if not local:
+        from reliable_monitoring.modal_baseline import run_llm_baseline_modal
+
+        return run_llm_baseline_modal(
+            baseline_model_name=baseline_model_name,
+            dataset=dataset,
+            baseline_batch_size=baseline_batch_size,
+            gpu=gpu,
+        )
+
     import contextlib
     import io
 
@@ -233,6 +250,8 @@ def run_online_cascade(
     selection_strategy: str | SelectionStrategy = "fixed_threshold",
     baseline_batch_size: int = 16,
     merge_strategy: str = "avg",
+    local: bool = True,
+    gpu: str | None = None,
     **selection_kwargs,
 ) -> CascadePredictionResults:
     """Run a cascade online: call the baseline model only for examples that need it.
@@ -246,6 +265,8 @@ def run_online_cascade(
                            or a custom SelectionStrategy callable.
         baseline_batch_size: The batch size to use when calling the baseline model.
         merge_strategy: The strategy to merge probe and baseline model scores ("avg" or "replace").
+        local: If True, run baseline inference locally. If False, run on Modal cloud GPU.
+        gpu: Override GPU type for Modal (e.g. "A100-80GB"). Ignored when local=True.
         **selection_kwargs: Strategy-specific parameters (e.g., threshold=0.5, rate=0.5, amount=500)
 
     Returns:
@@ -261,6 +282,8 @@ def run_online_cascade(
         baseline_model_name=baseline_model_name,
         dataset=dataset_to_call_baseline,
         baseline_batch_size=baseline_batch_size,
+        local=local,
+        gpu=gpu,
     )
 
     # re-index baseline scores to match the original dataset

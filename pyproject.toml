@@ -18,6 +18,9 @@ dependencies = [
 dev = [
     "ty",
 ]
+modal = [
+    "modal>=0.73.0",
+]
 
 [build-system]
 requires = ["hatchling"]
