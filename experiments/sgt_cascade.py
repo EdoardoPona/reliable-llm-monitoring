@@ -502,27 +502,41 @@ if __name__ == "__main__":
 
     if results is None:
         logger.warning("Experiment failed: no reliable (threshold, alpha) pair found.")
-    elif clearml_logger is not None:
-        clearml_logger.connect_configuration(results.config)
+    else:
+        from sgt_cascade_plotting import log_sgt_figures_to_clearml, make_sgt_figures
 
-        tags = [
-            f"sgt-{results.sgt_graph_type}",
-            f"guaranteed_risk-{results.guaranteed_risk_name}",
-            f"achieved_alpha-{results.achieved_alpha:.3f}",
-            f"rejected-{results.n_rejected}/{results.n_hypotheses}",
-            f"probe-{results.config['reduction_strategy']}",
-            f"merge-{results.config['cascade_merge_strategy']}",
-            f"probe-degraded-{results.config.get('probe_degradation_enabled', False)}",
-        ]
-        calibration_method = results.config.get("calibration_method")
-        tags.append(f"calibration-{calibration_method}" if calibration_method else "not-calibrated")
-        if results.debug_mode:
-            tags.append("debug")
-        clearml_logger.add_tags(tags)
+        logger.info("Generating plots...")
+        figures = make_sgt_figures(results)
 
-        serializer = ClearMLSerializer()
-        clearml_logger.log_scalars(serializer.to_clearml_scalars(results))
-        clearml_logger.log_artifacts(serializer.to_clearml_artifacts(results))
-        clearml_logger.finalize()
+        if clearml_logger is not None:
+            clearml_logger.connect_configuration(results.config)
+
+            tags = [
+                f"sgt-{results.sgt_graph_type}",
+                f"guaranteed_risk-{results.guaranteed_risk_name}",
+                f"achieved_alpha-{results.achieved_alpha:.3f}",
+                f"rejected-{results.n_rejected}/{results.n_hypotheses}",
+                f"probe-{results.config['reduction_strategy']}",
+                f"merge-{results.config['cascade_merge_strategy']}",
+                f"probe-degraded-{results.config.get('probe_degradation_enabled', False)}",
+            ]
+            calibration_method = results.config.get("calibration_method")
+            tags.append(f"calibration-{calibration_method}" if calibration_method else "not-calibrated")
+            if results.debug_mode:
+                tags.append("debug")
+            clearml_logger.add_tags(tags)
+
+            serializer = ClearMLSerializer()
+            scalars = serializer.to_clearml_scalars(results)
+            # Ensure all scalar values are plain Python types (not numpy arrays)
+            scalars = {
+                k: float(v) if isinstance(v, (float, int, np.floating, np.integer)) else v for k, v in scalars.items()
+            }
+            clearml_logger.log_scalars(scalars)
+            clearml_logger.log_artifacts(serializer.to_clearml_artifacts(results))
+
+            log_sgt_figures_to_clearml(clearml_logger, figures)
+            logger.info("All plots generated and logged to ClearML.")
+            clearml_logger.finalize()
 
     logger.info("Experiment complete!")

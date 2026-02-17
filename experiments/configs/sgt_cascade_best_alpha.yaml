@@ -11,10 +11,10 @@
 guaranteed_risk: accuracy_error
 guarantee_probability: 0.9
 
-# Alpha grid
+# Alpha grid — wider range with finer steps
 alpha_start: 0.05
 alpha_end: 0.5
-alpha_steps: 10
+alpha_steps: 15
 
 # Row-chain: rows = thresholds, cols = alphas
 sgt_graph_type: row_chain
@@ -36,9 +36,10 @@ test_dataset_path: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
 seed: 42
 debug: False
 
-threshold_start: 0.5
+# Tighter threshold range — focus on the useful region
+threshold_start: 0.6
 threshold_end: 1.0
-threshold_steps: 20
+threshold_steps: 25
 
-probe_degradation_enabled: true
-calibration_method: "isotonic-regression"
+probe_degradation_enabled: false
+calibration_method: platt-scaling
