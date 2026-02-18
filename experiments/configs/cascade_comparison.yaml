@@ -77,3 +77,9 @@ calibration_method: isotonic-regression
 
 # Optional: artificially degrade probe performance for delegation testing
 probe_degradation_enabled: true
+
+# Whether to use Modal cloud GPUs for baseline inference
+use_modal: false
+
+# Override GPU type for Modal (null = auto-select based on model)
+modal_gpu: null

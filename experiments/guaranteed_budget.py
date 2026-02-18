@@ -156,6 +156,8 @@ def run_guaranteed_budget_experiment(args: argparse.Namespace | None = None) -> 
         baseline_model_name=config.baseline_model_name,
         dataset=calib_dataset,
         baseline_batch_size=config.baseline_batch_size,
+        local=not getattr(config, "use_modal", False),
+        gpu=getattr(config, "modal_gpu", None),
     )
 
     # Evaluate empirical risks across threshold grid
@@ -235,6 +237,8 @@ def run_guaranteed_budget_experiment(args: argparse.Namespace | None = None) -> 
             baseline_model_name=config.baseline_model_name,
             dataset=test_dataset,
             baseline_batch_size=config.baseline_batch_size,
+            local=not getattr(config, "use_modal", False),
+            gpu=getattr(config, "modal_gpu", None),
         )
 
         logger.info("Computing empirical risks on test dataset...")

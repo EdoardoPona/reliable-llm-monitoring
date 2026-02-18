@@ -5,11 +5,12 @@
 
 # Which risk to guarantee via hypothesis testing.
 # Available: "budget", "accuracy_error", "roc_auc_error"
-guaranteed_risk: accuracy_error
+# guaranteed_risk: accuracy_error
+guaranteed_risk: roc_auc_error
 
 # The level at which the risk is guaranteed.
 # e.g. for accuracy_error, 0.1 means error rate <= 10% (accuracy >= 90%)
-guarantee_alpha: 0.40
+guarantee_alpha: 0.25
 
 # The probability with which the guarantee holds (1-FWER)
 guarantee_probability: 0.9
@@ -22,7 +23,7 @@ cascade_batch_size: 128
 
 # Batch size for baseline model inference
 # this cannot be less than 2, and should be even to avoid losing data
-baseline_batch_size: 8
+baseline_batch_size: 4
 
 # The strategy to merge probe and baseline scores in the cascade
 cascade_merge_strategy: replace
@@ -34,7 +35,10 @@ activations_model_name: meta-llama/Llama-3.2-1B-Instruct
 activations_layer: 11
 
 # The name of the LLM model to use as the baseline in the cascade
-baseline_model_name: meta-llama/Llama-3.1-8B-Instruct
+# baseline_model_name: meta-llama/Llama-3.1-8B-Instruct
+# baseline_model_name: meta-llama/Llama-3.3-70B-Instruct
+baseline_model_name: google/gemma-3-27b-it
+
 
 # Path to the training dataset for fitting the probe
 train_dataset_path: ${DATA_DIR}/training/prompts_4x/train.jsonl
@@ -58,9 +62,15 @@ opt_risk: budget
 pareto_split_proportion: 0.15
 
 # Candidate thresholds: linearly spaced in [threshold_start, threshold_end]
-threshold_start: 0.5
+threshold_start: 0.7
 threshold_end: 1.0
 threshold_steps: 20
 
 # Optional: artificially degrade probe performance for delegation testing
-probe_degradation_enabled: true
+probe_degradation_enabled: false
+
+# Whether to use Modal cloud GPUs for baseline inference
+use_modal: true
+
+# Override GPU type for Modal (null = auto-select based on model)
+modal_gpu: null

@@ -35,3 +35,9 @@ test_dataset_path: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
 
 # Random seed for reproducibility
 seed: 42
+
+# Whether to use Modal cloud GPUs for baseline inference
+use_modal: false
+
+# Override GPU type for Modal (null = auto-select based on model)
+modal_gpu: null

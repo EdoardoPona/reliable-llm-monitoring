@@ -448,6 +448,8 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
         baseline_model_name=config.baseline_model_name,
         dataset=calib_dataset,
         baseline_batch_size=config.baseline_batch_size,
+        local=not getattr(config, "use_modal", False),
+        gpu=getattr(config, "modal_gpu", None),
     )
 
     if config.pareto_testing:
@@ -459,6 +461,8 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
             baseline_model_name=config.baseline_model_name,
             dataset=opt_dataset,
             baseline_batch_size=config.baseline_batch_size,
+            local=not getattr(config, "use_modal", False),
+            gpu=getattr(config, "modal_gpu", None),
         )
 
     # Generate candidate thresholds
@@ -576,6 +580,8 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
         baseline_model_name=config.baseline_model_name,
         dataset=test_dataset,
         baseline_batch_size=config.baseline_batch_size,
+        local=not getattr(config, "use_modal", False),
+        gpu=getattr(config, "modal_gpu", None),
     )
 
     logger.info(f"Extracted test labels: {len(test_labels)} labels")
