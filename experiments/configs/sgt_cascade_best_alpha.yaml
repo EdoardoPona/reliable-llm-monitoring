@@ -1,0 +1,45 @@
+# SGT Cascade: Best reliability (alpha) per budget level
+#
+# Row-chain graph with rows = thresholds (budget levels).
+# For each threshold, chains across alphas from most permissive to strictest.
+# Each threshold row has an independent delta budget (1/n_thresholds),
+# with surplus from fully-rejected rows cascading to the next.
+#
+# Question answered: "for each budget level, what is the tightest
+# reliability guarantee we can achieve?"
+
+guaranteed_risk: accuracy_error
+guarantee_probability: 0.9
+
+# Alpha grid — wider range with finer steps
+alpha_start: 0.05
+alpha_end: 0.5
+alpha_steps: 15
+
+# Row-chain: rows = thresholds, cols = alphas
+sgt_graph_type: row_chain
+sgt_row_dimension: threshold
+
+reduction_strategy: mean
+cascade_batch_size: 128
+baseline_batch_size: 8
+cascade_merge_strategy: replace
+
+activations_model_name: meta-llama/Llama-3.2-1B-Instruct
+activations_layer: 11
+baseline_model_name: meta-llama/Llama-3.1-8B-Instruct
+
+train_dataset_path: ${DATA_DIR}/training/prompts_4x/train.jsonl
+calib_dataset_path: ${DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl
+test_dataset_path: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
+
+seed: 42
+debug: False
+
+# Tighter threshold range — focus on the useful region
+threshold_start: 0.6
+threshold_end: 1.0
+threshold_steps: 25
+
+probe_degradation_enabled: false
+calibration_method: platt-scaling
