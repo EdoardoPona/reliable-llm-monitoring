@@ -64,3 +64,9 @@ threshold_steps: 20
 probe_degradation_enabled: true
 
 calibration_method: "isotonic-regression"
+
+# Whether to use Modal cloud GPUs for baseline inference
+use_modal: true
+
+# Override GPU type for Modal (null = auto-select based on model)
+modal_gpu: null

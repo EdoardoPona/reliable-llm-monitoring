@@ -233,6 +233,8 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
         baseline_model_name=config.baseline_model_name,
         dataset=calib_dataset,
         baseline_batch_size=config.baseline_batch_size,
+        local=not getattr(config, "use_modal", False),
+        gpu=getattr(config, "modal_gpu", None),
     )
 
     # --- Candidate thresholds ---
@@ -364,6 +366,8 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
         baseline_model_name=config.baseline_model_name,
         dataset=test_dataset,
         baseline_batch_size=config.baseline_batch_size,
+        local=not getattr(config, "use_modal", False),
+        gpu=getattr(config, "modal_gpu", None),
     )
 
     logger.info(f"Running adaptive cascade (threshold={reliable_threshold})...")

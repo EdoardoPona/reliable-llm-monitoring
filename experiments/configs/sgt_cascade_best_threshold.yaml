@@ -44,3 +44,5 @@ threshold_steps: 25
 probe_degradation_enabled: false
 # No calibration — test with raw probe scores
 # calibration_method: isotonic-regression
+
+use_modal: true

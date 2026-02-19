@@ -10,7 +10,7 @@ guaranteed_risk: roc_auc_error
 
 # The level at which the risk is guaranteed.
 # e.g. for accuracy_error, 0.1 means error rate <= 10% (accuracy >= 90%)
-guarantee_alpha: 0.25
+guarantee_alpha: 0.15
 
 # The probability with which the guarantee holds (1-FWER)
 guarantee_probability: 0.9
@@ -62,9 +62,9 @@ opt_risk: budget
 pareto_split_proportion: 0.15
 
 # Candidate thresholds: linearly spaced in [threshold_start, threshold_end]
-threshold_start: 0.7
+threshold_start: 0.6
 threshold_end: 1.0
-threshold_steps: 20
+threshold_steps: 30
 
 # Optional: artificially degrade probe performance for delegation testing
 probe_degradation_enabled: false
