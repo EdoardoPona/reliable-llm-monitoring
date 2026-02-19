@@ -36,7 +36,7 @@ calib_dataset_path: ${DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl
 test_dataset_path: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
 
 seed: 42
-debug: True
+debug: false
 
 # Tighter threshold range — focus on the useful region
 threshold_start: 0.6
