@@ -268,6 +268,97 @@ def plot_empirical_risk_vs_threshold(results: SGTCascadeResults) -> Figure:
     return fig
 
 
+def plot_performance_heatmaps(results: SGTCascadeResults) -> dict[str, Figure]:
+    """Heatmaps of cascade performance metrics across the (threshold x alpha) grid.
+
+    One heatmap per metric (accuracy, f1_score, roc_auc, budget_cost).
+    Rejected cells are colored by metric value; non-rejected cells are dark grey.
+    The selected best pair is highlighted with a star marker.
+
+    Requires ``results.threshold_results`` (per-threshold cascade results).
+    """
+    if not hasattr(results, "threshold_results") or not results.threshold_results:
+        return {}
+
+    n_t = results.n_thresholds
+    n_a = results.n_alphas
+
+    # Build lookup: threshold value -> ThresholdCascadeResult
+    from cascade_utils import ThresholdCascadeResult
+
+    tr_lookup: dict[float, ThresholdCascadeResult] = {}
+    for tr in results.threshold_results:
+        tr_lookup[round(tr.threshold, 6)] = tr
+
+    # Build rejection mask
+    rejected = np.zeros((n_t, n_a), dtype=bool)
+    for t_idx, a_idx in results.rejected_pairs:
+        rejected[t_idx, a_idx] = True
+
+    metrics = {
+        "accuracy": ("Cascade Accuracy", "YlGn"),
+        "f1_score": ("Cascade F1 Score", "YlGn"),
+        "roc_auc": ("Cascade ROC-AUC", "YlGn"),
+        "budget_cost": ("Budget Cost", "YlOrRd"),
+    }
+
+    # Selected pair indices for star marker
+    best_t_idx = int(np.argmin(np.abs(results.ordered_thresholds - results.reliable_threshold)))
+    best_a_idx = int(np.argmin(np.abs(results.ordered_alphas - results.achieved_alpha)))
+
+    alpha_labels = [f"{a:.3f}" for a in results.ordered_alphas]
+    threshold_labels = [f"{t:.3f}" for t in results.ordered_thresholds]
+    step_a = max(1, n_a // 10)
+    step_t = max(1, n_t // 10)
+
+    figures: dict[str, Figure] = {}
+    for metric_key, (title, cmap_name) in metrics.items():
+        grid = np.full((n_t, n_a), np.nan)
+
+        for t_idx in range(n_t):
+            thr_val = round(float(results.ordered_thresholds[t_idx]), 6)
+            tr = tr_lookup.get(thr_val)
+            if tr is None:
+                continue
+            # Fill all valid alpha cells for this threshold with the metric value
+            if metric_key == "budget_cost":
+                val = tr.mean_budget_cost
+            else:
+                val = getattr(tr, f"cascade_{metric_key}")
+            for a_idx in range(n_a):
+                if rejected[t_idx, a_idx]:
+                    grid[t_idx, a_idx] = val
+
+        fig, ax = plt.subplots(figsize=(max(8, n_a * 0.6), max(6, n_t * 0.4)))
+
+        # Background: dark grey for non-rejected
+        bg = np.ones((n_t, n_a, 3)) * 0.2
+        ax.imshow(bg, aspect="auto", origin="lower")
+
+        # Overlay: metric values for rejected cells
+        cmap = plt.get_cmap(cmap_name).copy()
+        cmap.set_bad(color=(0.2, 0.2, 0.2))  # NaN = dark grey
+        masked = np.ma.masked_invalid(grid)
+        im = ax.imshow(masked, aspect="auto", cmap=cmap, origin="lower")
+
+        ax.set_xticks(range(0, n_a, step_a))
+        ax.set_xticklabels(alpha_labels[::step_a], rotation=45, ha="right", fontsize=8)
+        ax.set_yticks(range(0, n_t, step_t))
+        ax.set_yticklabels(threshold_labels[::step_t], fontsize=8)
+        ax.set_xlabel("Alpha (risk bound)", fontweight="bold")
+        ax.set_ylabel("Threshold", fontweight="bold")
+        ax.set_title(f"{title} across SGT Grid", fontweight="bold")
+
+        # Mark the selected best pair
+        ax.plot(best_a_idx, best_t_idx, marker="*", markersize=18, color="gold", markeredgecolor="black", linewidth=1.5)
+
+        plt.colorbar(im, ax=ax, label=title)
+        plt.tight_layout()
+        figures[metric_key] = fig
+
+    return figures
+
+
 # ---------------------------------------------------------------------------
 # Aggregate helpers
 # ---------------------------------------------------------------------------
@@ -283,6 +374,7 @@ def make_sgt_figures(results: SGTCascadeResults) -> dict[str, Figure | dict[str,
     figures["risk_vs_threshold"] = plot_empirical_risk_vs_threshold(results)
     figures["probe_score_hists"] = plot_probe_score_histograms(results)
     figures["roc_curves"] = plot_roc_curves(results)
+    figures["performance_heatmaps"] = plot_performance_heatmaps(results)
 
     return figures
 
@@ -299,5 +391,8 @@ def log_sgt_figures_to_clearml(clearml_logger, figures: dict[str, Figure | dict[
 
     for score_type, fig in figures["roc_curves"].items():  # type: ignore[union-attr]
         clearml_logger.log_figure(title="ROC Curves", series=f"ROC ({score_type.title()})", figure=fig)
+
+    for metric_name, fig in figures.get("performance_heatmaps", {}).items():  # type: ignore[union-attr]
+        clearml_logger.log_figure(title="Performance Heatmaps", series=metric_name, figure=fig)
 
     plt.close("all")

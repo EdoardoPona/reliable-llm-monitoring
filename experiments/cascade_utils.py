@@ -4,6 +4,7 @@ Contains:
 - ``BatchCascadeStatistics``: Per-batch statistics dataclass
 - ``compute_batch_statistics``: Compute stats for a single batch
 - ``compute_overall_metrics``: Compute accuracy/f1/roc_auc for any score array
+- ``ThresholdCascadeResult``: Per-threshold cascade results (for SGT)
 - ``CascadeExperimentResults``: Protocol formalising shared fields across result types
 - ``save_results_to_clearml`` / ``load_results_from_clearml``: Full-object ClearML serialization
 """
@@ -114,6 +115,30 @@ def compute_batch_statistics(
     )
 
 
+@dataclass
+class ThresholdCascadeResult:
+    """Cascade results for a single threshold value.
+
+    Stores the cascade output and metrics for one threshold from the SGT
+    rejected set.  Lightweight — raw probe/baseline scores live on the
+    parent ``SGTCascadeResults``.
+    """
+
+    threshold: float = scalar_field()
+    best_alpha: float = scalar_field()  # tightest valid alpha for this threshold
+    valid_alpha_indices: list[int] = artifact_field()  # indices into ordered_alphas
+
+    # Overall metrics at this threshold
+    cascade_accuracy: float = scalar_field()
+    cascade_f1_score: float = scalar_field()
+    cascade_roc_auc: float = scalar_field()
+    mean_budget_cost: float = scalar_field()
+
+    # Per-batch stats and scores
+    batches: list[BatchCascadeStatistics] = artifact_field()
+    cascade_final_scores: np.ndarray = artifact_field()
+
+
 def compute_overall_metrics(scores: np.ndarray, labels: np.ndarray) -> dict[str, float]:
     """Compute accuracy, f1, and roc_auc for a score array against labels.
 
@@ -171,6 +196,37 @@ def save_results_to_clearml(clearml_logger: ClearMLLogger, results: Any) -> None
     logger.info("Saved full results object to ClearML artifact 'results_object'")
 
 
+class _ExperimentUnpickler(pickle.Unpickler):
+    """Unpickler that resolves ``__main__`` classes from experiment modules.
+
+    When an experiment script (e.g. ``sgt_cascade.py``) is run directly,
+    pickle stores its classes under ``__main__``.  Loading from a different
+    script fails because the class doesn't exist on *that* ``__main__``.
+    This unpickler tries known experiment modules as fallbacks.
+    """
+
+    _MODULES = (
+        "sgt_cascade",
+        "guaranteed_risk_cascade",
+        "fixed_cascade",
+        "cascade_utils",
+        "reliable_monitoring.risks",
+    )
+
+    def find_class(self, module: str, name: str):  # noqa: ANN001
+        if module == "__main__":
+            import importlib
+
+            for mod_name in self._MODULES:
+                try:
+                    mod = importlib.import_module(mod_name)
+                    if hasattr(mod, name):
+                        return getattr(mod, name)
+                except ImportError:
+                    continue
+        return super().find_class(module, name)
+
+
 def load_results_from_clearml(task_id: str) -> Any:
     """Load the full results object from a ClearML task by ID.
 
@@ -191,4 +247,4 @@ def load_results_from_clearml(task_id: str) -> Any:
         )
     local_path = artifact.get_local_copy()
     with open(local_path, "rb") as f:
-        return pickle.load(f)  # noqa: S301
+        return _ExperimentUnpickler(f).load()  # noqa: S301
