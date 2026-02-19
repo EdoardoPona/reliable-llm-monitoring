@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from cascade_utils import BatchCascadeStatistics, compute_batch_statistics, compute_overall_metrics
 from clearml_serialization import (
     artifact_field,
     derived_field,
@@ -41,44 +42,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 DEBUG_SAMPLE_SIZE = 256
-
-
-@dataclass
-class BatchCascadeStatistics:
-    """Statistics for a single batch cascade run."""
-
-    # Batch identifier
-    batch_index: int = scalar_field()
-
-    # Cascade statistics
-    budget_cost: float = scalar_field()  # Fraction of examples using baseline
-    num_examples: int = scalar_field()
-
-    # Probe uncertainty distribution in batch
-    probe_uncertainty_mean: float = scalar_field()  # Mean(min(p, 1-p))
-    probe_uncertainty_std: float = scalar_field()
-    probe_uncertainty_min: float = scalar_field()
-    probe_uncertainty_max: float = scalar_field()
-
-    # Baseline score distribution in batch (for examples that used baseline)
-    baseline_score_mean: float = scalar_field()
-    baseline_score_std: float = scalar_field()
-
-    # Performance metrics (cascade)
-    accuracy: float = scalar_field()
-    f1_score: float = scalar_field()
-    roc_auc: float = scalar_field()
-
-    # Performance metrics (probe only - baseline for comparison)
-    probe_accuracy: float = scalar_field()
-    probe_f1_score: float = scalar_field()
-    probe_roc_auc: float = scalar_field()
-
-    # Raw data for detailed analysis
-    probe_scores: np.ndarray = artifact_field()
-    baseline_scores: np.ndarray = artifact_field()  # Contains NaN where not used
-    used_baseline: np.ndarray = artifact_field()  # Boolean mask
-    final_scores: np.ndarray = artifact_field()
 
 
 @dataclass
@@ -269,60 +232,6 @@ def parse_args():
         help="Enable ClearML experiment tracking.",
     )
     return parser.parse_args()
-
-
-def compute_batch_statistics(
-    batch_index: int,
-    probe_scores: np.ndarray,
-    baseline_scores: np.ndarray,
-    used_baseline: np.ndarray,
-    final_scores: np.ndarray,
-    labels: np.ndarray,
-) -> BatchCascadeStatistics:
-    """Compute statistics for a batch cascade run."""
-    from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
-
-    # Probe uncertainty (closeness to decision boundary)
-    probe_uncertainty = np.minimum(probe_scores, 1 - probe_scores)
-
-    # Baseline scores for examples that used baseline
-    baseline_subset = baseline_scores[used_baseline]
-    baseline_score_mean = float(np.nanmean(baseline_subset)) if len(baseline_subset) > 0 else 0.0
-    baseline_score_std = float(np.nanstd(baseline_subset)) if len(baseline_subset) > 0 else 0.0
-
-    # Cascade performance metrics
-    predictions = (final_scores >= 0.5).astype(int)
-    accuracy = float(accuracy_score(labels, predictions))
-    f1 = float(f1_score(labels, predictions))
-    roc_auc = float(roc_auc_score(labels, final_scores))
-
-    # Probe-only performance metrics
-    probe_predictions = (probe_scores >= 0.5).astype(int)
-    probe_accuracy = float(accuracy_score(labels, probe_predictions))
-    probe_f1 = float(f1_score(labels, probe_predictions))
-    probe_roc_auc = float(roc_auc_score(labels, probe_scores))
-
-    return BatchCascadeStatistics(
-        batch_index=batch_index,
-        budget_cost=float(used_baseline.mean()),
-        num_examples=len(probe_scores),
-        probe_uncertainty_mean=float(probe_uncertainty.mean()),
-        probe_uncertainty_std=float(probe_uncertainty.std()),
-        probe_uncertainty_min=float(probe_uncertainty.min()),
-        probe_uncertainty_max=float(probe_uncertainty.max()),
-        baseline_score_mean=baseline_score_mean,
-        baseline_score_std=baseline_score_std,
-        accuracy=accuracy,
-        f1_score=f1,
-        roc_auc=roc_auc,
-        probe_accuracy=probe_accuracy,
-        probe_f1_score=probe_f1,
-        probe_roc_auc=probe_roc_auc,
-        probe_scores=probe_scores.copy(),
-        baseline_scores=baseline_scores.copy(),
-        used_baseline=used_baseline.copy(),
-        final_scores=final_scores.copy(),
-    )
 
 
 def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None:
@@ -687,45 +596,28 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
 
     # Compute overall performance metrics across all examples
     logger.info("Computing overall performance metrics...")
-    from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
-
-    # Probe only metrics
-    probe_predictions = (test_probe_scores >= 0.5).astype(int)
-    probe_only_accuracy = float(accuracy_score(test_labels, probe_predictions))
-    probe_only_f1 = float(f1_score(test_labels, probe_predictions))
-    probe_only_roc_auc = float(roc_auc_score(test_labels, test_probe_scores))
-
-    # Baseline only metrics (all examples use baseline)
-    baseline_predictions = (test_baseline_scores >= 0.5).astype(int)
-    baseline_only_accuracy = float(accuracy_score(test_labels, baseline_predictions))
-    baseline_only_f1 = float(f1_score(test_labels, baseline_predictions))
-    baseline_only_roc_auc = float(roc_auc_score(test_labels, test_baseline_scores))
-
-    # Adaptive cascade overall metrics
-    adaptive_predictions = (adaptive_result.final_scores >= 0.5).astype(int)
-    adaptive_overall_accuracy = float(accuracy_score(test_labels, adaptive_predictions))
-    adaptive_overall_f1 = float(f1_score(test_labels, adaptive_predictions))
-    adaptive_overall_roc_auc = float(roc_auc_score(test_labels, adaptive_result.final_scores))
-
-    # Fixed cascade overall metrics
-    fixed_predictions = (fixed_result.final_scores >= 0.5).astype(int)
-    fixed_overall_accuracy = float(accuracy_score(test_labels, fixed_predictions))
-    fixed_overall_f1 = float(f1_score(test_labels, fixed_predictions))
-    fixed_overall_roc_auc = float(roc_auc_score(test_labels, fixed_result.final_scores))
+    probe_m = compute_overall_metrics(test_probe_scores, test_labels)
+    baseline_m = compute_overall_metrics(test_baseline_scores, test_labels)
+    adaptive_m = compute_overall_metrics(adaptive_result.final_scores, test_labels)
+    fixed_m = compute_overall_metrics(fixed_result.final_scores, test_labels)
 
     # Log overall metrics
     logger.info("\n=== OVERALL PERFORMANCE METRICS ===")
     logger.info(
-        f"Probe Only:        Acc={probe_only_accuracy:.4f}, F1={probe_only_f1:.4f}, ROC-AUC={probe_only_roc_auc:.4f}"
+        f"Probe Only:        Acc={probe_m['accuracy']:.4f}, F1={probe_m['f1_score']:.4f}, "
+        f"ROC-AUC={probe_m['roc_auc']:.4f}"
     )
     logger.info(
-        f"Baseline Only:     Acc={baseline_only_accuracy:.4f}, F1={baseline_only_f1:.4f}, ROC-AUC={baseline_only_roc_auc:.4f}"
+        f"Baseline Only:     Acc={baseline_m['accuracy']:.4f}, F1={baseline_m['f1_score']:.4f}, "
+        f"ROC-AUC={baseline_m['roc_auc']:.4f}"
     )
     logger.info(
-        f"Adaptive Cascade:  Acc={adaptive_overall_accuracy:.4f}, F1={adaptive_overall_f1:.4f}, ROC-AUC={adaptive_overall_roc_auc:.4f}"
+        f"Adaptive Cascade:  Acc={adaptive_m['accuracy']:.4f}, F1={adaptive_m['f1_score']:.4f}, "
+        f"ROC-AUC={adaptive_m['roc_auc']:.4f}"
     )
     logger.info(
-        f"Fixed Cascade:     Acc={fixed_overall_accuracy:.4f}, F1={fixed_overall_f1:.4f}, ROC-AUC={fixed_overall_roc_auc:.4f}"
+        f"Fixed Cascade:     Acc={fixed_m['accuracy']:.4f}, F1={fixed_m['f1_score']:.4f}, "
+        f"ROC-AUC={fixed_m['roc_auc']:.4f}"
     )
     logger.info("===================================\n")
 
@@ -791,18 +683,18 @@ def run_cascade_comparison_experiment(config) -> CascadeComparisonResults | None
         roc_auc_mean_diff=float(t_test_results["roc_auc"]["mean_diff"]),
         roc_auc_std_diff=float(t_test_results["roc_auc"]["std_diff"]),
         # Overall performance metrics
-        probe_only_accuracy=probe_only_accuracy,
-        probe_only_f1_score=probe_only_f1,
-        probe_only_roc_auc=probe_only_roc_auc,
-        baseline_only_accuracy=baseline_only_accuracy,
-        baseline_only_f1_score=baseline_only_f1,
-        baseline_only_roc_auc=baseline_only_roc_auc,
-        adaptive_overall_accuracy=adaptive_overall_accuracy,
-        adaptive_overall_f1_score=adaptive_overall_f1,
-        adaptive_overall_roc_auc=adaptive_overall_roc_auc,
-        fixed_overall_accuracy=fixed_overall_accuracy,
-        fixed_overall_f1_score=fixed_overall_f1,
-        fixed_overall_roc_auc=fixed_overall_roc_auc,
+        probe_only_accuracy=probe_m["accuracy"],
+        probe_only_f1_score=probe_m["f1_score"],
+        probe_only_roc_auc=probe_m["roc_auc"],
+        baseline_only_accuracy=baseline_m["accuracy"],
+        baseline_only_f1_score=baseline_m["f1_score"],
+        baseline_only_roc_auc=baseline_m["roc_auc"],
+        adaptive_overall_accuracy=adaptive_m["accuracy"],
+        adaptive_overall_f1_score=adaptive_m["f1_score"],
+        adaptive_overall_roc_auc=adaptive_m["roc_auc"],
+        fixed_overall_accuracy=fixed_m["accuracy"],
+        fixed_overall_f1_score=fixed_m["f1_score"],
+        fixed_overall_roc_auc=fixed_m["roc_auc"],
         # Probe score distributions
         train_probe_scores=train_probe_scores,
         calib_probe_scores=calib_probe_scores,
