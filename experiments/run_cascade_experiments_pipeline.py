@@ -1,26 +1,28 @@
 """Run the full paper pipeline: SGT cascade → analysis → fixed cascade → analysis → comparison.
 
 Each step logs to ClearML and task IDs are piped between steps automatically.
+All tasks in a pipeline run share a common datetime prefix for easy identification.
 
 Usage::
 
     # Default config
-    python run_paper_pipeline.py --config configs/sgt_cascade.yaml
+    uv run experiments/run_cascade_experiments_pipeline.py --config configs/sgt_cascade.yaml
 
     # Skip ClearML logging
-    python run_paper_pipeline.py --config configs/sgt_cascade.yaml --no-clearml
+    uv run experiments/run_cascade_experiments_pipeline.py --config configs/sgt_cascade.yaml --no-clearml
 
     # Override fixed-cascade budget rate
-    python run_paper_pipeline.py --config configs/sgt_cascade.yaml --budget-rate 0.25
+    uv run experiments/run_cascade_experiments_pipeline.py --config configs/sgt_cascade.yaml --budget-rate 0.25
 
     # Custom output directory
-    python run_paper_pipeline.py --config configs/sgt_cascade.yaml --output-dir results/run1
+    uv run experiments/run_cascade_experiments_pipeline.py --config configs/sgt_cascade.yaml --output-dir results/run1
 """
 
 import argparse
 import logging
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -65,15 +67,15 @@ def parse_args():
     return parser.parse_args()
 
 
-def _make_clearml_logger(task_name: str, enabled: bool) -> ClearMLLogger:
+def _make_clearml_logger(run_prefix: str, step_name: str) -> ClearMLLogger:
     return ClearMLLogger(
         project_name=os.environ.get("CLEARML_PROJECT_NAME", "reliable-llm-monitoring"),
-        task_name=task_name,
-        enabled=enabled,
+        task_name=f"{run_prefix}/{step_name}",
+        enabled=True,
     )
 
 
-def step_sgt_cascade(config, use_clearml: bool) -> tuple[SGTCascadeResults, str | None]:
+def step_sgt_cascade(config, run_prefix: str, use_clearml: bool) -> tuple[SGTCascadeResults, str | None]:
     """Step 1: Run the SGT cascade experiment.
 
     Returns (results, task_id) — task_id is None when ClearML is disabled.
@@ -82,16 +84,19 @@ def step_sgt_cascade(config, use_clearml: bool) -> tuple[SGTCascadeResults, str 
     logger.info("STEP 1: SGT Cascade Experiment")
     logger.info("=" * 60)
 
+    clearml_logger = _make_clearml_logger(run_prefix, "sgt_cascade") if use_clearml else None
+
     results = run_sgt_cascade_experiment(config)
     if results is None:
         logger.error("SGT experiment failed: no reliable (threshold, alpha) pair found.")
+        if clearml_logger is not None:
+            clearml_logger.add_tags(["pipeline", "failed"])
+            clearml_logger.finalize()
         sys.exit(1)
     assert results is not None  # for type checker (sys.exit is NoReturn)
 
     task_id = None
-    if use_clearml:
-        clearml_logger = _make_clearml_logger("sgt_cascade_experiment", enabled=True)
-
+    if clearml_logger is not None:
         clearml_logger.connect_configuration(results.config)
         tags = [
             f"sgt-{results.sgt_graph_type}",
@@ -129,13 +134,13 @@ def step_sgt_cascade(config, use_clearml: bool) -> tuple[SGTCascadeResults, str 
     return results, task_id
 
 
-def step_analyse_sgt(sgt_results, output_dir: Path, use_clearml: bool) -> None:
+def step_analyse_sgt(sgt_results, output_dir: Path, run_prefix: str, use_clearml: bool) -> None:
     """Step 2: Analyse the SGT cascade results."""
     logger.info("\n" + "=" * 60)
     logger.info("STEP 2: Analyse SGT Cascade")
     logger.info("=" * 60)
 
-    clearml_logger = _make_clearml_logger("analyse_sgt_cascade", enabled=use_clearml) if use_clearml else None
+    clearml_logger = _make_clearml_logger(run_prefix, "analyse_sgt") if use_clearml else None
     if clearml_logger is not None:
         clearml_logger.add_tags(["pipeline", "analysis", "sgt"])
 
@@ -145,7 +150,9 @@ def step_analyse_sgt(sgt_results, output_dir: Path, use_clearml: bool) -> None:
         clearml_logger.finalize()
 
 
-def step_fixed_cascade(sgt_results, budget_rate: float | None, use_clearml: bool) -> tuple[object, str | None]:
+def step_fixed_cascade(
+    sgt_results, budget_rate: float | None, run_prefix: str, use_clearml: bool
+) -> tuple[object, str | None]:
     """Step 3: Run the fixed-budget cascade using SGT test data.
 
     Returns (results, task_id).
@@ -154,12 +161,12 @@ def step_fixed_cascade(sgt_results, budget_rate: float | None, use_clearml: bool
     logger.info("STEP 3: Fixed-Budget Cascade")
     logger.info("=" * 60)
 
+    clearml_logger = _make_clearml_logger(run_prefix, "fixed_cascade") if use_clearml else None
+
     results = run_fixed_cascade(sgt_results, budget_rate=budget_rate)
 
     task_id = None
-    if use_clearml:
-        clearml_logger = _make_clearml_logger("fixed_cascade_experiment", enabled=True)
-
+    if clearml_logger is not None:
         clearml_logger.connect_configuration(results.config)
         clearml_logger.add_tags(
             [
@@ -181,13 +188,13 @@ def step_fixed_cascade(sgt_results, budget_rate: float | None, use_clearml: bool
     return results, task_id
 
 
-def step_analyse_fixed(fixed_results, output_dir: Path, use_clearml: bool) -> None:
+def step_analyse_fixed(fixed_results, output_dir: Path, run_prefix: str, use_clearml: bool) -> None:
     """Step 4: Analyse the fixed cascade results."""
     logger.info("\n" + "=" * 60)
     logger.info("STEP 4: Analyse Fixed Cascade")
     logger.info("=" * 60)
 
-    clearml_logger = _make_clearml_logger("analyse_fixed_cascade", enabled=use_clearml) if use_clearml else None
+    clearml_logger = _make_clearml_logger(run_prefix, "analyse_fixed") if use_clearml else None
     if clearml_logger is not None:
         clearml_logger.add_tags(["pipeline", "analysis", "fixed"])
 
@@ -197,13 +204,13 @@ def step_analyse_fixed(fixed_results, output_dir: Path, use_clearml: bool) -> No
         clearml_logger.finalize()
 
 
-def step_comparison(sgt_results, fixed_results, output_dir: Path, use_clearml: bool) -> None:
+def step_comparison(sgt_results, fixed_results, output_dir: Path, run_prefix: str, use_clearml: bool) -> None:
     """Step 5: Compare SGT vs fixed cascade."""
     logger.info("\n" + "=" * 60)
     logger.info("STEP 5: Comparison (SGT vs Fixed)")
     logger.info("=" * 60)
 
-    clearml_logger = _make_clearml_logger("analyse_comparison", enabled=use_clearml) if use_clearml else None
+    clearml_logger = _make_clearml_logger(run_prefix, "comparison") if use_clearml else None
     if clearml_logger is not None:
         clearml_logger.add_tags(["pipeline", "analysis", "comparison"])
 
@@ -226,29 +233,33 @@ def main():
     output_dir = Path(args.output_dir)
     use_clearml = not args.no_clearml
 
+    run_prefix = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     logger.info(f"Config: {args.config}")
     logger.info(f"Output: {output_dir}")
     logger.info(f"ClearML: {'enabled' if use_clearml else 'disabled'}")
+    logger.info(f"Run prefix: {run_prefix}")
 
     # Step 1: SGT cascade
-    sgt_results, sgt_task_id = step_sgt_cascade(config, use_clearml)
+    sgt_results, sgt_task_id = step_sgt_cascade(config, run_prefix, use_clearml)
 
     # Step 2: Analyse SGT
-    step_analyse_sgt(sgt_results, output_dir, use_clearml)
+    step_analyse_sgt(sgt_results, output_dir, run_prefix, use_clearml)
 
     # Step 3: Fixed cascade (reuses SGT test data in-memory)
-    fixed_results, fixed_task_id = step_fixed_cascade(sgt_results, args.budget_rate, use_clearml)
+    fixed_results, fixed_task_id = step_fixed_cascade(sgt_results, args.budget_rate, run_prefix, use_clearml)
 
     # Step 4: Analyse fixed
-    step_analyse_fixed(fixed_results, output_dir, use_clearml)
+    step_analyse_fixed(fixed_results, output_dir, run_prefix, use_clearml)
 
     # Step 5: Comparison
-    step_comparison(sgt_results, fixed_results, output_dir, use_clearml)
+    step_comparison(sgt_results, fixed_results, output_dir, run_prefix, use_clearml)
 
     # Summary
     logger.info("\n" + "=" * 60)
     logger.info("PIPELINE COMPLETE")
     logger.info("=" * 60)
+    logger.info(f"Run prefix: {run_prefix}")
     logger.info(f"Figures saved to: {output_dir}")
     if use_clearml:
         logger.info(f"SGT task ID:      {sgt_task_id}")
