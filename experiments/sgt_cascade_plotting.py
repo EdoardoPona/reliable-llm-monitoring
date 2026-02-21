@@ -364,9 +364,9 @@ def plot_performance_heatmaps(results: SGTCascadeResults) -> dict[str, Figure]:
 # ---------------------------------------------------------------------------
 
 
-def make_sgt_figures(results: SGTCascadeResults) -> dict[str, Figure | dict[str, Figure]]:
+def make_sgt_figures(results: SGTCascadeResults) -> dict[str, Figure | None | dict[str, Figure]]:
     """Generate all SGT cascade figures."""
-    figures: dict[str, Figure | dict[str, Figure]] = {}
+    figures: dict[str, Figure | None | dict[str, Figure]] = {}
 
     figures["rejection_heatmap"] = plot_rejection_heatmap(results)
     figures["budget_distribution"] = plot_budget_cost_distribution(results)
@@ -376,10 +376,24 @@ def make_sgt_figures(results: SGTCascadeResults) -> dict[str, Figure | dict[str,
     figures["roc_curves"] = plot_roc_curves(results)
     figures["performance_heatmaps"] = plot_performance_heatmaps(results)
 
+    # Pareto frontier (only when Pareto testing was used)
+    if results.opt_evaluation_risks is not None and results.pareto_mask is not None:
+        from plot_utils import plot_pareto_frontier
+
+        opt_risk_name = results.config.get("opt_risk", "budget")
+        figures["pareto"] = plot_pareto_frontier(
+            results.opt_evaluation_risks,
+            results.pareto_mask,
+            results.guaranteed_risk_name,
+            opt_risk_name,
+        )
+    else:
+        figures["pareto"] = None
+
     return figures
 
 
-def log_sgt_figures_to_clearml(clearml_logger, figures: dict[str, Figure | dict[str, Figure]]) -> None:
+def log_sgt_figures_to_clearml(clearml_logger, figures: dict[str, Figure | None | dict[str, Figure]]) -> None:
     """Log all SGT figures to ClearML."""
     clearml_logger.log_figure(title="SGT", series="Rejection Heatmap", figure=figures["rejection_heatmap"])
     clearml_logger.log_figure(title="SGT", series="Budget Cost Distribution", figure=figures["budget_distribution"])
@@ -394,5 +408,8 @@ def log_sgt_figures_to_clearml(clearml_logger, figures: dict[str, Figure | dict[
 
     for metric_name, fig in figures.get("performance_heatmaps", {}).items():  # type: ignore[union-attr]
         clearml_logger.log_figure(title="Performance Heatmaps", series=metric_name, figure=fig)
+
+    if figures.get("pareto") is not None:
+        clearml_logger.log_figure(title="Pareto Frontier", series="Pareto Frontier", figure=figures["pareto"])
 
     plt.close("all")

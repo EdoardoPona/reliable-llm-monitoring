@@ -36,6 +36,7 @@ from reliable_monitoring.learn_then_test import (
     Hypothesis,
     compute_p_values,
     graphical_testing,
+    is_pareto,
 )
 from reliable_monitoring.probes import DegradedProbe, SequenceProbe
 from reliable_monitoring.risks import (
@@ -136,6 +137,12 @@ class SGTCascadeResults:
     # Calibration evaluation (for diagnostics)
     calib_evaluation_risks: ThresholdEvaluationResult = artifact_field()
 
+    # Pareto testing results (None when pareto_testing is disabled)
+    opt_evaluation_risks: ThresholdEvaluationResult | None = artifact_field()
+    pareto_mask: np.ndarray | None = artifact_field()
+    n_original_thresholds: int = scalar_field()
+    n_pareto_thresholds: int | None = scalar_field()
+
     # Derived
     budget_costs: np.ndarray = derived_field(derive_fn=lambda r: np.array([b.budget_cost for b in r.batches]))
 
@@ -199,10 +206,27 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
     logger.info(f"Calibration dataset size: {len(calib_dataset)}")
     logger.info(f"Test dataset size: {len(test_dataset)}")
 
-    # --- Optional probe calibration ---
+    # --- Data splitting (probe calibration and/or Pareto optimisation) ---
     calibration_method = getattr(config, "calibration_method", None)
-    auxiliary_dataset = None
-    if calibration_method is not None:
+    needs_auxiliary_data = calibration_method is not None
+
+    pareto_testing = getattr(config, "pareto_testing", False)
+    if pareto_testing:
+        pareto_proportion = getattr(config, "pareto_split_proportion", 0.2)
+        logger.info(
+            f"Splitting calibration data for Pareto testing "
+            f"(opt={pareto_proportion:.0%}, calib={1 - pareto_proportion:.0%})"
+        )
+        calib_dataset, opt_dataset = split_dataset(
+            calib_dataset,
+            proportions=[1 - pareto_proportion, pareto_proportion],
+            shuffle=True,
+            seed=seed,
+        )
+        if needs_auxiliary_data:
+            logger.info("Auxiliary operations (probe calibration) will use opt split")
+        auxiliary_dataset = opt_dataset if needs_auxiliary_data else None
+    elif needs_auxiliary_data:
         auxiliary_proportion = getattr(config, "auxiliary_split_proportion", 0.15)
         logger.info(
             f"Splitting calibration data for probe calibration "
@@ -214,6 +238,8 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
             shuffle=True,
             seed=seed,
         )
+    else:
+        auxiliary_dataset = None
 
     logger.info(f"Effective calibration set size for hypothesis testing: {len(calib_dataset)}")
 
@@ -246,6 +272,18 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
         gpu=getattr(config, "modal_gpu", None),
     )
 
+    if pareto_testing:
+        logger.info("Computing probe scores on optimisation dataset...")
+        opt_probe_scores = probe.predict(opt_dataset)
+        logger.info("Computing baseline scores on optimisation dataset...")
+        opt_baseline_scores = run_llm_baseline(
+            baseline_model_name=config.baseline_model_name,
+            dataset=opt_dataset,
+            baseline_batch_size=config.baseline_batch_size,
+            local=not getattr(config, "use_modal", False),
+            gpu=getattr(config, "modal_gpu", None),
+        )
+
     # --- Candidate thresholds ---
     thresholds = np.linspace(
         getattr(config, "threshold_start", 0.5),
@@ -269,6 +307,45 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
     for thr, risk in zip(calib_eval_result.thresholds, calib_eval_result[guaranteed_risk_name], strict=True):
         logger.info(f"  Threshold: {thr:.4f}, Empirical risk: {risk:.4f}")
 
+    n_original_thresholds = len(thresholds)
+
+    # --- Pareto pre-filtering (optional) ---
+    if pareto_testing:
+        logger.info("Performing Pareto pre-filtering with multiple risks...")
+        opt_risk_name = getattr(config, "opt_risk", "budget")
+        OptRisk = RISK_RGISTRY.get(opt_risk_name)
+        if OptRisk is None:
+            raise ValueError(f"Invalid opt_risk: '{opt_risk_name}'. Available: {list(RISK_RGISTRY.keys())}")
+        if OptRisk.name == GuaranteedRisk.name:
+            raise ValueError(f"opt_risk and guaranteed_risk must differ, both are '{OptRisk.name}'")
+
+        opt_eval_result = evaluate_threshold_risks(
+            opt_probe_scores,
+            opt_baseline_scores,
+            thresholds,
+            risks=[GuaranteedRisk, OptRisk],
+            dataset=opt_dataset,
+            merge_strategy=config.cascade_merge_strategy,
+        )
+
+        empirical_risks_2d = opt_eval_result.get_empirical_risks_array()
+        pareto_mask = is_pareto(empirical_risks_2d, maximize=False)
+        n_pareto = int(pareto_mask.sum())
+        logger.info(f"Found {n_pareto}/{len(thresholds)} Pareto-efficient thresholds")
+
+        if n_pareto == 0:
+            logger.warning("No Pareto-efficient points found! Falling back to all thresholds.")
+            pareto_mask = np.ones(len(thresholds), dtype=bool)
+            n_pareto = len(thresholds)
+
+        thresholds = thresholds[pareto_mask]
+        calib_empirical = calib_eval_result[guaranteed_risk_name][pareto_mask]
+    else:
+        opt_eval_result = None
+        pareto_mask = None
+        n_pareto = None
+        calib_empirical = calib_eval_result[guaranteed_risk_name]
+
     # =================================================================
     # SGT: Sequential Graphical Testing over (threshold × alpha) grid
     # =================================================================
@@ -277,6 +354,8 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
     delta = 1 - config.guarantee_probability
 
     logger.info(f"SGT grid: {n_t} thresholds × {n_a} alphas = {n_t * n_a} hypotheses")
+    if pareto_testing:
+        logger.info(f"  (reduced from {n_original_thresholds} original thresholds via Pareto filtering)")
     logger.info(f"Alpha range: [{alpha_grid.min():.3f}, {alpha_grid.max():.3f}], FWER delta={delta:.3f}")
 
     # Order thresholds from easiest to hardest empirical risk
@@ -289,7 +368,7 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
 
     ordered_thresholds = thresholds[threshold_order]
     ordered_alphas = alpha_grid[alpha_order]
-    ordered_empirical = calib_eval_result[guaranteed_risk_name][threshold_order]
+    ordered_empirical = calib_empirical[threshold_order]
 
     # Row dimension: controls which parameter varies across rows of the
     # graph and which varies within each row (columns).
@@ -523,6 +602,10 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
         test_baseline_scores=test_baseline_scores,
         cascade_final_scores=selected.cascade_final_scores,
         calib_evaluation_risks=calib_eval_result,
+        opt_evaluation_risks=opt_eval_result,
+        pareto_mask=pareto_mask,
+        n_original_thresholds=n_original_thresholds,
+        n_pareto_thresholds=n_pareto,
     )
 
 
@@ -571,6 +654,11 @@ if __name__ == "__main__":
             ]
             calibration_method = results.config.get("calibration_method")
             tags.append(f"calibration-{calibration_method}" if calibration_method else "not-calibrated")
+            tags.append(f"pareto_testing-{results.config.get('pareto_testing', False)}")
+            if results.config.get("pareto_testing", False):
+                tags.append(f"opt_risk-{results.config.get('opt_risk', 'budget')}")
+                if results.n_pareto_thresholds is not None:
+                    tags.append(f"pareto-{results.n_pareto_thresholds}/{results.n_original_thresholds}")
             if results.debug_mode:
                 tags.append("debug")
             clearml_logger.add_tags(tags)
