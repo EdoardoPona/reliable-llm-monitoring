@@ -49,3 +49,6 @@ calibration_method: isotonic-regression
 use_modal: true
 
 pareto_testing: true
+opt_risk: budget
+
+deduplicate_thresholds: true

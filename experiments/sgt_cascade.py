@@ -312,7 +312,8 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
     # --- Pareto pre-filtering (optional) ---
     if pareto_testing:
         logger.info("Performing Pareto pre-filtering with multiple risks...")
-        opt_risk_name = getattr(config, "opt_risk", "budget")
+        assert hasattr(config, "opt_risk"), "opt_risk must be specified in config when pareto_testing is enabled"
+        opt_risk_name = config.opt_risk
         OptRisk = RISK_RGISTRY.get(opt_risk_name)
         if OptRisk is None:
             raise ValueError(f"Invalid opt_risk: '{opt_risk_name}'. Available: {list(RISK_RGISTRY.keys())}")
@@ -346,6 +347,19 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
         n_pareto = None
         calib_empirical = calib_eval_result[guaranteed_risk_name]
 
+    # --- Deduplicate thresholds with identical calib empirical risk (optional) ---
+    deduplicate_thresholds = getattr(config, "deduplicate_thresholds", False)
+    if deduplicate_thresholds:
+        _, unique_indices = np.unique(calib_empirical, return_index=True)
+        unique_indices = np.sort(unique_indices)  # preserve order
+        n_before_dedup = len(thresholds)
+        thresholds = thresholds[unique_indices]
+        calib_empirical = calib_empirical[unique_indices]
+        logger.info(
+            f"Deduplicated thresholds: {n_before_dedup} → {len(thresholds)} "
+            f"(removed {n_before_dedup - len(thresholds)} duplicates)"
+        )
+
     # =================================================================
     # SGT: Sequential Graphical Testing over (threshold × alpha) grid
     # =================================================================
@@ -354,8 +368,8 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
     delta = 1 - config.guarantee_probability
 
     logger.info(f"SGT grid: {n_t} thresholds × {n_a} alphas = {n_t * n_a} hypotheses")
-    if pareto_testing:
-        logger.info(f"  (reduced from {n_original_thresholds} original thresholds via Pareto filtering)")
+    if pareto_testing or deduplicate_thresholds:
+        logger.info(f"  (reduced from {n_original_thresholds} original thresholds)")
     logger.info(f"Alpha range: [{alpha_grid.min():.3f}, {alpha_grid.max():.3f}], FWER delta={delta:.3f}")
 
     # Order thresholds from easiest to hardest empirical risk
