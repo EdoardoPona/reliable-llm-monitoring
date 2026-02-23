@@ -1,12 +1,11 @@
-# SGT Cascade: Best reliability (alpha) per budget level
+# SGT Cascade: Select by budget target
 #
-# Row-chain graph with rows = thresholds (budget levels).
-# For each threshold, chains across alphas from most permissive to strictest.
-# Each threshold row has an independent delta budget (1/n_thresholds),
-# with surplus from fully-rejected rows cascading to the next.
+# Identical to best_alpha config, but overrides selection to pick the
+# (threshold, alpha) pair whose budget cost is closest to the target.
+# Among ties (equal distance to target), picks the tightest alpha.
 #
-# Question answered: "for each budget level, what is the tightest
-# reliability guarantee we can achieve?"
+# Question answered: "given a budget I can afford, what is the best
+# reliability guarantee I can get?"
 
 guaranteed_risk: roc_auc_error
 guarantee_probability: 0.9
@@ -19,6 +18,10 @@ alpha_steps: 15
 # Row-chain: rows = thresholds, cols = alphas
 sgt_graph_type: row_chain
 sgt_row_dimension: threshold
+
+# Override selection: pick closest to budget target
+selection_mode: budget_target
+budget_target: 0.3
 
 reduction_strategy: mean
 cascade_batch_size: 128
@@ -44,11 +47,8 @@ threshold_end: 1.0
 threshold_steps: 25
 
 probe_degradation_enabled: false
-calibration_method: isotonic-regression 
+calibration_method: isotonic-regression
 
 use_modal: true
 
 pareto_testing: true
-opt_risk: budget
-
-deduplicate_thresholds: true
