@@ -27,6 +27,7 @@ from pathlib import Path
 
 import numpy as np
 from analyse_cascade import analyse_comparison, analyse_single
+from analyse_stratified_cascade import run_stratified_analysis
 from cascade_utils import save_results_to_clearml
 from clearml_logger import ClearMLLogger
 from clearml_serialization import ClearMLSerializer
@@ -204,10 +205,26 @@ def step_analyse_fixed(fixed_results, output_dir: Path, run_prefix: str, use_cle
         clearml_logger.finalize()
 
 
-def step_comparison(sgt_results, fixed_results, output_dir: Path, run_prefix: str, use_clearml: bool) -> None:
-    """Step 5: Compare SGT vs fixed cascade."""
+def step_stratified_analysis(sgt_results, output_dir: Path, run_prefix: str, use_clearml: bool) -> None:
+    """Step 5: Stratified batching analysis on SGT results."""
     logger.info("\n" + "=" * 60)
-    logger.info("STEP 5: Comparison (SGT vs Fixed)")
+    logger.info("STEP 5: Stratified Analysis")
+    logger.info("=" * 60)
+
+    clearml_logger = _make_clearml_logger(run_prefix, "stratified_analysis") if use_clearml else None
+    if clearml_logger is not None:
+        clearml_logger.add_tags(["pipeline", "analysis", "stratified"])
+
+    run_stratified_analysis(sgt_results, output_dir / "stratified", clearml_logger)
+
+    if clearml_logger is not None:
+        clearml_logger.finalize()
+
+
+def step_comparison(sgt_results, fixed_results, output_dir: Path, run_prefix: str, use_clearml: bool) -> None:
+    """Step 6: Compare SGT vs fixed cascade."""
+    logger.info("\n" + "=" * 60)
+    logger.info("STEP 6: Comparison (SGT vs Fixed)")
     logger.info("=" * 60)
 
     clearml_logger = _make_clearml_logger(run_prefix, "comparison") if use_clearml else None
@@ -252,7 +269,10 @@ def main():
     # Step 4: Analyse fixed
     step_analyse_fixed(fixed_results, output_dir, run_prefix, use_clearml)
 
-    # Step 5: Comparison
+    # Step 5: Stratified analysis
+    step_stratified_analysis(sgt_results, output_dir, run_prefix, use_clearml)
+
+    # Step 6: Comparison
     step_comparison(sgt_results, fixed_results, output_dir, run_prefix, use_clearml)
 
     # Summary
