@@ -1,0 +1,282 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{dsfont}
+\usepackage{natbib}
+\usepackage{xcolor}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+
+\newcommand{\indicator}{\mathds{1}}
+\newcommand{\edoardo}[1]{\textcolor{red}{[ep: #1]}}
+\newcommand{\nicola}[1]{\textcolor{blue}{[NP: #1]}}
+
+% this is the latent probe
+\newcommand{\probe}{\rho}
+\newcommand{\monitor}{M}
+
+
+\begin{document}
+\title{Adaptive Latent Monitoring with Statistical Guarantees}
+\maketitle
+
+
+%====================================================================
+\section{Introduction}
+%====================================================================
+
+Latent-space probes are cheap monitors for LLM behaviour: a forward pass through the target model plus a lightweight classifier on internal activations.
+However, their generalisation is uncertain, which makes it difficult to deploy them with confidence.
+Full input-space monitors (e.g.\ a large judge LLM) are more reliable but too expensive for every interaction.
+
+We build a two-level cascade that delegates uncertain examples from a probe $\probe$ to an expensive monitor $\monitor$, with two properties that prior work lacks:
+\begin{enumerate}
+    \item \textbf{Deployable thresholding.}
+    Unlike \citet{mckenzie_detecting_2025}, who route the middle $k\%$ of scores using the full test-set quantile (lookahead bias), we use a \emph{fixed confidence threshold} $\lambda$ that requires no access to future data.
+    \item \textbf{Statistical guarantees.}
+    We use Learn-then-Test \citep[LTT;][]{angelopoulos_learn_2022} to certify, with probability $\geq 1-\delta$, that a chosen risk (e.g.\ $1 - \text{AUROC}$) stays below a level $\alpha$.
+    \item \textbf{Discoverable guarantees.}
+    The achievable $\alpha$ is often unknown a priori, so we use Sequential Graphical Testing (SGT) to scan a $(\lambda, \alpha)$ grid, controlling the family-wise error rate while maximising statistical power and returning the tightest reliable level.
+\end{enumerate}
+
+The method is \emph{adaptive}: because the threshold is fixed, harder batches (more uncertain examples) automatically trigger more calls to $\monitor$, while easy batches use almost none.
+Note: under i.i.d.\ batches we prove this adaptivity is harmful (fixed-rate dominates); under exchangeable but non-i.i.d.\ data it may help, which we probe later with stratified-batching experiments.
+
+\edoardo{is the main sell (a) the guarantee, (b) the adaptivity, or (c) both?}
+
+
+%====================================================================
+\section{Method}
+\label{sec:method}
+%====================================================================
+
+%--------------------------------------------------------------------
+\subsection{Setup and Cascade}
+\label{sec:cascade}
+%--------------------------------------------------------------------
+
+Let $z \in \mathcal{Z}$ denote latent representations of a target LLM and $x \in \mathcal{X}$ the original input.
+We use a probe $\probe: \mathcal{Z} \to [0,1]$ (cheap) and a monitor $\monitor: \mathcal{X} \to [0,1]$ (expensive) that output the positive-class probability for binary labels $\mathcal{Y}=\{0,1\}$.
+
+\paragraph{Cascade rule.}
+Let $p(x) \in [0,1]$ be the probe probability for the positive class and $b(x) \in [0,1]$ the monitor probability. Define probe uncertainty
+\begin{equation}
+    \label{eq:uncertainty}
+    u(x) = \min\big(p(x),\, 1 - p(x)\big).
+\end{equation}
+Given a confidence threshold $\lambda \in [0.5, 1]$, the cascade delegates iff $u(x) > 1-\lambda$ (equivalently $p(x) \in (1-\lambda,\,\lambda)$), and the final score is
+\begin{equation}
+    \label{eq:cascade}
+    s_\lambda(x) =
+    \begin{cases}
+        \mathrm{merge}(p(x), b(x)), & u(x) > 1-\lambda, \\
+        p(x), & u(x) \le 1-\lambda.
+    \end{cases}
+\end{equation}
+Lowering $\lambda$ increases delegation (higher budget, potentially better performance); raising it reduces delegation (cheaper, more probe errors).
+
+\paragraph{Merge strategy.}
+When the monitor is invoked, we either \emph{replace} the probe score or \emph{average} it with the monitor score:
+\begin{equation}
+    \label{eq:merge}
+    \mathrm{merge}(p,b) =
+    \begin{cases}
+        \tfrac{p + b}{2}, & \text{(avg)}, \\
+        b, & \text{(replace)}.
+    \end{cases}
+\end{equation}
+We use replacement throughout, as the monitor is substantially more capable.
+
+\paragraph{Fixed-budget baseline.}
+For comparison, a fixed-rate strategy delegates a constant fraction $r \in (0,1]$ of examples: let $\mathcal{I}_r$ be the indices of the middle $r$ fraction after sorting by proximity to $0.5$, and set $s(x_i) = \mathrm{merge}(p(x_i), b(x_i))$ for $i \in \mathcal{I}_r$, else $s(x_i)=p(x_i)$.
+
+\paragraph{Concrete instantiation.}
+\begin{itemize}
+    \item \textbf{Probe:} Logistic regression on mean-pooled activations from Llama-3.2-1B (layer 11), calibrated with isotonic regression on held-out data.
+    \item \textbf{Monitor:} Gemma-3-27B used as an LLM judge.
+\end{itemize}
+
+
+%--------------------------------------------------------------------
+\subsection{Risk Guarantees via LTT}
+\label{sec:ltt}
+%--------------------------------------------------------------------
+
+For a given threshold $\lambda$, we want to guarantee that a risk $R(\mathcal{T}_\lambda)$ is at most $\alpha$ with probability $\geq 1-\delta$.
+
+\paragraph{Risk functions.}
+We consider two risks:
+\begin{itemize}
+    \item \textbf{Performance risk} (primary): either $R_{\text{perf}}(\mathcal{T}_\lambda) = 1 - \text{AUROC}(\mathcal{T}_\lambda)$ or $R_{\text{perf}}(\mathcal{T}_\lambda) = 1 - \text{Acc}(\mathcal{T}_\lambda)$, depending on the experiment.
+    \item \textbf{Budget risk}: $R_{\text{cost}}(\mathcal{T}_\lambda) = \mathbb{P}(u(x) > 1-\lambda)$, i.e.\ the delegation rate.
+\end{itemize}
+
+\paragraph{$p$-values.}
+Given $n$ calibration examples, let $\hat{R}$ be the empirical risk. We compute $p$-values using the Hoeffding--Bentkus (HB) bound for performance risk:
+\begin{equation}
+    \label{eq:hb_pvalue}
+    p = \min\!\Big(
+        e \cdot \Pr\!\big[\text{Bin}(n, \alpha) \leq \lceil n\hat{R}\rceil\big],\;
+        \exp\!\big(-n \cdot \text{KL}(\min(\hat{R}, \alpha) \,\|\, \alpha)\big)
+    \Big),
+\end{equation}
+and the binomial bound for budget risk.
+If $p \leq \delta$, we reject $H_0: R > \alpha$ and certify the guarantee.
+
+
+%--------------------------------------------------------------------
+\subsection{SGT over the $(\lambda, \alpha)$ Grid}
+\label{sec:sgt}
+%--------------------------------------------------------------------
+
+Testing a single $(\lambda, \alpha)$ pair wastes information. Instead, we test a 2D grid of $m = n_\lambda \times n_\alpha$ hypotheses $\{H_{i,j}: R(\mathcal{T}_{\lambda_i}) > \alpha_j\}$ simultaneously, controlling the FWER at level $\delta$.
+
+\paragraph{Hypothesis ordering.}
+We order the grid to test easy-to-reject hypotheses first:
+\begin{itemize}
+    \item $\alpha$ values are sorted descending (most permissive first).
+    \item $\lambda$ values are sorted by risk difficulty (ascending for budget risk, descending for performance risk).
+\end{itemize}
+
+\paragraph{Graph structure.}
+We use a \emph{row-chain graph} \citep{angelopoulos_learn_2022}: each row (one per threshold) receives equal initial weight $\delta/n_\lambda$. Within a row, hypotheses are tested sequentially. On rejection, the $\alpha$-weight passes to the next hypothesis in the row; if the entire row is rejected, surplus flows to the next row. This increases power by concentrating weight on promising regions.
+
+\paragraph{Procedure.}
+Following \citet{angelopoulos_learn_2022}, we iteratively: (i) find the hypothesis with the smallest adjusted $p$-value, (ii) if $p \leq$ its allocated weight, reject it, (iii) redistribute its weight to neighbours according to the graph.
+The output is the set of all valid $(\lambda, \alpha)$ pairs.
+
+
+%--------------------------------------------------------------------
+\subsection{Pareto Pre-filtering and Deduplication}
+\label{sec:pareto}
+%--------------------------------------------------------------------
+
+Before running SGT, we reduce the hypothesis count with two filters that improve power by eliminating hypotheses that cannot lead to useful rejections:
+
+\begin{itemize}
+    \item \textbf{Pareto filtering.}
+    We retain only thresholds on the Pareto front of (performance risk, budget cost) computed on calibration data. Thresholds dominated in \emph{both} dimensions cannot be optimal and testing them wastes $\alpha$-budget.
+    \item \textbf{Deduplication.}
+    Thresholds with identical empirical risk on calibration data are collapsed to a single representative, since they produce identical $p$-values.
+\end{itemize}
+
+
+%--------------------------------------------------------------------
+\subsection{Selection Modes}
+\label{sec:selection}
+%--------------------------------------------------------------------
+
+After SGT identifies the set of valid $(\lambda, \alpha)$ pairs, we select a single operating point.
+We focus on the \textbf{budget-target} mode: given a desired budget level $b^*$ (e.g.\ $b^* = 0.3$), select the threshold $\lambda^*$ closest to $b^*$ in empirical budget cost, breaking ties by tightest (smallest) $\alpha$.
+This answers the practical question: \emph{given a budget I can afford, what is the best reliability guarantee I can achieve?}
+
+\edoardo{We also have best-alpha and best-threshold modes. Include in appendix or mention briefly?}
+
+
+%--------------------------------------------------------------------
+\subsection{Adaptivity Analysis}
+\label{sec:adaptivity}
+%--------------------------------------------------------------------
+
+The fixed-threshold cascade is inherently adaptive: the delegation rate per batch depends on the local distribution of probe uncertainty. A natural baseline is a \emph{fixed-rate} strategy that delegates a constant fraction of examples per batch (the least confident ones), matched to the adaptive method's mean budget.
+
+\paragraph{I.i.d.\ batches: fixed-rate wins.}
+When batches are i.i.d.\ draws, the marginal value of delegating the $k$-th most uncertain example is decreasing (the most uncertain examples benefit most from monitor correction).
+Let $V(K)$ denote the total accuracy gain from delegating the $K$ most uncertain examples; $V$ is concave. The adaptive method uses variable $K_b$ per batch with $\mathbb{E}[K_b] \approx K$. By Jensen's inequality:
+\begin{equation}
+    \label{eq:jensen}
+    \mathbb{E}[V(K_b)] \leq V(\mathbb{E}[K_b]) = V(K).
+\end{equation}
+Constant allocation dominates when marginal returns diminish and batches are identically distributed.
+
+\paragraph{Exchangeable, non-i.i.d.\ batches: adaptive wins.}
+The LTT guarantee is population-level: it concerns the threshold selected during calibration, not test-time batching.
+Under exchangeable-but-non-i.i.d.\ data (De~Finetti: mixture of i.i.d.\ with latent $\theta$), different batches realise different $\theta$, giving each a different marginal-value curve $V_b(K)$. The adaptive method's $K_b$ correlates with the steepness of $V_b$---the positive covariance $\text{Cov}(\text{steepness}, K_b) > 0$ can overcome Jensen's penalty.
+
+This is realistic in deployment: multi-domain monitoring (code vs.\ medical vs.\ legal queries), source-heterogeneous classification, or temporally clustered traffic all produce exchangeable data with batch-level structure.
+
+\paragraph{Variance ratio diagnostic.}
+To diagnose which regime holds, we compute $\text{Var}(\bar{u}_b) / (\sigma^2_u / n_b)$, the ratio of observed batch-mean uncertainty variance to the i.i.d.\ expectation.
+A ratio $\approx 1$ indicates i.i.d.\ batches; a ratio $\gg 1$ indicates structure that the adaptive method can exploit.
+
+\paragraph{Stratified batching experiment.}
+To simulate exchangeable-but-non-i.i.d.\ conditions, we sort test examples by probe uncertainty and form batches from consecutive examples. This creates genuine batch-level difficulty variation while preserving the population-level LTT guarantee (same calibration data, same examples, just reordered).
+
+
+%====================================================================
+\section{Experiments}
+\label{sec:experiments}
+%====================================================================
+
+\edoardo{TODO: Add experimental setup details, dataset description, results tables and figures.}
+
+\subsection{Setup}
+
+\edoardo{
+Dataset: Anthropic safety data (binary safe/unsafe). \\
+Grid: 25 thresholds in $[0.6, 1.0]$, 15 $\alpha$ values in $[0.05, 0.7]$. \\
+Guarantee: $R_{\text{perf}} \leq \alpha$ with $\delta = 0.1$. \\
+Selection: budget-target with $b^* = 0.3$.
+}
+
+
+\subsection{SGT Rejection Heatmap}
+% Heatmap showing which (threshold, alpha) pairs were validated by SGT.
+
+\edoardo{TODO: Insert SGT rejection heatmap figure.}
+
+
+\subsection{Adaptive vs.\ Fixed-Rate Comparison}
+
+\subsubsection{Random Batching (i.i.d.)}
+% Global metrics table: accuracy, AUROC, budget for both methods.
+% Per-batch distributions.
+
+\edoardo{TODO: Insert random-batching results table and per-batch distribution plots.}
+
+
+\subsubsection{Stratified Batching (non-i.i.d.)}
+% Same metrics under stratified batching.
+% Show the accuracy flip.
+
+\edoardo{TODO: Insert stratified-batching results table and comparison plots.}
+
+
+\subsection{Budget Allocation Behaviour}
+% Show budget range under random vs stratified for adaptive and fixed.
+% Correlation between batch uncertainty and budget.
+
+\edoardo{TODO: Insert budget allocation plots.}
+
+
+\subsection{Per-Batch Metric Conditioning}
+% Discuss why per-batch F1 and AUROC are ill-conditioned under stratification.
+% Argue for accuracy as the right per-batch metric.
+
+\edoardo{TODO: Brief discussion, possibly with supporting plot.}
+
+
+%====================================================================
+\section{Discussion}
+\label{sec:discussion}
+%====================================================================
+
+\edoardo{TODO after results are in. Key points to cover:
+\begin{itemize}
+    \item When does adaptive beat fixed? (variance ratio as diagnostic)
+    \item Practical implications for deployment
+    \item Limitations: single dataset, single probe/monitor pair so far
+    \item Next steps: multiple datasets/domains, ablations (graph type, grid resolution, Pareto filtering, calibration), guarantee coverage verification
+\end{itemize}
+}
+
+
+\bibliographystyle{plainnat}
+\bibliography{biblio}
+
+\end{document}
