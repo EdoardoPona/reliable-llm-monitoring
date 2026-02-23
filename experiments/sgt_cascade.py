@@ -92,7 +92,8 @@ class SGTCascadeResults:
 
     # All per-threshold cascade results (one per unique valid threshold)
     threshold_results: list[ThresholdCascadeResult] = artifact_field()
-    selection_mode: str = scalar_field()  # "best_alpha" or "best_threshold"
+    selection_mode: str = scalar_field()  # "best_alpha", "best_threshold", or "budget_target"
+    budget_target: float | None = scalar_field()  # target budget for budget_target mode
 
     # Selected best (threshold, alpha) pair
     reliable_threshold: float = scalar_field()
@@ -450,11 +451,20 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
             t_range = f"{ordered_thresholds[min(valid_t)]:.4f}–{ordered_thresholds[max(valid_t)]:.4f}"
             logger.info(f"  alpha={alpha_val:.3f}: {len(valid_t)} valid thresholds ({t_range})")
 
-    # --- Determine selection mode from graph structure ---
-    # row_dim="threshold" → graph chains within each threshold row (across alphas) → best_alpha
-    # row_dim="alpha"     → graph chains within each alpha row (across thresholds) → best_threshold
-    selection_mode = "best_alpha" if row_dim == "threshold" else "best_threshold"
-    logger.info(f"Selection mode: {selection_mode} (row_dim={row_dim})")
+    # --- Determine selection mode ---
+    # Default: inferred from graph structure
+    #   row_dim="threshold" → best_alpha, row_dim="alpha" → best_threshold
+    # Can be overridden explicitly via config.selection_mode
+    default_mode = "best_alpha" if row_dim == "threshold" else "best_threshold"
+    selection_mode = getattr(config, "selection_mode", default_mode)
+    budget_target: float | None = None
+    if selection_mode == "budget_target":
+        budget_target = getattr(config, "budget_target", None)
+        if budget_target is None:
+            raise ValueError("selection_mode='budget_target' requires a 'budget_target' value in the config.")
+        logger.info(f"Selection mode: {selection_mode} (budget_target={budget_target:.4f})")
+    else:
+        logger.info(f"Selection mode: {selection_mode} (row_dim={row_dim})")
 
     # --- Test-set scores (expensive -- LLM inference) ---
     logger.info("Computing probe scores on test dataset...")
@@ -539,6 +549,14 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
         # Tightest alpha (largest alpha_idx since ordered_alphas is descending)
         # Break ties: lowest budget
         selected = min(threshold_results, key=lambda r: (-max(r.valid_alpha_indices), r.mean_budget_cost))
+    elif selection_mode == "budget_target":
+        # Closest to desired budget target
+        # Break ties: tightest alpha (smallest best_alpha value)
+        assert budget_target is not None
+        selected = min(
+            threshold_results,
+            key=lambda r: (abs(r.mean_budget_cost - budget_target), r.best_alpha),
+        )
     else:  # best_threshold
         # Lowest budget (most aggressive threshold)
         # Break ties: tightest alpha
@@ -591,6 +609,7 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
         ordered_alphas=ordered_alphas,
         threshold_results=threshold_results,
         selection_mode=selection_mode,
+        budget_target=budget_target,
         reliable_threshold=reliable_threshold,
         achieved_alpha=achieved_alpha,
         mean_budget_cost=float(budget_costs.mean()),

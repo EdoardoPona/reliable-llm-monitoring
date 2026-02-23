@@ -1,0 +1,54 @@
+# SGT Cascade: Select by budget target
+#
+# Identical to best_alpha config, but overrides selection to pick the
+# (threshold, alpha) pair whose budget cost is closest to the target.
+# Among ties (equal distance to target), picks the tightest alpha.
+#
+# Question answered: "given a budget I can afford, what is the best
+# reliability guarantee I can get?"
+
+guaranteed_risk: roc_auc_error
+guarantee_probability: 0.9
+
+# Alpha grid — wider range with finer steps
+alpha_start: 0.05
+alpha_end: 0.7
+alpha_steps: 15
+
+# Row-chain: rows = thresholds, cols = alphas
+sgt_graph_type: row_chain
+sgt_row_dimension: threshold
+
+# Override selection: pick closest to budget target
+selection_mode: budget_target
+budget_target: 0.3
+
+reduction_strategy: mean
+cascade_batch_size: 128
+baseline_batch_size: 8
+cascade_merge_strategy: replace
+
+activations_model_name: meta-llama/Llama-3.2-1B-Instruct
+activations_layer: 11
+
+# baseline_model_name: meta-llama/Llama-3.1-8B-Instruct
+baseline_model_name: google/gemma-3-27b-it
+
+train_dataset_path: ${DATA_DIR}/training/prompts_4x/train.jsonl
+calib_dataset_path: ${DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl
+test_dataset_path: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
+
+seed: 42
+debug: false
+
+# Tighter threshold range — focus on the useful region
+threshold_start: 0.6
+threshold_end: 1.0
+threshold_steps: 25
+
+probe_degradation_enabled: false
+calibration_method: isotonic-regression
+
+use_modal: true
+
+pareto_testing: true
