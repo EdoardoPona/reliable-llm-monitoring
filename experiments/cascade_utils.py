@@ -186,6 +186,66 @@ class CascadeExperimentResults(Protocol):
     cascade_final_scores: np.ndarray
 
 
+def extract_batch_arrays(results: CascadeExperimentResults) -> dict[str, np.ndarray]:
+    """Extract per-batch data into flat numpy arrays for analysis.
+
+    Returns a dict with:
+    - Per-batch scalars: ``budget_cost``, ``accuracy``, ``f1_score``, ``roc_auc``,
+      ``probe_accuracy``, ``probe_f1_score``, ``probe_roc_auc``,
+      ``probe_uncertainty_mean``, ``probe_uncertainty_std``.
+    - Per-example arrays (test set): ``probe_scores``, ``baseline_scores``,
+      ``labels``, ``cascade_final_scores``.
+    - Per-batch lists of arrays: ``batch_probe_scores``, ``batch_baseline_scores``,
+      ``batch_labels``, ``batch_used_baseline``, ``batch_final_scores``,
+      ``batch_uncertainty`` — one array per batch for within-batch analysis.
+    - Scalars: ``threshold`` (if available), ``n_batches``, ``batch_size``.
+    """
+    batches = results.batches
+    n_batches = len(batches)
+    batch_size = batches[0].num_examples if batches else 0
+
+    # Per-batch scalar arrays
+    scalar_fields = [
+        "budget_cost",
+        "accuracy",
+        "f1_score",
+        "roc_auc",
+        "probe_accuracy",
+        "probe_f1_score",
+        "probe_roc_auc",
+        "probe_uncertainty_mean",
+        "probe_uncertainty_std",
+    ]
+    out: dict[str, Any] = {}
+    for field in scalar_fields:
+        out[field] = np.array([getattr(b, field) for b in batches])
+
+    # Full test-set arrays
+    out["probe_scores"] = results.test_probe_scores
+    out["baseline_scores"] = results.test_baseline_scores
+    out["labels"] = results.test_labels
+    out["cascade_final_scores"] = results.cascade_final_scores
+
+    # Per-batch example-level arrays
+    out["batch_probe_scores"] = [b.probe_scores for b in batches]
+    out["batch_baseline_scores"] = [b.baseline_scores for b in batches]
+    out["batch_used_baseline"] = [b.used_baseline for b in batches]
+    out["batch_final_scores"] = [b.final_scores for b in batches]
+    out["batch_uncertainty"] = [np.minimum(b.probe_scores, 1 - b.probe_scores) for b in batches]
+
+    # Reconstruct per-batch labels from test_labels and batch_size
+    labels = results.test_labels
+    out["batch_labels"] = [labels[i * batch_size : (i + 1) * batch_size] for i in range(n_batches)]
+
+    # Metadata
+    out["n_batches"] = n_batches
+    out["batch_size"] = batch_size
+    threshold = getattr(results, "reliable_threshold", None)
+    out["threshold"] = threshold
+
+    return out
+
+
 def save_results_to_clearml(clearml_logger: ClearMLLogger, results: Any) -> None:
     """Upload the full results object as a pickle artifact to ClearML.
 
