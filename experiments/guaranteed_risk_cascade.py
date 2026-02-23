@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from cascade_comparison import BatchCascadeStatistics, compute_batch_statistics
+from cascade_utils import BatchCascadeStatistics, compute_batch_statistics, compute_overall_metrics
 from clearml_serialization import (
     artifact_field,
     derived_field,
@@ -413,34 +413,22 @@ def run_guaranteed_risk_cascade_experiment(config) -> GuaranteedRiskCascadeResul
 
     # --- Overall metrics ---
     logger.info("Computing overall performance metrics...")
-    from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
-
-    # Cascade
-    cascade_preds = (cascade_result.final_scores >= 0.5).astype(int)
-    cascade_accuracy = float(accuracy_score(test_labels, cascade_preds))
-    cascade_f1 = float(f1_score(test_labels, cascade_preds))
-    cascade_roc_auc = float(roc_auc_score(test_labels, cascade_result.final_scores))
-
-    # Probe only
-    probe_preds = (test_probe_scores >= 0.5).astype(int)
-    probe_only_accuracy = float(accuracy_score(test_labels, probe_preds))
-    probe_only_f1 = float(f1_score(test_labels, probe_preds))
-    probe_only_roc_auc = float(roc_auc_score(test_labels, test_probe_scores))
-
-    # Baseline only
-    baseline_preds = (test_baseline_scores >= 0.5).astype(int)
-    baseline_only_accuracy = float(accuracy_score(test_labels, baseline_preds))
-    baseline_only_f1 = float(f1_score(test_labels, baseline_preds))
-    baseline_only_roc_auc = float(roc_auc_score(test_labels, test_baseline_scores))
+    cascade_m = compute_overall_metrics(cascade_result.final_scores, test_labels)
+    probe_m = compute_overall_metrics(test_probe_scores, test_labels)
+    baseline_m = compute_overall_metrics(test_baseline_scores, test_labels)
 
     logger.info("\n=== OVERALL PERFORMANCE METRICS ===")
     logger.info(
-        f"Probe Only:   Acc={probe_only_accuracy:.4f}, F1={probe_only_f1:.4f}, ROC-AUC={probe_only_roc_auc:.4f}"
+        f"Probe Only:    Acc={probe_m['accuracy']:.4f}, F1={probe_m['f1_score']:.4f}, ROC-AUC={probe_m['roc_auc']:.4f}"
     )
     logger.info(
-        f"Baseline Only: Acc={baseline_only_accuracy:.4f}, F1={baseline_only_f1:.4f}, ROC-AUC={baseline_only_roc_auc:.4f}"
+        f"Baseline Only: Acc={baseline_m['accuracy']:.4f}, F1={baseline_m['f1_score']:.4f}, "
+        f"ROC-AUC={baseline_m['roc_auc']:.4f}"
     )
-    logger.info(f"Cascade:       Acc={cascade_accuracy:.4f}, F1={cascade_f1:.4f}, ROC-AUC={cascade_roc_auc:.4f}")
+    logger.info(
+        f"Cascade:       Acc={cascade_m['accuracy']:.4f}, F1={cascade_m['f1_score']:.4f}, "
+        f"ROC-AUC={cascade_m['roc_auc']:.4f}"
+    )
     logger.info("===================================\n")
 
     return GuaranteedRiskCascadeResults(
@@ -458,15 +446,15 @@ def run_guaranteed_risk_cascade_experiment(config) -> GuaranteedRiskCascadeResul
         std_budget_cost=float(budget_costs.std()),
         min_budget_cost=float(budget_costs.min()),
         max_budget_cost=float(budget_costs.max()),
-        cascade_accuracy=cascade_accuracy,
-        cascade_f1_score=cascade_f1,
-        cascade_roc_auc=cascade_roc_auc,
-        probe_only_accuracy=probe_only_accuracy,
-        probe_only_f1_score=probe_only_f1,
-        probe_only_roc_auc=probe_only_roc_auc,
-        baseline_only_accuracy=baseline_only_accuracy,
-        baseline_only_f1_score=baseline_only_f1,
-        baseline_only_roc_auc=baseline_only_roc_auc,
+        cascade_accuracy=cascade_m["accuracy"],
+        cascade_f1_score=cascade_m["f1_score"],
+        cascade_roc_auc=cascade_m["roc_auc"],
+        probe_only_accuracy=probe_m["accuracy"],
+        probe_only_f1_score=probe_m["f1_score"],
+        probe_only_roc_auc=probe_m["roc_auc"],
+        baseline_only_accuracy=baseline_m["accuracy"],
+        baseline_only_f1_score=baseline_m["f1_score"],
+        baseline_only_roc_auc=baseline_m["roc_auc"],
         batches=batches,
         train_probe_scores=train_probe_scores,
         calib_probe_scores=calib_probe_scores,
@@ -568,6 +556,10 @@ def log_to_clearml(
     serializer = ClearMLSerializer()
     clearml_logger.log_scalars(serializer.to_clearml_scalars(results))
     clearml_logger.log_artifacts(serializer.to_clearml_artifacts(results))
+
+    from cascade_utils import save_results_to_clearml
+
+    save_results_to_clearml(clearml_logger, results)
 
     # Figures
     logger.info("Generating comparison plots...")

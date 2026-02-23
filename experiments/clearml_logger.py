@@ -184,6 +184,37 @@ class ClearMLLogger:
                 stacklevel=2,
             )
 
+    def log_pickle_artifact(self, name: str, obj: Any) -> None:
+        """Upload an arbitrary Python object as a pickle artifact.
+
+        Unlike :meth:`log_artifacts` (which only handles numpy arrays and
+        dicts), this method pickles *any* Python object -- useful for saving
+        full experiment result dataclasses for later retrieval.
+
+        Args:
+            name: Artifact name (used to retrieve it later).
+            obj: Any pickle-able Python object.
+        """
+        if not self.enabled or self.task is None:
+            return
+
+        try:
+            import pickle
+
+            if self.temp_dir is None:
+                self.temp_dir = tempfile.mkdtemp()
+            file_path = Path(self.temp_dir) / f"{name}.pkl"
+            with open(file_path, "wb") as f:
+                pickle.dump(obj, f)
+            self.task.upload_artifact(name=name, artifact_object=str(file_path))
+            logger.info(f"Uploaded pickle artifact '{name}' to ClearML")
+        except Exception as e:
+            warnings.warn(
+                f"Failed to upload pickle artifact '{name}' to ClearML: {e}",
+                UserWarning,
+                stacklevel=2,
+            )
+
     def log_figure(self, title: str, series: str, figure, iteration: int = 0) -> None:
         """Log a matplotlib figure to ClearML.
 

@@ -14,7 +14,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from cascade_comparison import BatchCascadeStatistics, compute_batch_statistics
+from cascade_utils import (
+    BatchCascadeStatistics,
+    ThresholdCascadeResult,
+    compute_batch_statistics,
+    compute_overall_metrics,
+)
 from clearml_serialization import (
     artifact_field,
     derived_field,
@@ -83,6 +88,10 @@ class SGTCascadeResults:
     rejected_pairs: list[tuple[int, int]] = artifact_field()
     ordered_thresholds: np.ndarray = artifact_field()
     ordered_alphas: np.ndarray = artifact_field()
+
+    # All per-threshold cascade results (one per unique valid threshold)
+    threshold_results: list[ThresholdCascadeResult] = artifact_field()
+    selection_mode: str = scalar_field()  # "best_alpha" or "best_threshold"
 
     # Selected best (threshold, alpha) pair
     reliable_threshold: float = scalar_field()
@@ -348,15 +357,13 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
             t_range = f"{ordered_thresholds[min(valid_t)]:.4f}–{ordered_thresholds[max(valid_t)]:.4f}"
             logger.info(f"  alpha={alpha_val:.3f}: {len(valid_t)} valid thresholds ({t_range})")
 
-    # Select best: tightest achievable alpha, breaking ties by most
-    # aggressive threshold (highest index in ordered sequence).
-    best_pair = min(rejected_pairs, key=lambda p: (p[1], -p[0]))
-    reliable_threshold = float(ordered_thresholds[best_pair[0]])
-    achieved_alpha = float(ordered_alphas[best_pair[1]])
+    # --- Determine selection mode from graph structure ---
+    # row_dim="threshold" → graph chains within each threshold row (across alphas) → best_alpha
+    # row_dim="alpha"     → graph chains within each alpha row (across thresholds) → best_threshold
+    selection_mode = "best_alpha" if row_dim == "threshold" else "best_threshold"
+    logger.info(f"Selection mode: {selection_mode} (row_dim={row_dim})")
 
-    logger.info(f"SGT best: threshold={reliable_threshold:.4f}, alpha={achieved_alpha:.4f}")
-
-    # --- Test-set cascade ---
+    # --- Test-set scores (expensive -- LLM inference) ---
     logger.info("Computing probe scores on test dataset...")
     test_probe_scores = probe.predict(test_dataset)
     test_labels = test_dataset.labels_numpy()
@@ -370,69 +377,105 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
         gpu=getattr(config, "modal_gpu", None),
     )
 
-    logger.info(f"Running adaptive cascade (threshold={reliable_threshold})...")
-    cascade_result = offline_batch_cascade(
-        probe_scores=test_probe_scores,
-        baseline_scores=test_baseline_scores,
-        batch_size=cascade_batch_size,
-        selection_strategy="fixed_threshold",
-        merge_strategy=config.cascade_merge_strategy,
-        threshold=reliable_threshold,
+    # --- Run cascade for every unique valid threshold ---
+    from collections import defaultdict
+
+    valid_by_threshold: dict[int, list[int]] = defaultdict(list)
+    for t_idx, a_idx in rejected_pairs:
+        valid_by_threshold[t_idx].append(a_idx)
+
+    num_batches = (len(test_probe_scores) + cascade_batch_size - 1) // cascade_batch_size
+    merge_strategy = config.cascade_merge_strategy
+
+    logger.info(f"Running cascade for {len(valid_by_threshold)} unique valid thresholds...")
+    threshold_results: list[ThresholdCascadeResult] = []
+
+    for t_idx in sorted(valid_by_threshold):
+        thr = float(ordered_thresholds[t_idx])
+        alpha_indices = sorted(valid_by_threshold[t_idx])
+        # ordered_alphas is sorted descending, so largest index = tightest alpha
+        best_alpha = float(ordered_alphas[max(alpha_indices)])
+
+        cascade_result = offline_batch_cascade(
+            probe_scores=test_probe_scores,
+            baseline_scores=test_baseline_scores,
+            batch_size=cascade_batch_size,
+            selection_strategy="fixed_threshold",
+            merge_strategy=merge_strategy,
+            threshold=thr,
+        )
+
+        batches: list[BatchCascadeStatistics] = []
+        for batch_idx in range(num_batches):
+            s = batch_idx * cascade_batch_size
+            e = min(s + cascade_batch_size, len(test_probe_scores))
+            batches.append(
+                compute_batch_statistics(
+                    batch_index=batch_idx,
+                    probe_scores=cascade_result.probe_scores[s:e],
+                    baseline_scores=cascade_result.baseline_scores[s:e],
+                    used_baseline=cascade_result.used_baseline[s:e],
+                    final_scores=cascade_result.final_scores[s:e],
+                    labels=test_labels[s:e],
+                )
+            )
+
+        cascade_m = compute_overall_metrics(cascade_result.final_scores, test_labels)
+        budget_costs = np.array([b.budget_cost for b in batches])
+
+        threshold_results.append(
+            ThresholdCascadeResult(
+                threshold=thr,
+                best_alpha=best_alpha,
+                valid_alpha_indices=alpha_indices,
+                cascade_accuracy=cascade_m["accuracy"],
+                cascade_f1_score=cascade_m["f1_score"],
+                cascade_roc_auc=cascade_m["roc_auc"],
+                mean_budget_cost=float(budget_costs.mean()),
+                batches=batches,
+                cascade_final_scores=cascade_result.final_scores.copy(),
+            )
+        )
+        logger.info(
+            f"  threshold={thr:.4f}: alpha<={best_alpha:.4f}, "
+            f"budget={budget_costs.mean():.4f}, acc={cascade_m['accuracy']:.4f}"
+        )
+
+    # --- Select headline threshold ---
+    if selection_mode == "best_alpha":
+        # Tightest alpha (largest alpha_idx since ordered_alphas is descending)
+        # Break ties: lowest budget
+        selected = min(threshold_results, key=lambda r: (-max(r.valid_alpha_indices), r.mean_budget_cost))
+    else:  # best_threshold
+        # Lowest budget (most aggressive threshold)
+        # Break ties: tightest alpha
+        selected = min(threshold_results, key=lambda r: (r.mean_budget_cost, -max(r.valid_alpha_indices)))
+
+    reliable_threshold = selected.threshold
+    achieved_alpha = selected.best_alpha
+    budget_costs = np.array([b.budget_cost for b in selected.batches])
+
+    logger.info(
+        f"Selected ({selection_mode}): threshold={reliable_threshold:.4f}, "
+        f"alpha={achieved_alpha:.4f}, budget={selected.mean_budget_cost:.4f}"
     )
 
-    # --- Per-batch statistics ---
-    logger.info("Computing per-batch statistics...")
-    batches: list[BatchCascadeStatistics] = []
-    num_batches = (len(test_probe_scores) + cascade_batch_size - 1) // cascade_batch_size
-
-    for batch_idx in range(num_batches):
-        start_idx = batch_idx * cascade_batch_size
-        end_idx = min(start_idx + cascade_batch_size, len(test_probe_scores))
-        batch_labels = test_labels[start_idx:end_idx]
-
-        batch_stats = compute_batch_statistics(
-            batch_index=batch_idx,
-            probe_scores=cascade_result.probe_scores[start_idx:end_idx],
-            baseline_scores=cascade_result.baseline_scores[start_idx:end_idx],
-            used_baseline=cascade_result.used_baseline[start_idx:end_idx],
-            final_scores=cascade_result.final_scores[start_idx:end_idx],
-            labels=batch_labels,
-        )
-        batches.append(batch_stats)
-
-    budget_costs = np.array([b.budget_cost for b in batches])
-    logger.info(f"Mean budget cost: {budget_costs.mean():.3f}")
-
     # --- Overall metrics ---
-    logger.info("Computing overall performance metrics...")
-    from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
-
-    # Cascade
-    cascade_preds = (cascade_result.final_scores >= 0.5).astype(int)
-    cascade_accuracy = float(accuracy_score(test_labels, cascade_preds))
-    cascade_f1 = float(f1_score(test_labels, cascade_preds))
-    cascade_roc_auc = float(roc_auc_score(test_labels, cascade_result.final_scores))
-
-    # Probe only
-    probe_preds = (test_probe_scores >= 0.5).astype(int)
-    probe_only_accuracy = float(accuracy_score(test_labels, probe_preds))
-    probe_only_f1 = float(f1_score(test_labels, probe_preds))
-    probe_only_roc_auc = float(roc_auc_score(test_labels, test_probe_scores))
-
-    # Baseline only
-    baseline_preds = (test_baseline_scores >= 0.5).astype(int)
-    baseline_only_accuracy = float(accuracy_score(test_labels, baseline_preds))
-    baseline_only_f1 = float(f1_score(test_labels, baseline_preds))
-    baseline_only_roc_auc = float(roc_auc_score(test_labels, test_baseline_scores))
+    probe_m = compute_overall_metrics(test_probe_scores, test_labels)
+    baseline_m = compute_overall_metrics(test_baseline_scores, test_labels)
 
     logger.info("\n=== OVERALL PERFORMANCE METRICS ===")
     logger.info(
-        f"Probe Only:    Acc={probe_only_accuracy:.4f}, F1={probe_only_f1:.4f}, ROC-AUC={probe_only_roc_auc:.4f}"
+        f"Probe Only:    Acc={probe_m['accuracy']:.4f}, F1={probe_m['f1_score']:.4f}, ROC-AUC={probe_m['roc_auc']:.4f}"
     )
     logger.info(
-        f"Baseline Only: Acc={baseline_only_accuracy:.4f}, F1={baseline_only_f1:.4f}, ROC-AUC={baseline_only_roc_auc:.4f}"
+        f"Baseline Only: Acc={baseline_m['accuracy']:.4f}, F1={baseline_m['f1_score']:.4f}, "
+        f"ROC-AUC={baseline_m['roc_auc']:.4f}"
     )
-    logger.info(f"Cascade:       Acc={cascade_accuracy:.4f}, F1={cascade_f1:.4f}, ROC-AUC={cascade_roc_auc:.4f}")
+    logger.info(
+        f"Cascade:       Acc={selected.cascade_accuracy:.4f}, F1={selected.cascade_f1_score:.4f}, "
+        f"ROC-AUC={selected.cascade_roc_auc:.4f}"
+    )
     logger.info(f"Guaranteed:    risk({guaranteed_risk_name}) <= {achieved_alpha:.4f}")
     logger.info("===================================\n")
 
@@ -453,22 +496,24 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
         rejected_pairs=rejected_pairs,
         ordered_thresholds=ordered_thresholds,
         ordered_alphas=ordered_alphas,
+        threshold_results=threshold_results,
+        selection_mode=selection_mode,
         reliable_threshold=reliable_threshold,
         achieved_alpha=achieved_alpha,
         mean_budget_cost=float(budget_costs.mean()),
         std_budget_cost=float(budget_costs.std()),
         min_budget_cost=float(budget_costs.min()),
         max_budget_cost=float(budget_costs.max()),
-        cascade_accuracy=cascade_accuracy,
-        cascade_f1_score=cascade_f1,
-        cascade_roc_auc=cascade_roc_auc,
-        probe_only_accuracy=probe_only_accuracy,
-        probe_only_f1_score=probe_only_f1,
-        probe_only_roc_auc=probe_only_roc_auc,
-        baseline_only_accuracy=baseline_only_accuracy,
-        baseline_only_f1_score=baseline_only_f1,
-        baseline_only_roc_auc=baseline_only_roc_auc,
-        batches=batches,
+        cascade_accuracy=selected.cascade_accuracy,
+        cascade_f1_score=selected.cascade_f1_score,
+        cascade_roc_auc=selected.cascade_roc_auc,
+        probe_only_accuracy=probe_m["accuracy"],
+        probe_only_f1_score=probe_m["f1_score"],
+        probe_only_roc_auc=probe_m["roc_auc"],
+        baseline_only_accuracy=baseline_m["accuracy"],
+        baseline_only_f1_score=baseline_m["f1_score"],
+        baseline_only_roc_auc=baseline_m["roc_auc"],
+        batches=selected.batches,
         train_probe_scores=train_probe_scores,
         calib_probe_scores=calib_probe_scores,
         test_probe_scores=test_probe_scores,
@@ -476,7 +521,7 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
         calib_labels=calib_labels,
         test_labels=test_labels,
         test_baseline_scores=test_baseline_scores,
-        cascade_final_scores=cascade_result.final_scores,
+        cascade_final_scores=selected.cascade_final_scores,
         calib_evaluation_risks=calib_eval_result,
     )
 
@@ -538,6 +583,10 @@ if __name__ == "__main__":
             }
             clearml_logger.log_scalars(scalars)
             clearml_logger.log_artifacts(serializer.to_clearml_artifacts(results))
+
+            from cascade_utils import save_results_to_clearml
+
+            save_results_to_clearml(clearml_logger, results)
 
             log_sgt_figures_to_clearml(clearml_logger, figures)
             logger.info("All plots generated and logged to ClearML.")
