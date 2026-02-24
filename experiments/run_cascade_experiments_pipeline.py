@@ -3,6 +3,9 @@
 Each step logs to ClearML and task IDs are piped between steps automatically.
 All tasks in a pipeline run share a common datetime prefix for easy identification.
 
+All results, scalars, configs, and figures are saved locally to ``--output-dir``
+(default: ``results/pipeline/{run_prefix}/``), regardless of whether ClearML is enabled.
+
 Usage::
 
     # Default config
@@ -19,12 +22,16 @@ Usage::
 """
 
 import argparse
+import json
 import logging
 import os
+import pickle
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
+import matplotlib.pyplot as plt
 import numpy as np
 from analyse_cascade import analyse_comparison, analyse_single
 from analyse_stratified_cascade import run_stratified_analysis
@@ -57,8 +64,8 @@ def parse_args():
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="figures/pipeline",
-        help="Root directory for all figures (default: figures/pipeline).",
+        default="results/pipeline",
+        help="Root directory for results (default: results/pipeline).",
     )
     parser.add_argument(
         "--no-clearml",
@@ -66,6 +73,58 @@ def parse_args():
         help="Disable ClearML logging.",
     )
     return parser.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Local saving helpers
+# ---------------------------------------------------------------------------
+
+
+def _save_figures_locally(figures: dict[str, Any], output_dir: Path) -> None:
+    """Save a dict of matplotlib figures as PNGs (handles nested dicts)."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for name, fig in figures.items():
+        if fig is None:
+            continue
+        if isinstance(fig, dict):
+            for sub_name, sub_fig in fig.items():
+                if sub_fig is not None:
+                    path = output_dir / f"{name}_{sub_name}.png"
+                    sub_fig.savefig(path, bbox_inches="tight", dpi=150)
+                    logger.info(f"Saved {path}")
+        else:
+            path = output_dir / f"{name}.png"
+            fig.savefig(path, bbox_inches="tight", dpi=150)
+            logger.info(f"Saved {path}")
+
+
+def _save_experiment_locally(results: Any, output_dir: Path) -> None:
+    """Save results pickle, scalars JSON, and config JSON to disk."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Results pickle
+    pkl_path = output_dir / "results.pkl"
+    with open(pkl_path, "wb") as f:
+        pickle.dump(results, f)
+    logger.info(f"Saved {pkl_path}")
+
+    # Scalars
+    serializer = ClearMLSerializer()
+    scalars = serializer.to_clearml_scalars(results)
+    scalars = {k: float(v) if isinstance(v, (float, int, np.floating, np.integer)) else v for k, v in scalars.items()}
+    (output_dir / "scalars.json").write_text(json.dumps(scalars, indent=2, default=str))
+    logger.info(f"Saved {output_dir / 'scalars.json'}")
+
+    # Config
+    config = getattr(results, "config", None)
+    if config is not None:
+        (output_dir / "config.json").write_text(json.dumps(config, indent=2, default=str))
+        logger.info(f"Saved {output_dir / 'config.json'}")
+
+
+# ---------------------------------------------------------------------------
+# ClearML helper
+# ---------------------------------------------------------------------------
 
 
 def _make_clearml_logger(run_prefix: str, step_name: str) -> ClearMLLogger:
@@ -76,7 +135,14 @@ def _make_clearml_logger(run_prefix: str, step_name: str) -> ClearMLLogger:
     )
 
 
-def step_sgt_cascade(config, run_prefix: str, use_clearml: bool) -> tuple[SGTCascadeResults, str | None]:
+# ---------------------------------------------------------------------------
+# Pipeline steps
+# ---------------------------------------------------------------------------
+
+
+def step_sgt_cascade(
+    config: dict[str, Any], output_dir: Path, run_prefix: str, use_clearml: bool
+) -> tuple[SGTCascadeResults, str | None]:
     """Step 1: Run the SGT cascade experiment.
 
     Returns (results, task_id) — task_id is None when ClearML is disabled.
@@ -96,6 +162,15 @@ def step_sgt_cascade(config, run_prefix: str, use_clearml: bool) -> tuple[SGTCas
         sys.exit(1)
     assert results is not None  # for type checker (sys.exit is NoReturn)
 
+    # Generate figures
+    figures = make_sgt_figures(results)
+
+    # Save locally (always)
+    step_dir = output_dir / "sgt_cascade"
+    _save_experiment_locally(results, step_dir)
+    _save_figures_locally(figures, step_dir / "figures")
+
+    # Log to ClearML
     task_id = None
     if clearml_logger is not None:
         clearml_logger.connect_configuration(results.config)
@@ -124,7 +199,6 @@ def step_sgt_cascade(config, run_prefix: str, use_clearml: bool) -> tuple[SGTCas
         clearml_logger.log_artifacts(serializer.to_clearml_artifacts(results))
         save_results_to_clearml(clearml_logger, results)
 
-        figures = make_sgt_figures(results)
         log_sgt_figures_to_clearml(clearml_logger, figures)
 
         assert clearml_logger.task is not None
@@ -132,10 +206,11 @@ def step_sgt_cascade(config, run_prefix: str, use_clearml: bool) -> tuple[SGTCas
         clearml_logger.finalize()
         logger.info(f"SGT task ID: {task_id}")
 
+    plt.close("all")
     return results, task_id
 
 
-def step_analyse_sgt(sgt_results, output_dir: Path, run_prefix: str, use_clearml: bool) -> None:
+def step_analyse_sgt(sgt_results: Any, output_dir: Path, run_prefix: str, use_clearml: bool) -> None:
     """Step 2: Analyse the SGT cascade results."""
     logger.info("\n" + "=" * 60)
     logger.info("STEP 2: Analyse SGT Cascade")
@@ -145,14 +220,14 @@ def step_analyse_sgt(sgt_results, output_dir: Path, run_prefix: str, use_clearml
     if clearml_logger is not None:
         clearml_logger.add_tags(["pipeline", "analysis", "sgt"])
 
-    analyse_single(sgt_results, output_dir / "sgt", label="Adaptive (SGT)", clearml_logger=clearml_logger)
+    analyse_single(sgt_results, output_dir / "analyse_sgt", label="Adaptive (SGT)", clearml_logger=clearml_logger)
 
     if clearml_logger is not None:
         clearml_logger.finalize()
 
 
 def step_fixed_cascade(
-    sgt_results, budget_rate: float | None, run_prefix: str, use_clearml: bool
+    sgt_results: Any, budget_rate: float | None, output_dir: Path, run_prefix: str, use_clearml: bool
 ) -> tuple[object, str | None]:
     """Step 3: Run the fixed-budget cascade using SGT test data.
 
@@ -166,6 +241,10 @@ def step_fixed_cascade(
 
     results = run_fixed_cascade(sgt_results, budget_rate=budget_rate)
 
+    # Save locally (always)
+    _save_experiment_locally(results, output_dir / "fixed_cascade")
+
+    # Log to ClearML
     task_id = None
     if clearml_logger is not None:
         clearml_logger.connect_configuration(results.config)
@@ -189,7 +268,7 @@ def step_fixed_cascade(
     return results, task_id
 
 
-def step_analyse_fixed(fixed_results, output_dir: Path, run_prefix: str, use_clearml: bool) -> None:
+def step_analyse_fixed(fixed_results: Any, output_dir: Path, run_prefix: str, use_clearml: bool) -> None:
     """Step 4: Analyse the fixed cascade results."""
     logger.info("\n" + "=" * 60)
     logger.info("STEP 4: Analyse Fixed Cascade")
@@ -199,13 +278,13 @@ def step_analyse_fixed(fixed_results, output_dir: Path, run_prefix: str, use_cle
     if clearml_logger is not None:
         clearml_logger.add_tags(["pipeline", "analysis", "fixed"])
 
-    analyse_single(fixed_results, output_dir / "fixed", label="Fixed", clearml_logger=clearml_logger)
+    analyse_single(fixed_results, output_dir / "analyse_fixed", label="Fixed", clearml_logger=clearml_logger)
 
     if clearml_logger is not None:
         clearml_logger.finalize()
 
 
-def step_stratified_analysis(sgt_results, output_dir: Path, run_prefix: str, use_clearml: bool) -> None:
+def step_stratified_analysis(sgt_results: Any, output_dir: Path, run_prefix: str, use_clearml: bool) -> None:
     """Step 5: Stratified batching analysis on SGT results."""
     logger.info("\n" + "=" * 60)
     logger.info("STEP 5: Stratified Analysis")
@@ -221,7 +300,7 @@ def step_stratified_analysis(sgt_results, output_dir: Path, run_prefix: str, use
         clearml_logger.finalize()
 
 
-def step_comparison(sgt_results, fixed_results, output_dir: Path, run_prefix: str, use_clearml: bool) -> None:
+def step_comparison(sgt_results: Any, fixed_results: Any, output_dir: Path, run_prefix: str, use_clearml: bool) -> None:
     """Step 6: Compare SGT vs fixed cascade."""
     logger.info("\n" + "=" * 60)
     logger.info("STEP 6: Comparison (SGT vs Fixed)")
@@ -244,13 +323,21 @@ def step_comparison(sgt_results, fixed_results, output_dir: Path, run_prefix: st
         clearml_logger.finalize()
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
 def main():
     args = parse_args()
     config = load_config(args.config)
-    output_dir = Path(args.output_dir)
     use_clearml = not args.no_clearml
 
     run_prefix = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Each run gets its own subdirectory
+    output_dir = Path(args.output_dir) / run_prefix
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Config: {args.config}")
     logger.info(f"Output: {output_dir}")
@@ -258,13 +345,15 @@ def main():
     logger.info(f"Run prefix: {run_prefix}")
 
     # Step 1: SGT cascade
-    sgt_results, sgt_task_id = step_sgt_cascade(config, run_prefix, use_clearml)
+    sgt_results, sgt_task_id = step_sgt_cascade(config, output_dir, run_prefix, use_clearml)
 
     # Step 2: Analyse SGT
     step_analyse_sgt(sgt_results, output_dir, run_prefix, use_clearml)
 
     # Step 3: Fixed cascade (reuses SGT test data in-memory)
-    fixed_results, fixed_task_id = step_fixed_cascade(sgt_results, args.budget_rate, run_prefix, use_clearml)
+    fixed_results, fixed_task_id = step_fixed_cascade(
+        sgt_results, args.budget_rate, output_dir, run_prefix, use_clearml
+    )
 
     # Step 4: Analyse fixed
     step_analyse_fixed(fixed_results, output_dir, run_prefix, use_clearml)
@@ -275,12 +364,23 @@ def main():
     # Step 6: Comparison
     step_comparison(sgt_results, fixed_results, output_dir, run_prefix, use_clearml)
 
+    # Save run metadata
+    metadata: dict[str, Any] = {
+        "run_prefix": run_prefix,
+        "config_path": str(args.config),
+        "clearml_enabled": use_clearml,
+    }
+    if use_clearml:
+        metadata["sgt_task_id"] = sgt_task_id
+        metadata["fixed_task_id"] = fixed_task_id
+    (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
+
     # Summary
     logger.info("\n" + "=" * 60)
     logger.info("PIPELINE COMPLETE")
     logger.info("=" * 60)
     logger.info(f"Run prefix: {run_prefix}")
-    logger.info(f"Figures saved to: {output_dir}")
+    logger.info(f"Results saved to: {output_dir}")
     if use_clearml:
         logger.info(f"SGT task ID:      {sgt_task_id}")
         logger.info(f"Fixed task ID:    {fixed_task_id}")

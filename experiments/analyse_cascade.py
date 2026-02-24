@@ -55,9 +55,9 @@ def parse_args():
 
 
 def _save_figure(fig, output_dir: Path, name: str) -> None:
-    """Save a single figure as PDF."""
-    path = output_dir / f"{name}.pdf"
-    fig.savefig(path, bbox_inches="tight")
+    """Save a single figure as PNG."""
+    path = output_dir / f"{name}.png"
+    fig.savefig(path, bbox_inches="tight", dpi=150)
     logger.info(f"Saved {path}")
 
 
