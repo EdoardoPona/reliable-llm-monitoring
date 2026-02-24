@@ -564,35 +564,21 @@ def _save_figure(fig: plt.Figure, output_dir: Path, name: str, clearml_logger=No
         clearml_logger.log_figure(title="Stratified Analysis", series=name, figure=fig)
 
 
-def main():
-    args = parse_args()
-    output_dir = Path(args.output_dir)
+def run_stratified_analysis(sgt_results, output_dir: Path, clearml_logger=None) -> None:
+    """Run stratified vs random batching analysis on SGT cascade results.
+
+    Can be called from the pipeline with in-memory results, or standalone via ``main()``.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # ClearML setup
-    clearml_logger = None
-    if args.use_clearml:
-        from clearml_logger import ClearMLLogger
+    threshold = sgt_results.reliable_threshold
+    batch_size = sgt_results.cascade_batch_size
+    merge_strategy = sgt_results.config.get("cascade_merge_strategy", "replace")
+    fixed_rate = sgt_results.mean_budget_cost  # match adaptive's overall budget
 
-        clearml_logger = ClearMLLogger(
-            project_name=os.environ.get("CLEARML_PROJECT_NAME", "reliable-llm-monitoring"),
-            task_name=f"stratified_analysis_{args.task_id[:8]}",
-            enabled=True,
-        )
-        clearml_logger.connect_configuration({"source_task_id": args.task_id})
-
-    # Load results
-    logger.info(f"Loading results from ClearML task: {args.task_id}")
-    results = load_results_from_clearml(args.task_id)
-
-    threshold = results.reliable_threshold
-    batch_size = results.cascade_batch_size
-    merge_strategy = results.config.get("cascade", {}).get("merge_strategy", "replace")
-    fixed_rate = results.mean_budget_cost  # match adaptive's overall budget
-
-    ps = results.test_probe_scores
-    bs = results.test_baseline_scores
-    lb = results.test_labels
+    ps = sgt_results.test_probe_scores
+    bs = sgt_results.test_baseline_scores
+    lb = sgt_results.test_labels
 
     logger.info(f"Threshold: {threshold}, batch_size: {batch_size}, fixed_rate: {fixed_rate:.4f}")
     logger.info(f"Merge strategy: {merge_strategy}")
@@ -673,11 +659,33 @@ def main():
         _save_figure(fig, output_dir, name, clearml_logger)
 
     plt.close("all")
+    logger.info("\nStratified analysis done!")
+
+
+def main():
+    args = parse_args()
+    output_dir = Path(args.output_dir)
+
+    # ClearML setup
+    clearml_logger = None
+    if args.use_clearml:
+        from clearml_logger import ClearMLLogger
+
+        clearml_logger = ClearMLLogger(
+            project_name=os.environ.get("CLEARML_PROJECT_NAME", "reliable-llm-monitoring"),
+            task_name=f"stratified_analysis_{args.task_id[:8]}",
+            enabled=True,
+        )
+        clearml_logger.connect_configuration({"source_task_id": args.task_id})
+
+    # Load results
+    logger.info(f"Loading results from ClearML task: {args.task_id}")
+    results = load_results_from_clearml(args.task_id)
+
+    run_stratified_analysis(results, output_dir, clearml_logger)
 
     if clearml_logger is not None:
         clearml_logger.finalize()
-
-    logger.info("\nDone!")
 
 
 if __name__ == "__main__":
