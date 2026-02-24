@@ -557,8 +557,8 @@ def plot_overall_summary(random_data: dict, stratified_data: dict) -> plt.Figure
 
 
 def _save_figure(fig: plt.Figure, output_dir: Path, name: str, clearml_logger=None) -> None:
-    path = output_dir / f"{name}.pdf"
-    fig.savefig(path, bbox_inches="tight")
+    path = output_dir / f"{name}.png"
+    fig.savefig(path, bbox_inches="tight", dpi=150)
     logger.info(f"Saved {path}")
     if clearml_logger is not None:
         clearml_logger.log_figure(title="Stratified Analysis", series=name, figure=fig)
