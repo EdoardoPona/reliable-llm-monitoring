@@ -82,7 +82,11 @@ def has_mixed_config(config: SimpleNamespace) -> bool:
 
 
 def get_mixed_splits(config: SimpleNamespace) -> set[str]:
-    """Return which splits should be mixed (e.g. {'test'} or {'test', 'calib'})."""
+    """Return which splits should be mixed.
+
+    Defaults to both test and calib to ensure exchangeability between
+    calibration and test distributions (required for valid hypothesis testing).
+    """
     if not has_mixed_config(config):
         return set()
-    return set(config.mixed_datasets.get("splits", ["test"]))
+    return set(config.mixed_datasets.get("splits", ["test", "calib"]))

@@ -55,10 +55,10 @@ test_dataset_path: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
 
 # --- Mixed dataset configuration ---
 mixed_datasets:
-  # Which splits to mix. "test" combines test datasets from all sources.
-  # Add "calib" to also mix calibration data from all sources.
-  # When "calib" is absent, calib_dataset_path above is used as-is (single-source).
-  splits: [test]
+  # Which splits to mix. Both calib and test must be mixed to ensure
+  # exchangeability between calibration and test distributions (required
+  # for valid SGT hypothesis testing).
+  splits: [test, calib]
 
   # How to balance different-sized sources:
   #   "min_size" — subsample all groups to the size of the smallest
