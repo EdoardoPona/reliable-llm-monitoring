@@ -144,6 +144,10 @@ class SGTCascadeResults:
     n_original_thresholds: int = scalar_field()
     n_pareto_thresholds: int | None = scalar_field()
 
+    # Mixed dataset group labels (None when using single-source dataset)
+    test_groups: np.ndarray | None = artifact_field()
+    group_purity: float | None = scalar_field()
+
     # Derived
     budget_costs: np.ndarray = derived_field(derive_fn=lambda r: np.array([b.budget_cost for b in r.batches]))
 
@@ -193,8 +197,27 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
     # --- Load data ---
     logger.info("Loading datasets...")
     train_dataset = load_dataset(Path(config.train_dataset_path), activation_config=activation_config)
-    calib_dataset = load_dataset(Path(config.calib_dataset_path), activation_config=activation_config)
-    test_dataset = load_dataset(Path(config.test_dataset_path), activation_config=activation_config)
+
+    from mixed_dataset import get_mixed_splits, has_mixed_config, load_mixed_dataset
+
+    if has_mixed_config(config):
+        mixed_cfg = config.mixed_datasets
+        sources = mixed_cfg["sources"]
+        balance = mixed_cfg.get("balance_strategy", "min_size")
+        mixed_splits = get_mixed_splits(config)
+
+        if "calib" in mixed_splits:
+            logger.info("Loading MIXED calibration dataset (multi-source)")
+            calib_dataset = load_mixed_dataset(sources, "dev", activation_config, balance, seed)
+        else:
+            logger.info("Loading single-source calibration dataset")
+            calib_dataset = load_dataset(Path(config.calib_dataset_path), activation_config=activation_config)
+
+        logger.info("Loading MIXED test dataset (multi-source)")
+        test_dataset = load_mixed_dataset(sources, "test", activation_config, balance, seed)
+    else:
+        calib_dataset = load_dataset(Path(config.calib_dataset_path), activation_config=activation_config)
+        test_dataset = load_dataset(Path(config.test_dataset_path), activation_config=activation_config)
 
     debug_mode = getattr(config, "debug", False)
     if debug_mode:
@@ -202,6 +225,13 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
         train_dataset = sample_from_dataset(train_dataset, DEBUG_SAMPLE_SIZE, seed=seed)
         calib_dataset = sample_from_dataset(calib_dataset, DEBUG_SAMPLE_SIZE, seed=seed)
         test_dataset = sample_from_dataset(test_dataset, DEBUG_SAMPLE_SIZE, seed=seed)
+
+    # Extract group labels for mixed datasets (before any splitting)
+    test_groups = np.array(test_dataset.other_fields["group"]) if "group" in test_dataset.other_fields else None
+    group_purity = config.mixed_datasets.get("group_purity", 1.0) if has_mixed_config(config) else None
+    if test_groups is not None:
+        unique_groups, group_counts = np.unique(test_groups, return_counts=True)
+        logger.info(f"Test dataset groups: {dict(zip(unique_groups, group_counts, strict=True))}")
 
     logger.info(f"Training dataset size: {len(train_dataset)}")
     logger.info(f"Calibration dataset size: {len(calib_dataset)}")
@@ -639,12 +669,10 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
         pareto_mask=pareto_mask,
         n_original_thresholds=n_original_thresholds,
         n_pareto_thresholds=n_pareto,
+        test_groups=test_groups,
+        group_purity=group_purity,
     )
 
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import os

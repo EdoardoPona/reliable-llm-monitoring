@@ -552,6 +552,168 @@ def plot_overall_summary(random_data: dict, stratified_data: dict) -> plt.Figure
 
 
 # ---------------------------------------------------------------------------
+# Group-stratified batching
+# ---------------------------------------------------------------------------
+
+
+def _order_by_group(
+    ps: np.ndarray,
+    bs: np.ndarray,
+    lb: np.ndarray,
+    groups: np.ndarray,
+    group_purity: float = 1.0,
+    seed: int = 42,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Order examples by group with configurable purity.
+
+    Args:
+        ps: Probe scores.
+        bs: Baseline scores.
+        lb: Labels.
+        groups: Group labels (string array).
+        group_purity: 1.0 = fully grouped (contiguous by group),
+            0.0 = fully random, in-between = partial mixing where a fraction
+            (1 - group_purity) of examples are randomly repositioned.
+        seed: Random seed.
+
+    Returns:
+        Reordered (ps, bs, lb, groups) arrays.
+    """
+    if group_purity <= 0.0:
+        rng = np.random.default_rng(seed)
+        order = rng.permutation(len(ps))
+    elif group_purity >= 1.0:
+        order = np.argsort(groups, kind="stable")
+    else:
+        order = np.argsort(groups, kind="stable")
+        rng = np.random.default_rng(seed)
+        n_swap = int(len(ps) * (1 - group_purity))
+        swap_indices = rng.choice(len(ps), size=n_swap, replace=False)
+        order[swap_indices] = order[rng.permutation(swap_indices)]
+    return ps[order], bs[order], lb[order], groups[order]
+
+
+def plot_group_performance(
+    group_data: dict,
+    groups_sorted: np.ndarray,
+    batch_size: int,
+) -> plt.Figure:
+    """Per-group accuracy and budget comparison between adaptive and fixed."""
+    n_batches = int(group_data["n_batches"])
+    unique_groups = np.unique(groups_sorted)
+
+    # Determine dominant group per batch
+    batch_groups = []
+    for i in range(n_batches):
+        s, e = i * batch_size, (i + 1) * batch_size
+        bg = groups_sorted[s:e]
+        vals, counts = np.unique(bg, return_counts=True)
+        batch_groups.append(vals[np.argmax(counts)])
+    batch_groups = np.array(batch_groups)
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig.suptitle("Group-Stratified: Adaptive vs Fixed per Group", fontsize=14, fontweight="bold")
+
+    metrics = [("accuracy", "Accuracy"), ("roc_auc", "ROC-AUC"), ("budget_cost", "Budget")]
+
+    for ax, (metric, ylabel) in zip(axes, metrics, strict=False):
+        x = np.arange(len(unique_groups))
+        adaptive_means = []
+        fixed_means = []
+        for g in unique_groups:
+            mask = batch_groups == g
+            adaptive_means.append(group_data[f"adaptive_{metric}"][mask].mean())
+            fixed_means.append(group_data[f"fixed_{metric}"][mask].mean())
+
+        width = 0.35
+        ax.bar(x - width / 2, adaptive_means, width, label="Adaptive", color=_C_ADAPTIVE, alpha=0.8, edgecolor="black")
+        ax.bar(x + width / 2, fixed_means, width, label="Fixed", color=_C_FIXED, alpha=0.8, edgecolor="black")
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(unique_groups, fontsize=10)
+        ax.set_ylabel(ylabel, fontweight="bold")
+        ax.set_xlabel("Dataset group", fontweight="bold")
+        ax.legend()
+        ax.grid(axis="y", alpha=0.3)
+
+        # Annotate values
+        for i, (a, f) in enumerate(zip(adaptive_means, fixed_means, strict=False)):
+            ax.text(i - width / 2, a + 0.005, f"{a:.3f}", ha="center", va="bottom", fontsize=8)
+            ax.text(i + width / 2, f + 0.005, f"{f:.3f}", ha="center", va="bottom", fontsize=8)
+
+    plt.tight_layout()
+    return fig
+
+
+def plot_group_overall_summary(
+    random_data: dict,
+    stratified_data: dict,
+    group_data: dict,
+) -> plt.Figure:
+    """Bar chart comparing overall metrics across random, uncertainty-stratified, and group-stratified batching."""
+    fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+    fig.suptitle(
+        "Overall Comparison: Random vs Uncertainty-Stratified vs Group-Stratified", fontsize=14, fontweight="bold"
+    )
+
+    metrics = [("accuracy", "Accuracy"), ("roc_auc", "ROC-AUC"), ("budget_cost", "Budget")]
+
+    for ax, (metric, ylabel) in zip(axes, metrics, strict=False):
+        if metric == "budget_cost":
+            values = [
+                random_data[f"adaptive_{metric}"].mean(),
+                random_data[f"fixed_{metric}"].mean(),
+                stratified_data[f"adaptive_{metric}"].mean(),
+                stratified_data[f"fixed_{metric}"].mean(),
+                group_data[f"adaptive_{metric}"].mean(),
+                group_data[f"fixed_{metric}"].mean(),
+            ]
+        else:
+            values = [
+                random_data["adaptive_global"][metric],
+                random_data["fixed_global"][metric],
+                stratified_data["adaptive_global"][metric],
+                stratified_data["fixed_global"][metric],
+                group_data["adaptive_global"][metric],
+                group_data["fixed_global"][metric],
+            ]
+        bar_labels = [
+            "Random\nAdaptive",
+            "Random\nFixed",
+            "Unc-Strat\nAdaptive",
+            "Unc-Strat\nFixed",
+            "Group-Strat\nAdaptive",
+            "Group-Strat\nFixed",
+        ]
+        colors = [_C_ADAPTIVE, _C_FIXED] * 3
+        hatches = ["", "", "///", "///", "...", "..."]
+
+        x = np.arange(len(bar_labels))
+        bars = ax.bar(x, values, width=0.6, color=colors, alpha=0.8, edgecolor="black", linewidth=1.2)
+        for bar, hatch in zip(bars, hatches, strict=False):
+            bar.set_hatch(hatch)
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(bar_labels, fontsize=8)
+        ax.set_ylabel(ylabel, fontweight="bold", fontsize=11)
+        ax.grid(axis="y", alpha=0.3)
+
+        for bar, val in zip(bars, values, strict=False):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                bar.get_height() + 0.002,
+                f"{val:.4f}",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                fontweight="bold",
+            )
+
+    plt.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -640,6 +802,41 @@ def run_stratified_analysis(sgt_results, output_dir: Path, clearml_logger=None) 
             f"    ROC: mean_batch_diff={data['adaptive_roc_auc'].mean() - data['fixed_roc_auc'].mean():+.4f} (p={p_roc:.4f}, adaptive wins {a_wins_roc}/{n})"
         )
 
+    # --- Group-stratified batching (if groups available) ---
+    test_groups = getattr(sgt_results, "test_groups", None)
+    group_data = None
+    groups_sorted = None
+
+    if test_groups is not None:
+        group_purity = getattr(sgt_results, "group_purity", 1.0) or 1.0
+        logger.info(f"\nRunning group-stratified batching analysis (group_purity={group_purity})...")
+        ps_group, bs_group, lb_group, groups_sorted = _order_by_group(
+            ps, bs, lb, test_groups, group_purity, seed=sgt_results.seed
+        )
+        group_data = run_both_methods_batched(
+            ps_group, bs_group, lb_group, batch_size, threshold, fixed_rate, merge_strategy
+        )
+
+        # Variance ratio for group-stratified
+        unc_group = group_data["uncertainty_mean"]
+        vr_group = unc_group.var() / expected_var_iid
+        logger.info(f"Variance ratio (group-strat): {vr_group:.3f}")
+
+        # Summary for group-stratified
+        logger.info(f"\n  GROUP-STRATIFIED BATCHING (global metrics over full test set, purity={group_purity}):")
+        for method in ["adaptive", "fixed"]:
+            g = group_data[f"{method}_global"]
+            bud = group_data[f"{method}_budget_cost"].mean()
+            logger.info(f"    {method:>8s}: Acc={g['accuracy']:.4f}  ROC-AUC={g['roc_auc']:.4f}  Budget={bud:.4f}")
+
+        ag = group_data["adaptive_global"]
+        fg = group_data["fixed_global"]
+        diff_acc = ag["accuracy"] - fg["accuracy"]
+        diff_roc = ag["roc_auc"] - fg["roc_auc"]
+        logger.info(f"    Adaptive - Fixed: Acc={diff_acc:+.4f}  ROC-AUC={diff_roc:+.4f}")
+    else:
+        logger.info("\nNo group labels found — skipping group-stratified analysis.")
+
     # --- Generate figures ---
     logger.info("\nGenerating figures...")
 
@@ -654,6 +851,13 @@ def run_stratified_analysis(sgt_results, output_dir: Path, clearml_logger=None) 
         ),
         "overall_summary": plot_overall_summary(random_data, stratified_data),
     }
+
+    if group_data is not None and groups_sorted is not None:
+        figures["group_performance"] = plot_group_performance(group_data, groups_sorted, batch_size)
+        figures["paired_group"] = plot_paired_scatter(
+            group_data, "Paired Comparison: Adaptive vs Fixed (Group-Stratified Batches)"
+        )
+        figures["overall_summary_with_groups"] = plot_group_overall_summary(random_data, stratified_data, group_data)
 
     for name, fig in figures.items():
         _save_figure(fig, output_dir, name, clearml_logger)

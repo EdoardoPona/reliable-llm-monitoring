@@ -1,0 +1,87 @@
+# SGT Cascade: Mixed multi-source dataset with group-stratified batching
+#
+# Based on sgt_cascade_best_alpha.yaml. Combines multiple evaluation datasets
+# (anthropic, mt, mts, toolace) into a single test set tagged by source group.
+# This creates natural performance variability across groups, enabling
+# group-stratified batching where the adaptive method should outperform fixed-rate.
+
+guaranteed_risk: roc_auc_error
+guarantee_probability: 0.9
+
+# Alpha grid
+alpha_start: 0.05
+alpha_end: 0.7
+alpha_steps: 15
+
+# Row-chain: rows = thresholds, cols = alphas
+sgt_graph_type: row_chain
+sgt_row_dimension: threshold
+
+reduction_strategy: mean
+cascade_batch_size: 128
+baseline_batch_size: 8
+cascade_merge_strategy: replace
+
+activations_model_name: meta-llama/Llama-3.2-1B-Instruct
+activations_layer: 11
+
+baseline_model_name: google/gemma-3-27b-it
+
+seed: 42
+debug: false
+
+# Threshold range
+threshold_start: 0.6
+threshold_end: 1.0
+threshold_steps: 25
+
+probe_degradation_enabled: false
+calibration_method: isotonic-regression
+
+use_modal: true
+
+pareto_testing: true
+opt_risk: budget
+deduplicate_thresholds: true
+
+# --- Dataset configuration ---
+
+# Training: always synthetic data (this is what creates the cross-group performance gap)
+train_dataset_path: ${DATA_DIR}/training/prompts_4x/train.jsonl
+
+# Fallback paths (used when mixed_datasets is absent, or for splits not in mixed_datasets.splits)
+calib_dataset_path: ${DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl
+test_dataset_path: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
+
+# --- Mixed dataset configuration ---
+mixed_datasets:
+  # Which splits to mix. "test" combines test datasets from all sources.
+  # Add "calib" to also mix calibration data from all sources.
+  # When "calib" is absent, calib_dataset_path above is used as-is (single-source).
+  splits: [test]
+
+  # How to balance different-sized sources:
+  #   "min_size" — subsample all groups to the size of the smallest
+  #   "none"     — keep original sizes (groups may be unequal)
+  #   <integer>  — cap each group at this many examples
+  balance_strategy: min_size
+
+  # Group purity for stratified analysis (0.0 = fully random, 1.0 = fully grouped by source).
+  # Controls the degree of group separation when creating batches for analysis.
+  # Values between 0 and 1 interpolate: a fraction (1 - group_purity) of examples
+  # are randomly shuffled across group boundaries.
+  group_purity: 1.0
+
+  sources:
+    - group: anthropic
+      dev: ${DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl
+      test: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
+    - group: mt
+      dev: ${DATA_DIR}/evals/dev/mt_balanced_apr_30.jsonl
+      test: ${DATA_DIR}/evals/test/mt_test_balanced_apr_30.jsonl
+    - group: mts
+      dev: ${DATA_DIR}/evals/dev/mts_balanced_apr_22.jsonl
+      test: ${DATA_DIR}/evals/test/mts_test_balanced_apr_22.jsonl
+    - group: toolace
+      dev: ${DATA_DIR}/evals/dev/toolace_balanced_apr_22.jsonl
+      test: ${DATA_DIR}/evals/test/toolace_test_balanced_apr_22.jsonl

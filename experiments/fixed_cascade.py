@@ -80,6 +80,9 @@ class FixedCascadeResults:
     test_labels: np.ndarray = artifact_field()
     cascade_final_scores: np.ndarray = artifact_field()
 
+    # Mixed dataset group labels (propagated from source experiment, None if single-source)
+    test_groups: np.ndarray | None = artifact_field()
+
     # Derived
     budget_costs: np.ndarray = derived_field(derive_fn=lambda r: np.array([b.budget_cost for b in r.batches]))
 
@@ -190,6 +193,7 @@ def run_fixed_cascade(
         test_baseline_scores=test_baseline_scores,
         test_labels=test_labels,
         cascade_final_scores=cascade_result.final_scores,
+        test_groups=getattr(source_results, "test_groups", None),
     )
 
 
