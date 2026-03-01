@@ -64,7 +64,7 @@ mixed_datasets:
   #   "min_size" — subsample all groups to the size of the smallest
   #   "none"     — keep original sizes (groups may be unequal)
   #   <integer>  — cap each group at this many examples
-  balance_strategy: min_size
+  balance_strategy: none
 
   # Group purity for stratified analysis (0.0 = fully random, 1.0 = fully grouped by source).
   # Controls the degree of group separation when creating batches for analysis.
