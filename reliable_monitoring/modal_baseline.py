@@ -64,7 +64,7 @@ image = (
 
 _hf_secret = modal.Secret.from_name("huggingface-secret")
 _volumes = {"/root/.cache/huggingface": model_cache}
-_timeout = 1800
+_timeout = 3600
 
 GPU_MAP = {
     "llama-1b": "T4",
