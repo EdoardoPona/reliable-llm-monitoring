@@ -34,7 +34,7 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 from analyse_cascade import analyse_comparison, analyse_single
-from analyse_stratified_cascade import run_stratified_analysis
+from analyse_grouped_cascade import run_grouped_analysis
 from cascade_utils import save_results_to_clearml
 from clearml_logger import ClearMLLogger
 from clearml_serialization import ClearMLSerializer
@@ -284,17 +284,24 @@ def step_analyse_fixed(fixed_results: Any, output_dir: Path, run_prefix: str, us
         clearml_logger.finalize()
 
 
-def step_stratified_analysis(sgt_results: Any, output_dir: Path, run_prefix: str, use_clearml: bool) -> None:
-    """Step 5: Stratified batching analysis on SGT results."""
+def step_grouped_analysis(sgt_results: Any, output_dir: Path, run_prefix: str, use_clearml: bool) -> None:
+    """Step 5: Group-stratified batching analysis on SGT results (mixed data only)."""
+    test_groups = getattr(sgt_results, "test_groups", None)
+    if test_groups is None:
+        logger.info("\n" + "=" * 60)
+        logger.info("STEP 5: Grouped Analysis — SKIPPED (no group labels)")
+        logger.info("=" * 60)
+        return
+
     logger.info("\n" + "=" * 60)
-    logger.info("STEP 5: Stratified Analysis")
+    logger.info("STEP 5: Grouped Analysis")
     logger.info("=" * 60)
 
-    clearml_logger = _make_clearml_logger(run_prefix, "stratified_analysis") if use_clearml else None
+    clearml_logger = _make_clearml_logger(run_prefix, "grouped_analysis") if use_clearml else None
     if clearml_logger is not None:
-        clearml_logger.add_tags(["pipeline", "analysis", "stratified"])
+        clearml_logger.add_tags(["pipeline", "analysis", "grouped"])
 
-    run_stratified_analysis(sgt_results, output_dir / "stratified", clearml_logger)
+    run_grouped_analysis(sgt_results, output_dir / "grouped", clearml_logger)
 
     if clearml_logger is not None:
         clearml_logger.finalize()
@@ -358,8 +365,8 @@ def main():
     # Step 4: Analyse fixed
     step_analyse_fixed(fixed_results, output_dir, run_prefix, use_clearml)
 
-    # Step 5: Stratified analysis
-    step_stratified_analysis(sgt_results, output_dir, run_prefix, use_clearml)
+    # Step 5: Grouped analysis (only when mixed data provides group labels)
+    step_grouped_analysis(sgt_results, output_dir, run_prefix, use_clearml)
 
     # Step 6: Comparison
     step_comparison(sgt_results, fixed_results, output_dir, run_prefix, use_clearml)

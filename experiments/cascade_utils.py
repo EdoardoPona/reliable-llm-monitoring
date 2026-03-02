@@ -4,9 +4,10 @@ Contains:
 - ``BatchCascadeStatistics``: Per-batch statistics dataclass
 - ``compute_batch_statistics``: Compute stats for a single batch
 - ``compute_overall_metrics``: Compute accuracy/f1/roc_auc for any score array
+- ``run_both_methods_batched``: Run adaptive + fixed-rate cascades in batches
 - ``ThresholdCascadeResult``: Per-threshold cascade results (for SGT)
 - ``CascadeExperimentResults``: Protocol formalising shared fields across result types
-- ``save_results_to_clearml`` / ``load_results_from_clearml``: Full-object ClearML serialization
+- ``save_results_to_clearml`` / ``load_results_from_clearml`` / ``load_results_from_pickle``
 """
 
 from __future__ import annotations
@@ -153,6 +154,68 @@ def compute_overall_metrics(scores: np.ndarray, labels: np.ndarray) -> dict[str,
         "f1_score": float(f1_score(labels, predictions)),
         "roc_auc": float(roc_auc_score(labels, scores)),
     }
+
+
+def run_both_methods_batched(
+    probe_scores: np.ndarray,
+    baseline_scores: np.ndarray,
+    labels: np.ndarray,
+    batch_size: int,
+    threshold: float,
+    fixed_rate: float,
+    merge_strategy: str = "replace",
+) -> dict[str, np.ndarray]:
+    """Run adaptive (threshold) and fixed-rate cascades in batches.
+
+    Returns dict with per-batch scalar arrays for both methods,
+    plus global metrics over the full (used) test set.
+    """
+    from reliable_monitoring.cascade import run_offline_cascade
+
+    n = len(probe_scores)
+    n_batches = n // batch_size
+    n_used = n_batches * batch_size
+
+    ps = probe_scores[:n_used]
+    bs = baseline_scores[:n_used]
+    lb = labels[:n_used]
+
+    adaptive_batches: list[BatchCascadeStatistics] = []
+    fixed_batches: list[BatchCascadeStatistics] = []
+    adaptive_final_scores: list[np.ndarray] = []
+    fixed_final_scores: list[np.ndarray] = []
+
+    for i in range(n_batches):
+        s, e = i * batch_size, (i + 1) * batch_size
+        bps, bbs, blb = ps[s:e], bs[s:e], lb[s:e]
+
+        for strategy, kwargs, dest, scores_dest in [
+            ("fixed_threshold", {"threshold": threshold}, adaptive_batches, adaptive_final_scores),
+            ("fixed_budget_rate", {"rate": fixed_rate}, fixed_batches, fixed_final_scores),
+        ]:
+            res = run_offline_cascade(bps, bbs, selection_strategy=strategy, merge_strategy=merge_strategy, **kwargs)
+            dest.append(compute_batch_statistics(i, bps, res.baseline_scores, res.used_baseline, res.final_scores, blb))
+            scores_dest.append(res.final_scores)
+
+    def _extract(batches: list[BatchCascadeStatistics], attr: str) -> np.ndarray:
+        return np.array([getattr(b, attr) for b in batches])
+
+    fields = ["accuracy", "f1_score", "roc_auc", "budget_cost", "probe_accuracy", "probe_roc_auc"]
+    out: dict[str, Any] = {"n_batches": np.array(n_batches)}
+    for f in fields:
+        out[f"adaptive_{f}"] = _extract(adaptive_batches, f)
+        out[f"fixed_{f}"] = _extract(fixed_batches, f)
+    out["uncertainty_mean"] = _extract(adaptive_batches, "probe_uncertainty_mean")
+    out["uncertainty_std"] = _extract(adaptive_batches, "probe_uncertainty_std")
+
+    # Global metrics (over the full test set, not per-batch averages)
+    all_adaptive_scores = np.concatenate(adaptive_final_scores)
+    all_fixed_scores = np.concatenate(fixed_final_scores)
+    out["adaptive_global"] = compute_overall_metrics(all_adaptive_scores, lb)
+    out["fixed_global"] = compute_overall_metrics(all_fixed_scores, lb)
+    out["probe_global"] = compute_overall_metrics(ps, lb)
+
+    return out
 
 
 @runtime_checkable
@@ -307,4 +370,14 @@ def load_results_from_clearml(task_id: str) -> Any:
         )
     local_path = artifact.get_local_copy()
     with open(local_path, "rb") as f:
+        return _ExperimentUnpickler(f).load()  # noqa: S301
+
+
+def load_results_from_pickle(pkl_path: str) -> Any:
+    """Load a results object from a local pickle file.
+
+    Uses :class:`_ExperimentUnpickler` so that objects pickled under
+    ``__main__`` are resolved correctly.
+    """
+    with open(pkl_path, "rb") as f:
         return _ExperimentUnpickler(f).load()  # noqa: S301

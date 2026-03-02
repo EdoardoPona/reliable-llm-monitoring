@@ -1,20 +1,28 @@
-"""Analyse cascade performance under stratified batching.
+"""[Demo / Debug] Analyse cascade under uncertainty-stratified batching.
 
-Sorts test examples by probe uncertainty to create batches with genuine
+Sorts test examples by **probe uncertainty** to create batches with genuine
 difficulty variation, then compares adaptive (threshold) vs fixed-rate
 cascade performance.
 
+.. note::
+
+   This is a **demonstration script** — not part of the production pipeline.
+   In a real deployment we do not have access to the probe uncertainty at
+   batch-assignment time.  For the production group-stratified analysis
+   (which uses dataset source labels), see ``analyse_grouped_cascade.py``.
+
 Demonstrates:
 1. Jensen's inequality explains why fixed-rate wins on i.i.d. (random) batches
-2. Stratified batching creates genuine batch structure (high variance ratio)
+2. Uncertainty-stratified batching creates genuine batch structure (high variance ratio)
 3. The adaptive method outperforms fixed-rate when batch-level structure exists
 
 Usage::
 
-    python analyse_stratified_cascade.py --task-id <sgt_task_id> [--use-clearml]
+    python analyse_uncertainty_stratified_cascade.py --task-id <sgt_task_id> [--use-clearml]
+    python analyse_uncertainty_stratified_cascade.py --results-pkl results.pkl
 
-Figures are saved to ``--output-dir`` (default ``figures/stratified/``) and
-optionally logged to a new ClearML task.
+Figures are saved to ``--output-dir`` (default ``figures/uncertainty_stratified/``)
+and optionally logged to a new ClearML task.
 """
 
 import argparse
@@ -25,13 +33,11 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from cascade_utils import (
-    compute_batch_statistics,
-    compute_overall_metrics,
     load_results_from_clearml,
+    load_results_from_pickle,
+    run_both_methods_batched,
 )
 from scipy import stats
-
-from reliable_monitoring.cascade import run_offline_cascade
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,82 +49,18 @@ _C_PROBE = "gray"
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Analyse cascade under stratified batching")
-    parser.add_argument("--task-id", type=str, required=True, help="ClearML task ID of an SGT cascade run.")
+    parser = argparse.ArgumentParser(description="[Demo] Analyse cascade under uncertainty-stratified batching")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--task-id", type=str, help="ClearML task ID of an SGT cascade run.")
+    source.add_argument("--results-pkl", type=str, help="Path to a local results pickle file.")
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="figures/stratified",
-        help="Output directory for figures (default: figures/stratified/).",
+        default="figures/uncertainty_stratified",
+        help="Output directory for figures (default: figures/uncertainty_stratified/).",
     )
     parser.add_argument("--use-clearml", action="store_true", help="Log figures to a new ClearML task.")
     return parser.parse_args()
-
-
-# ---------------------------------------------------------------------------
-# Core logic: run both methods on a given ordering of the data
-# ---------------------------------------------------------------------------
-
-
-def run_both_methods_batched(
-    probe_scores: np.ndarray,
-    baseline_scores: np.ndarray,
-    labels: np.ndarray,
-    batch_size: int,
-    threshold: float,
-    fixed_rate: float,
-    merge_strategy: str = "replace",
-) -> dict[str, np.ndarray]:
-    """Run adaptive (threshold) and fixed-rate cascades in batches.
-
-    Returns dict with per-batch scalar arrays for both methods.
-    """
-    n = len(probe_scores)
-    n_batches = n // batch_size
-    n_used = n_batches * batch_size
-
-    ps = probe_scores[:n_used]
-    bs = baseline_scores[:n_used]
-    lb = labels[:n_used]
-
-    adaptive_batches = []
-    fixed_batches = []
-    adaptive_final_scores = []
-    fixed_final_scores = []
-
-    for i in range(n_batches):
-        s, e = i * batch_size, (i + 1) * batch_size
-        bps, bbs, blb = ps[s:e], bs[s:e], lb[s:e]
-
-        for strategy, kwargs, dest, scores_dest in [
-            ("fixed_threshold", {"threshold": threshold}, adaptive_batches, adaptive_final_scores),
-            ("fixed_budget_rate", {"rate": fixed_rate}, fixed_batches, fixed_final_scores),
-        ]:
-            res = run_offline_cascade(bps, bbs, selection_strategy=strategy, merge_strategy=merge_strategy, **kwargs)
-            dest.append(compute_batch_statistics(i, bps, res.baseline_scores, res.used_baseline, res.final_scores, blb))
-            scores_dest.append(res.final_scores)
-
-    def _extract(batches, attr):
-        return np.array([getattr(b, attr) for b in batches])
-
-    fields = ["accuracy", "f1_score", "roc_auc", "budget_cost", "probe_accuracy", "probe_roc_auc"]
-    from typing import Any
-
-    out: dict[str, Any] = {"n_batches": np.array(n_batches)}
-    for f in fields:
-        out[f"adaptive_{f}"] = _extract(adaptive_batches, f)
-        out[f"fixed_{f}"] = _extract(fixed_batches, f)
-    out["uncertainty_mean"] = _extract(adaptive_batches, "probe_uncertainty_mean")
-    out["uncertainty_std"] = _extract(adaptive_batches, "probe_uncertainty_std")
-
-    # Global metrics (over the full test set, not per-batch averages)
-    all_adaptive_scores = np.concatenate(adaptive_final_scores)
-    all_fixed_scores = np.concatenate(fixed_final_scores)
-    out["adaptive_global"] = compute_overall_metrics(all_adaptive_scores, lb)
-    out["fixed_global"] = compute_overall_metrics(all_fixed_scores, lb)
-    out["probe_global"] = compute_overall_metrics(ps, lb)
-
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -235,14 +177,14 @@ def plot_jensens_verification(
 
 
 # ---------------------------------------------------------------------------
-# Stratified vs random comparison plots
+# Uncertainty-stratified vs random comparison plots
 # ---------------------------------------------------------------------------
 
 
 def plot_variance_ratio_comparison(random_data: dict, stratified_data: dict) -> plt.Figure:
-    """Bar chart comparing variance ratios for random vs stratified batching."""
+    """Bar chart comparing variance ratios for random vs uncertainty-stratified batching."""
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    fig.suptitle("Batch-Level Structure: Random vs Stratified", fontsize=14, fontweight="bold")
+    fig.suptitle("Batch-Level Structure: Random vs Uncertainty-Stratified", fontsize=14, fontweight="bold")
 
     for ax, (data, label) in zip(axes, [(random_data, "Random"), (stratified_data, "Stratified")], strict=False):
         unc = data["uncertainty_mean"]
@@ -253,8 +195,6 @@ def plot_variance_ratio_comparison(random_data: dict, stratified_data: dict) -> 
         names, ratios = [], []
         for name, vals in metrics.items():
             obs_var = vals.var()
-            # Expected variance under i.i.d. is estimated from the pooled data
-            # For a rough estimate, use the per-batch variance divided by batch count
             names.append(name)
             ratios.append(obs_var)
 
@@ -494,10 +434,14 @@ def plot_overall_summary(random_data: dict, stratified_data: dict) -> plt.Figure
     """Bar chart: overall metrics for both methods under both batching schemes.
 
     Uses GLOBAL metrics (computed over the full test set), not per-batch averages.
-    Budget is the exception — it's the mean of per-batch budgets (which equals the global rate).
+    Budget is the exception -- it's the mean of per-batch budgets (which equals the global rate).
     """
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-    fig.suptitle("Overall Comparison: Random vs Stratified Batching (global metrics)", fontsize=14, fontweight="bold")
+    fig.suptitle(
+        "Overall Comparison: Random vs Uncertainty-Stratified Batching (global metrics)",
+        fontsize=14,
+        fontweight="bold",
+    )
 
     metrics = [
         ("accuracy", "Accuracy"),
@@ -507,7 +451,6 @@ def plot_overall_summary(random_data: dict, stratified_data: dict) -> plt.Figure
 
     for ax, (metric, ylabel) in zip(axes, metrics, strict=False):
         if metric == "budget_cost":
-            # Budget: mean of per-batch budgets (= global rate)
             values = [
                 random_data[f"adaptive_{metric}"].mean(),
                 random_data[f"fixed_{metric}"].mean(),
@@ -521,7 +464,7 @@ def plot_overall_summary(random_data: dict, stratified_data: dict) -> plt.Figure
                 stratified_data["adaptive_global"][metric],
                 stratified_data["fixed_global"][metric],
             ]
-        bar_labels = ["Random\nAdaptive", "Random\nFixed", "Stratified\nAdaptive", "Stratified\nFixed"]
+        bar_labels = ["Random\nAdaptive", "Random\nFixed", "Unc-Strat\nAdaptive", "Unc-Strat\nFixed"]
         colors = [_C_ADAPTIVE, _C_FIXED, _C_ADAPTIVE, _C_FIXED]
         hatches = ["", "", "///", "///"]
 
@@ -552,168 +495,6 @@ def plot_overall_summary(random_data: dict, stratified_data: dict) -> plt.Figure
 
 
 # ---------------------------------------------------------------------------
-# Group-stratified batching
-# ---------------------------------------------------------------------------
-
-
-def _order_by_group(
-    ps: np.ndarray,
-    bs: np.ndarray,
-    lb: np.ndarray,
-    groups: np.ndarray,
-    group_purity: float = 1.0,
-    seed: int = 42,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Order examples by group with configurable purity.
-
-    Args:
-        ps: Probe scores.
-        bs: Baseline scores.
-        lb: Labels.
-        groups: Group labels (string array).
-        group_purity: 1.0 = fully grouped (contiguous by group),
-            0.0 = fully random, in-between = partial mixing where a fraction
-            (1 - group_purity) of examples are randomly repositioned.
-        seed: Random seed.
-
-    Returns:
-        Reordered (ps, bs, lb, groups) arrays.
-    """
-    if group_purity <= 0.0:
-        rng = np.random.default_rng(seed)
-        order = rng.permutation(len(ps))
-    elif group_purity >= 1.0:
-        order = np.argsort(groups, kind="stable")
-    else:
-        order = np.argsort(groups, kind="stable")
-        rng = np.random.default_rng(seed)
-        n_swap = int(len(ps) * (1 - group_purity))
-        swap_indices = rng.choice(len(ps), size=n_swap, replace=False)
-        order[swap_indices] = order[rng.permutation(swap_indices)]
-    return ps[order], bs[order], lb[order], groups[order]
-
-
-def plot_group_performance(
-    group_data: dict,
-    groups_sorted: np.ndarray,
-    batch_size: int,
-) -> plt.Figure:
-    """Per-group accuracy and budget comparison between adaptive and fixed."""
-    n_batches = int(group_data["n_batches"])
-    unique_groups = np.unique(groups_sorted)
-
-    # Determine dominant group per batch
-    batch_groups = []
-    for i in range(n_batches):
-        s, e = i * batch_size, (i + 1) * batch_size
-        bg = groups_sorted[s:e]
-        vals, counts = np.unique(bg, return_counts=True)
-        batch_groups.append(vals[np.argmax(counts)])
-    batch_groups = np.array(batch_groups)
-
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-    fig.suptitle("Group-Stratified: Adaptive vs Fixed per Group", fontsize=14, fontweight="bold")
-
-    metrics = [("accuracy", "Accuracy"), ("roc_auc", "ROC-AUC"), ("budget_cost", "Budget")]
-
-    for ax, (metric, ylabel) in zip(axes, metrics, strict=False):
-        x = np.arange(len(unique_groups))
-        adaptive_means = []
-        fixed_means = []
-        for g in unique_groups:
-            mask = batch_groups == g
-            adaptive_means.append(group_data[f"adaptive_{metric}"][mask].mean())
-            fixed_means.append(group_data[f"fixed_{metric}"][mask].mean())
-
-        width = 0.35
-        ax.bar(x - width / 2, adaptive_means, width, label="Adaptive", color=_C_ADAPTIVE, alpha=0.8, edgecolor="black")
-        ax.bar(x + width / 2, fixed_means, width, label="Fixed", color=_C_FIXED, alpha=0.8, edgecolor="black")
-
-        ax.set_xticks(x)
-        ax.set_xticklabels(unique_groups, fontsize=10)
-        ax.set_ylabel(ylabel, fontweight="bold")
-        ax.set_xlabel("Dataset group", fontweight="bold")
-        ax.legend()
-        ax.grid(axis="y", alpha=0.3)
-
-        # Annotate values
-        for i, (a, f) in enumerate(zip(adaptive_means, fixed_means, strict=False)):
-            ax.text(i - width / 2, a + 0.005, f"{a:.3f}", ha="center", va="bottom", fontsize=8)
-            ax.text(i + width / 2, f + 0.005, f"{f:.3f}", ha="center", va="bottom", fontsize=8)
-
-    plt.tight_layout()
-    return fig
-
-
-def plot_group_overall_summary(
-    random_data: dict,
-    stratified_data: dict,
-    group_data: dict,
-) -> plt.Figure:
-    """Bar chart comparing overall metrics across random, uncertainty-stratified, and group-stratified batching."""
-    fig, axes = plt.subplots(1, 3, figsize=(20, 6))
-    fig.suptitle(
-        "Overall Comparison: Random vs Uncertainty-Stratified vs Group-Stratified", fontsize=14, fontweight="bold"
-    )
-
-    metrics = [("accuracy", "Accuracy"), ("roc_auc", "ROC-AUC"), ("budget_cost", "Budget")]
-
-    for ax, (metric, ylabel) in zip(axes, metrics, strict=False):
-        if metric == "budget_cost":
-            values = [
-                random_data[f"adaptive_{metric}"].mean(),
-                random_data[f"fixed_{metric}"].mean(),
-                stratified_data[f"adaptive_{metric}"].mean(),
-                stratified_data[f"fixed_{metric}"].mean(),
-                group_data[f"adaptive_{metric}"].mean(),
-                group_data[f"fixed_{metric}"].mean(),
-            ]
-        else:
-            values = [
-                random_data["adaptive_global"][metric],
-                random_data["fixed_global"][metric],
-                stratified_data["adaptive_global"][metric],
-                stratified_data["fixed_global"][metric],
-                group_data["adaptive_global"][metric],
-                group_data["fixed_global"][metric],
-            ]
-        bar_labels = [
-            "Random\nAdaptive",
-            "Random\nFixed",
-            "Unc-Strat\nAdaptive",
-            "Unc-Strat\nFixed",
-            "Group-Strat\nAdaptive",
-            "Group-Strat\nFixed",
-        ]
-        colors = [_C_ADAPTIVE, _C_FIXED] * 3
-        hatches = ["", "", "///", "///", "...", "..."]
-
-        x = np.arange(len(bar_labels))
-        bars = ax.bar(x, values, width=0.6, color=colors, alpha=0.8, edgecolor="black", linewidth=1.2)
-        for bar, hatch in zip(bars, hatches, strict=False):
-            bar.set_hatch(hatch)
-
-        ax.set_xticks(x)
-        ax.set_xticklabels(bar_labels, fontsize=8)
-        ax.set_ylabel(ylabel, fontweight="bold", fontsize=11)
-        ax.grid(axis="y", alpha=0.3)
-
-        for bar, val in zip(bars, values, strict=False):
-            ax.text(
-                bar.get_x() + bar.get_width() / 2.0,
-                bar.get_height() + 0.002,
-                f"{val:.4f}",
-                ha="center",
-                va="bottom",
-                fontsize=8,
-                fontweight="bold",
-            )
-
-    plt.tight_layout()
-    return fig
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -723,13 +504,13 @@ def _save_figure(fig: plt.Figure, output_dir: Path, name: str, clearml_logger=No
     fig.savefig(path, bbox_inches="tight", dpi=150)
     logger.info(f"Saved {path}")
     if clearml_logger is not None:
-        clearml_logger.log_figure(title="Stratified Analysis", series=name, figure=fig)
+        clearml_logger.log_figure(title="Uncertainty Stratified Analysis", series=name, figure=fig)
 
 
-def run_stratified_analysis(sgt_results, output_dir: Path, clearml_logger=None) -> None:
-    """Run stratified vs random batching analysis on SGT cascade results.
+def run_uncertainty_stratified_analysis(sgt_results, output_dir: Path, clearml_logger=None) -> None:
+    """Run uncertainty-stratified vs random batching analysis on SGT cascade results.
 
-    Can be called from the pipeline with in-memory results, or standalone via ``main()``.
+    Can be called with in-memory results, or standalone via ``main()``.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -750,13 +531,13 @@ def run_stratified_analysis(sgt_results, output_dir: Path, clearml_logger=None) 
     logger.info("Running cascade on random (original) batches...")
     random_data = run_both_methods_batched(ps, bs, lb, batch_size, threshold, fixed_rate, merge_strategy)
 
-    # --- Stratified batching (sorted by uncertainty) ---
+    # --- Uncertainty-stratified batching (sorted by uncertainty) ---
     logger.info("Sorting examples by probe uncertainty for stratified batching...")
     uncertainty = np.minimum(ps, 1 - ps)
     sort_order = np.argsort(uncertainty)  # ascending: easy batches first
     ps_strat, bs_strat, lb_strat = ps[sort_order], bs[sort_order], lb[sort_order]
 
-    logger.info("Running cascade on stratified batches...")
+    logger.info("Running cascade on uncertainty-stratified batches...")
     stratified_data = run_both_methods_batched(
         ps_strat, bs_strat, lb_strat, batch_size, threshold, fixed_rate, merge_strategy
     )
@@ -776,7 +557,7 @@ def run_stratified_analysis(sgt_results, output_dir: Path, clearml_logger=None) 
     logger.info("\n" + "=" * 70)
     logger.info("SUMMARY")
     logger.info("=" * 70)
-    for label, data in [("RANDOM", random_data), ("STRATIFIED", stratified_data)]:
+    for label, data in [("RANDOM", random_data), ("UNCERTAINTY-STRATIFIED", stratified_data)]:
         logger.info(f"\n  {label} BATCHING (global metrics over full test set):")
         for method in ["adaptive", "fixed"]:
             g = data[f"{method}_global"]
@@ -802,41 +583,6 @@ def run_stratified_analysis(sgt_results, output_dir: Path, clearml_logger=None) 
             f"    ROC: mean_batch_diff={data['adaptive_roc_auc'].mean() - data['fixed_roc_auc'].mean():+.4f} (p={p_roc:.4f}, adaptive wins {a_wins_roc}/{n})"
         )
 
-    # --- Group-stratified batching (if groups available) ---
-    test_groups = getattr(sgt_results, "test_groups", None)
-    group_data = None
-    groups_sorted = None
-
-    if test_groups is not None:
-        group_purity = getattr(sgt_results, "group_purity", 1.0) or 1.0
-        logger.info(f"\nRunning group-stratified batching analysis (group_purity={group_purity})...")
-        ps_group, bs_group, lb_group, groups_sorted = _order_by_group(
-            ps, bs, lb, test_groups, group_purity, seed=sgt_results.seed
-        )
-        group_data = run_both_methods_batched(
-            ps_group, bs_group, lb_group, batch_size, threshold, fixed_rate, merge_strategy
-        )
-
-        # Variance ratio for group-stratified
-        unc_group = group_data["uncertainty_mean"]
-        vr_group = unc_group.var() / expected_var_iid
-        logger.info(f"Variance ratio (group-strat): {vr_group:.3f}")
-
-        # Summary for group-stratified
-        logger.info(f"\n  GROUP-STRATIFIED BATCHING (global metrics over full test set, purity={group_purity}):")
-        for method in ["adaptive", "fixed"]:
-            g = group_data[f"{method}_global"]
-            bud = group_data[f"{method}_budget_cost"].mean()
-            logger.info(f"    {method:>8s}: Acc={g['accuracy']:.4f}  ROC-AUC={g['roc_auc']:.4f}  Budget={bud:.4f}")
-
-        ag = group_data["adaptive_global"]
-        fg = group_data["fixed_global"]
-        diff_acc = ag["accuracy"] - fg["accuracy"]
-        diff_roc = ag["roc_auc"] - fg["roc_auc"]
-        logger.info(f"    Adaptive - Fixed: Acc={diff_acc:+.4f}  ROC-AUC={diff_roc:+.4f}")
-    else:
-        logger.info("\nNo group labels found — skipping group-stratified analysis.")
-
     # --- Generate figures ---
     logger.info("\nGenerating figures...")
 
@@ -847,23 +593,16 @@ def run_stratified_analysis(sgt_results, output_dir: Path, clearml_logger=None) 
         "adaptivity_advantage": plot_adaptivity_advantage(random_data, stratified_data),
         "paired_random": plot_paired_scatter(random_data, "Paired Comparison: Adaptive vs Fixed (Random Batches)"),
         "paired_stratified": plot_paired_scatter(
-            stratified_data, "Paired Comparison: Adaptive vs Fixed (Stratified Batches)"
+            stratified_data, "Paired Comparison: Adaptive vs Fixed (Uncertainty-Stratified Batches)"
         ),
         "overall_summary": plot_overall_summary(random_data, stratified_data),
     }
-
-    if group_data is not None and groups_sorted is not None:
-        figures["group_performance"] = plot_group_performance(group_data, groups_sorted, batch_size)
-        figures["paired_group"] = plot_paired_scatter(
-            group_data, "Paired Comparison: Adaptive vs Fixed (Group-Stratified Batches)"
-        )
-        figures["overall_summary_with_groups"] = plot_group_overall_summary(random_data, stratified_data, group_data)
 
     for name, fig in figures.items():
         _save_figure(fig, output_dir, name, clearml_logger)
 
     plt.close("all")
-    logger.info("\nStratified analysis done!")
+    logger.info("\nUncertainty-stratified analysis done!")
 
 
 def main():
@@ -875,18 +614,24 @@ def main():
     if args.use_clearml:
         from clearml_logger import ClearMLLogger
 
+        source_label = args.task_id[:8] if args.task_id else Path(args.results_pkl).stem
         clearml_logger = ClearMLLogger(
             project_name=os.environ.get("CLEARML_PROJECT_NAME", "reliable-llm-monitoring"),
-            task_name=f"stratified_analysis_{args.task_id[:8]}",
+            task_name=f"uncertainty_stratified_{source_label}",
             enabled=True,
         )
-        clearml_logger.connect_configuration({"source_task_id": args.task_id})
+        if args.task_id:
+            clearml_logger.connect_configuration({"source_task_id": args.task_id})
 
     # Load results
-    logger.info(f"Loading results from ClearML task: {args.task_id}")
-    results = load_results_from_clearml(args.task_id)
+    if args.task_id:
+        logger.info(f"Loading results from ClearML task: {args.task_id}")
+        results = load_results_from_clearml(args.task_id)
+    else:
+        logger.info(f"Loading results from pickle: {args.results_pkl}")
+        results = load_results_from_pickle(args.results_pkl)
 
-    run_stratified_analysis(results, output_dir, clearml_logger)
+    run_uncertainty_stratified_analysis(results, output_dir, clearml_logger)
 
     if clearml_logger is not None:
         clearml_logger.finalize()
