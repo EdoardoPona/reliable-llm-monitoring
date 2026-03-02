@@ -168,8 +168,10 @@ def run_batch_size_sweep(
         # Per-batch metric arrays (for variance/spread analysis)
         "adaptive_batch_accuracies": [],
         "adaptive_batch_roc_aucs": [],
+        "adaptive_batch_f1_scores": [],
         "adaptive_batch_budgets": [],
         "fixed_batch_accuracies": [],
+        "fixed_batch_f1_scores": [],
         "fixed_batch_roc_aucs": [],
         "fixed_batch_budgets": [],
     }
@@ -255,9 +257,11 @@ def run_batch_size_sweep(
         results["fixed_mean_budget"].append(np.mean([b.budget_cost for b in fixed_batch_stats]))
 
         results["adaptive_batch_accuracies"].append(np.array([b.accuracy for b in adaptive_batch_stats]))
+        results["adaptive_batch_f1_scores"].append(np.array([b.f1_score for b in adaptive_batch_stats]))
         results["adaptive_batch_roc_aucs"].append(np.array([b.roc_auc for b in adaptive_batch_stats]))
         results["adaptive_batch_budgets"].append(np.array([b.budget_cost for b in adaptive_batch_stats]))
         results["fixed_batch_accuracies"].append(np.array([b.accuracy for b in fixed_batch_stats]))
+        results["fixed_batch_f1_scores"].append(np.array([b.f1_score for b in fixed_batch_stats]))
         results["fixed_batch_roc_aucs"].append(np.array([b.roc_auc for b in fixed_batch_stats]))
         results["fixed_batch_budgets"].append(np.array([b.budget_cost for b in fixed_batch_stats]))
 
@@ -430,6 +434,114 @@ def plot_budget_variance(sweep: dict) -> plt.Figure:
     return fig
 
 
+def _distribution_stats(arrays: list[np.ndarray]) -> dict[str, np.ndarray]:
+    """Compute mean, std, median, min, max across a list of per-batch arrays."""
+    means = np.array([a.mean() for a in arrays])
+    stds = np.array([a.std() for a in arrays])
+    medians = np.array([np.median(a) for a in arrays])
+    mins = np.array([a.min() for a in arrays])
+    maxs = np.array([a.max() for a in arrays])
+    return {"mean": means, "std": stds, "median": medians, "min": mins, "max": maxs}
+
+
+def plot_within_batch_distributions(sweep: dict) -> plt.Figure:
+    """Line plots with shaded 1- and 2-std regions for within-batch metric distributions.
+
+    For each metric (accuracy, F1, ROC-AUC, budget) and each cascade method,
+    plots the mean across batches as a solid line, with darker shading for
+    +/- 1 std and lighter shading for +/- 2 std.
+    """
+    bs = sweep["batch_sizes"]
+    x = np.arange(len(bs))
+
+    metrics = [
+        ("batch_accuracies", "Accuracy"),
+        ("batch_f1_scores", "F1 Score"),
+        ("batch_roc_aucs", "ROC-AUC"),
+        ("batch_budgets", "Budget Cost"),
+    ]
+
+    fig, axes = plt.subplots(2, len(metrics), figsize=(6 * len(metrics), 10), sharey="col")
+    fig.suptitle(
+        "Within-Batch Performance Distributions vs Batch Size",
+        fontsize=14,
+        fontweight="bold",
+    )
+
+    methods = [
+        ("adaptive", _C_ADAPTIVE, "Adaptive (threshold)"),
+        ("fixed", _C_FIXED, "Fixed-rate"),
+    ]
+
+    for row, (method, color, label) in enumerate(methods):
+        for col, (metric_key, ylabel) in enumerate(metrics):
+            ax = axes[row, col]
+            data = sweep[f"{method}_{metric_key}"]
+            stats = _distribution_stats(data)
+
+            m = stats["mean"]
+            s = stats["std"]
+            med = stats["median"]
+
+            # 2-std band
+            ax.fill_between(x, m - 2 * s, m + 2 * s, alpha=0.12, color=color, label="+/- 2 std")
+            # 1-std band
+            ax.fill_between(x, m - s, m + s, alpha=0.25, color=color, label="+/- 1 std")
+            # Mean line
+            ax.plot(x, m, "o-", color=color, linewidth=2, markersize=6, label="Mean")
+            # Median line
+            ax.plot(x, med, "x--", color=color, linewidth=1, markersize=5, alpha=0.7, label="Median")
+
+            ax.set_xticks(x)
+            ax.set_xticklabels([str(b) for b in bs])
+            ax.set_xlabel("Batch size", fontweight="bold")
+            if col == 0:
+                ax.set_ylabel(f"{label}\n{ylabel}", fontweight="bold")
+            else:
+                ax.set_ylabel(ylabel, fontweight="bold")
+            if row == 0:
+                ax.set_title(ylabel, fontweight="bold")
+            ax.grid(alpha=0.3)
+
+            if row == 0 and col == 0:
+                ax.legend(fontsize=8, loc="best")
+
+    plt.tight_layout()
+    return fig
+
+
+def build_distribution_summary_dataframe(sweep: dict):
+    """Build a DataFrame with within-batch distribution statistics per batch size."""
+    import pandas as pd
+
+    metrics = [
+        ("batch_accuracies", "Accuracy"),
+        ("batch_f1_scores", "F1"),
+        ("batch_roc_aucs", "ROC-AUC"),
+        ("batch_budgets", "Budget"),
+    ]
+
+    rows = []
+    for i, bs_val in enumerate(sweep["batch_sizes"]):
+        for method in ["adaptive", "fixed"]:
+            for metric_key, metric_label in metrics:
+                arr = sweep[f"{method}_{metric_key}"][i]
+                rows.append(
+                    {
+                        "Batch Size": bs_val,
+                        "Method": method.title(),
+                        "Metric": metric_label,
+                        "Mean": round(float(arr.mean()), 4),
+                        "Std": round(float(arr.std()), 4),
+                        "Median": round(float(np.median(arr)), 4),
+                        "Min": round(float(arr.min()), 4),
+                        "Max": round(float(arr.max()), 4),
+                        "N Batches": len(arr),
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
 def build_summary_dataframe(sweep: dict, threshold: float, fixed_rate: float):
     """Build a pandas DataFrame summarising the sweep results."""
     import pandas as pd
@@ -598,6 +710,33 @@ def _log_sweep_to_clearml(
         iteration=0,
     )
 
+    # Log within-batch distribution summary table
+    dist_df = build_distribution_summary_dataframe(sweep)
+    cl.report_table(
+        title="Within-Batch Distributions",
+        series="Summary",
+        table_plot=dist_df,
+        iteration=0,
+    )
+
+    # Log within-batch distribution scalars (mean +/- std per batch size)
+    dist_metrics = [
+        ("batch_accuracies", "Accuracy"),
+        ("batch_f1_scores", "F1"),
+        ("batch_roc_aucs", "ROC-AUC"),
+        ("batch_budgets", "Budget"),
+    ]
+    for i, bs in enumerate(sweep["batch_sizes"]):
+        for method in ["adaptive", "fixed"]:
+            for metric_key, metric_label in dist_metrics:
+                arr = sweep[f"{method}_{metric_key}"][i]
+                cl.report_scalar(
+                    title=f"Within-Batch {metric_label} Std",
+                    series=f"{method.title()}",
+                    value=float(arr.std()),
+                    iteration=bs,
+                )
+
     # Log figures (skip the matplotlib summary_table — the ClearML table replaces it)
     for name, fig in figures.items():
         if name == "summary_table":
@@ -693,6 +832,7 @@ def main():
     figures = {
         "global_metrics": plot_global_metrics(sweep),
         "batch_metric_spread": plot_batch_metric_spread(sweep),
+        "within_batch_distributions": plot_within_batch_distributions(sweep),
         "adaptive_vs_fixed_delta": plot_adaptive_vs_fixed_delta(sweep),
         "budget_variance": plot_budget_variance(sweep),
         "summary_table": plot_summary_table(sweep, threshold, fixed_rate),
