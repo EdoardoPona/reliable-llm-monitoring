@@ -51,6 +51,7 @@ class ClearMLLogger:
                 auto_connect_frameworks={
                     "pytorch": False,
                     "transformers": False,
+                    "matplotlib": False,
                 },
             )
             logger.info(f"Initialized ClearML task: {project_name} / {timestamped_name}")
