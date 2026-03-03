@@ -23,11 +23,24 @@ class RiskEvaluationContext:
 
     Different risks need different data:
     - Budget cost: only needs cascade_scores
-    - Accuracy/ROC-AUC: needs cascade_scores + dataset
+    - Accuracy/ROC-AUC: needs cascade_scores + labels (or dataset)
+
+    Labels can be provided directly via ``labels`` or indirectly via
+    ``dataset.labels_numpy()``.  When both are provided, ``labels`` takes
+    precedence.
     """
 
     cascade_scores: CascadePredictionResults
     dataset: "LabelledDataset | None" = None
+    labels: np.ndarray | None = None
+
+    def get_labels(self) -> np.ndarray:
+        """Return labels from whichever source is available."""
+        if self.labels is not None:
+            return self.labels
+        if self.dataset is not None:
+            return self.dataset.labels_numpy()
+        raise ValueError("RiskEvaluationContext has neither labels nor dataset")
 
 
 # Standalone empirical computation functions
@@ -38,18 +51,14 @@ def budget_cost_computation(context: RiskEvaluationContext) -> float:
 
 def accuracy_computation(context: RiskEvaluationContext) -> float:
     """Compute error rate (1 - accuracy) as a risk measure."""
-    if context.dataset is None:
-        raise ValueError("accuracy_computation requires dataset")
     predicted_labels = (context.cascade_scores.final_scores >= 0.5).astype(int)
-    accuracy = accuracy_score(context.dataset.labels_numpy(), predicted_labels)
+    accuracy = accuracy_score(context.get_labels(), predicted_labels)
     return float(1.0 - accuracy)  # Error rate
 
 
 def roc_auc_computation(context: RiskEvaluationContext) -> float:
     """Compute negative ROC AUC (1 - AUC) as a risk measure."""
-    if context.dataset is None:
-        raise ValueError("roc_auc_computation requires dataset")
-    auc = roc_auc_score(context.dataset.labels_numpy(), context.cascade_scores.final_scores)
+    auc = roc_auc_score(context.get_labels(), context.cascade_scores.final_scores)
     return float(1.0 - auc)
 
 
@@ -173,6 +182,7 @@ def evaluate_threshold_risks(
     *,
     risks: Risk | list[Risk],
     dataset: "LabelledDataset | None" = None,
+    labels: np.ndarray | None = None,
     merge_strategy: str = "avg",
 ) -> ThresholdEvaluationResult:
     """Evaluate empirical risks for a grid of cascade thresholds.
@@ -187,7 +197,9 @@ def evaluate_threshold_risks(
         risks: Single Risk or list of Risks to evaluate.
             Commonly: BudgetCostRisk, AccuracyRisk, RocAucRisk,
             or custom: Risk(name=..., empirical_computation=..., p_value_bound_fn=...)
-        dataset: Optional dataset with labels (required for risks like AccuracyRisk, RocAucRisk)
+        dataset: Optional dataset with labels (required for risks like AccuracyRisk, RocAucRisk).
+        labels: Optional label array, shape (n,).  Alternative to ``dataset`` for
+            providing labels.  When both are given, ``labels`` takes precedence.
         merge_strategy: Cascade merge strategy ("avg", "probe", "baseline")
 
     Returns:
@@ -233,6 +245,7 @@ def evaluate_threshold_risks(
         context = RiskEvaluationContext(
             cascade_scores=cascade_result,
             dataset=dataset,
+            labels=labels,
         )
         for risk_obj in risk_list:
             empirical_risks_dict[risk_obj.name][i] = risk_obj.empirical_computation(context)

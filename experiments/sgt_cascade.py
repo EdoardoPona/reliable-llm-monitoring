@@ -1,4 +1,4 @@
-"""Experiment: Sequential Graphical Testing over a (threshold × alpha) grid.
+"""Experiment: Sequential Graphical Testing over a (threshold x alpha) grid.
 
 Uses the graphical testing procedure (Bretz et al. 2009) to discover
 **all** (threshold, alpha) pairs for which a risk guarantee holds,
@@ -6,10 +6,15 @@ rather than testing a single fixed alpha like ``guaranteed_risk_cascade``.
 
 This solves the problem where an ambitious alpha target causes FST to
 fail entirely, even though valid guarantees exist at less strict levels.
+
+Accepts a pre-computed ``ScoreArtifact`` (from ``compute_scores.py``) so
+that probe training and LLM baseline inference do not need to be repeated
+when iterating on experiment parameters.
 """
 
 import argparse
 import logging
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,10 +31,10 @@ from clearml_serialization import (
     scalar_field,
 )
 from config import load_config
-from dotenv import load_dotenv
+from mixed_dataset import has_mixed_config
+from score_artifact import ScoreArtifact, load_score_artifact
 
-from reliable_monitoring.cascade import offline_batch_cascade, run_llm_baseline
-from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset, split_dataset
+from reliable_monitoring.cascade import offline_batch_cascade
 from reliable_monitoring.graphical_test_graphs import lattice_graph, row_chain_graph, uniform_lattice_graph
 from reliable_monitoring.learn_then_test import (
     GraphicalTestResult,
@@ -38,7 +43,6 @@ from reliable_monitoring.learn_then_test import (
     graphical_testing,
     is_pareto,
 )
-from reliable_monitoring.probes import DegradedProbe, SequenceProbe
 from reliable_monitoring.risks import (
     RISK_RGISTRY,
     BudgetCostRisk,
@@ -46,12 +50,8 @@ from reliable_monitoring.risks import (
     evaluate_threshold_risks,
 )
 
-load_dotenv()
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-DEBUG_SAMPLE_SIZE = 256
 
 GRAPH_FACTORIES = {
     "lattice": lattice_graph,
@@ -162,6 +162,12 @@ def parse_args():
         help="Path to the YAML configuration file.",
     )
     parser.add_argument(
+        "--scores",
+        type=str,
+        required=True,
+        help="Path to pre-computed ScoreArtifact pickle.",
+    )
+    parser.add_argument(
         "--use-clearml",
         action="store_true",
         help="Enable ClearML experiment tracking.",
@@ -169,15 +175,23 @@ def parse_args():
     return parser.parse_args()
 
 
-def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
-    """Run the SGT cascade experiment.
+def run_sgt_cascade_experiment(config, scores: ScoreArtifact) -> SGTCascadeResults | None:
+    """Run the SGT cascade experiment using pre-computed scores.
 
-    Returns ``None`` when no reliable (threshold, alpha) pair can be found.
+    Args:
+        config: Experiment configuration (from ``load_config``).
+        scores: Pre-computed ``ScoreArtifact`` from ``compute_scores.py``,
+            optionally enriched with calibration from ``calibrate_scores.py``.
+
+    Returns:
+        ``SGTCascadeResults`` or ``None`` when no reliable (threshold, alpha)
+        pair can be found.
     """
     seed = config.seed
     np.random.seed(seed)
 
     cascade_batch_size = config.cascade_batch_size
+    debug_mode = getattr(config, "debug", False)
 
     # --- Risk setup ---
     guaranteed_risk_name = getattr(config, "guaranteed_risk", "accuracy_error")
@@ -185,135 +199,69 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
     if GuaranteedRisk is None:
         raise ValueError(f"Invalid guaranteed_risk: '{guaranteed_risk_name}'. Available: {list(RISK_RGISTRY.keys())}")
 
-    degrade_enabled = getattr(config, "probe_degradation_enabled", False)
-    if degrade_enabled:
-        logger.warning("Probe degradation enabled (fixed settings).")
+    # --- Extract scores from artifact ---
+    train_probe_scores = scores.train.probe_scores
+    train_labels = scores.train.labels
 
-    activation_config = ActivationConfig(
-        model_name=config.activations_model_name,
-        layer=config.activations_layer,
-    )
+    # Use calibrated probe scores when available
+    calib_probe_scores = scores.get_probe_scores("calib", calibrated=True)
+    test_probe_scores = scores.get_probe_scores("test", calibrated=True)
 
-    # --- Load data ---
-    logger.info("Loading datasets...")
-    train_dataset = load_dataset(Path(config.train_dataset_path), activation_config=activation_config)
+    calib_baseline_scores = scores.calib.baseline_scores
+    test_baseline_scores = scores.test.baseline_scores
+    if calib_baseline_scores is None or test_baseline_scores is None:
+        raise ValueError("ScoreArtifact must have baseline scores for calib and test splits")
+    calib_labels = scores.calib.labels
+    test_labels = scores.test.labels
 
-    from mixed_dataset import get_mixed_splits, has_mixed_config, load_mixed_dataset
-
-    if has_mixed_config(config):
-        mixed_cfg = config.mixed_datasets
-        sources = mixed_cfg["sources"]
-        balance = mixed_cfg.get("balance_strategy", "min_size")
-        mixed_splits = get_mixed_splits(config)
-
-        if "calib" in mixed_splits:
-            logger.info("Loading MIXED calibration dataset (multi-source)")
-            calib_dataset = load_mixed_dataset(sources, "dev", activation_config, balance, seed)
-        else:
-            logger.info("Loading single-source calibration dataset")
-            calib_dataset = load_dataset(Path(config.calib_dataset_path), activation_config=activation_config)
-
-        logger.info("Loading MIXED test dataset (multi-source)")
-        test_dataset = load_mixed_dataset(sources, "test", activation_config, balance, seed)
-    else:
-        calib_dataset = load_dataset(Path(config.calib_dataset_path), activation_config=activation_config)
-        test_dataset = load_dataset(Path(config.test_dataset_path), activation_config=activation_config)
-
-    debug_mode = getattr(config, "debug", False)
-    if debug_mode:
-        logger.warning("Running in debug mode with smaller datasets.")
-        train_dataset = sample_from_dataset(train_dataset, DEBUG_SAMPLE_SIZE, seed=seed)
-        calib_dataset = sample_from_dataset(calib_dataset, DEBUG_SAMPLE_SIZE, seed=seed)
-        test_dataset = sample_from_dataset(test_dataset, DEBUG_SAMPLE_SIZE, seed=seed)
-
-    # Extract group labels for mixed datasets (before any splitting)
-    test_groups = np.array(test_dataset.other_fields["group"]) if "group" in test_dataset.other_fields else None
+    test_groups = scores.test.groups
     group_purity = config.mixed_datasets.get("group_purity", 1.0) if has_mixed_config(config) else None
+
     if test_groups is not None:
         unique_groups, group_counts = np.unique(test_groups, return_counts=True)
         logger.info(f"Test dataset groups: {dict(zip(unique_groups, group_counts, strict=True))}")
 
-    logger.info(f"Training dataset size: {len(train_dataset)}")
-    logger.info(f"Calibration dataset size: {len(calib_dataset)}")
-    logger.info(f"Test dataset size: {len(test_dataset)}")
+    logger.info(f"Train: {len(train_labels)}, Calib: {len(calib_labels)}, Test: {len(test_labels)} examples")
 
-    # --- Data splitting (probe calibration and/or Pareto optimisation) ---
-    calibration_method = getattr(config, "calibration_method", None)
-    needs_auxiliary_data = calibration_method is not None
+    # --- Exclude calibration auxiliary indices from hypothesis testing ---
+    calib_mask = scores.get_calib_mask()
+    n_excluded = int((~calib_mask).sum())
+    if n_excluded > 0:
+        logger.info(f"Excluding {n_excluded} calibration auxiliary examples from hypothesis testing")
+        calib_probe_scores = calib_probe_scores[calib_mask]
+        calib_baseline_scores = calib_baseline_scores[calib_mask]
+        calib_labels = calib_labels[calib_mask]
 
+    # --- Pareto split: further split remaining calib data ---
     pareto_testing = getattr(config, "pareto_testing", False)
+    opt_probe_scores = None
+    opt_baseline_scores = None
+    opt_labels = None
+
     if pareto_testing:
         pareto_proportion = getattr(config, "pareto_split_proportion", 0.2)
+        n_calib = len(calib_labels)
+        indices = np.arange(n_calib)
+        rng = np.random.RandomState(seed)
+        rng.shuffle(indices)
+        split_point = int(n_calib * (1 - pareto_proportion))
+        calib_indices = indices[:split_point]
+        opt_indices = indices[split_point:]
+
         logger.info(
-            f"Splitting calibration data for Pareto testing "
-            f"(opt={pareto_proportion:.0%}, calib={1 - pareto_proportion:.0%})"
+            f"Pareto split: calib={len(calib_indices)}, opt={len(opt_indices)} "
+            f"(from {n_calib} after auxiliary exclusion)"
         )
-        calib_dataset, opt_dataset = split_dataset(
-            calib_dataset,
-            proportions=[1 - pareto_proportion, pareto_proportion],
-            shuffle=True,
-            seed=seed,
-        )
-        if needs_auxiliary_data:
-            logger.info("Auxiliary operations (probe calibration) will use opt split")
-        auxiliary_dataset = opt_dataset if needs_auxiliary_data else None
-    elif needs_auxiliary_data:
-        auxiliary_proportion = getattr(config, "auxiliary_split_proportion", 0.15)
-        logger.info(
-            f"Splitting calibration data for probe calibration "
-            f"(auxiliary={auxiliary_proportion:.0%}, calib={1 - auxiliary_proportion:.0%})"
-        )
-        calib_dataset, auxiliary_dataset = split_dataset(
-            calib_dataset,
-            proportions=[1 - auxiliary_proportion, auxiliary_proportion],
-            shuffle=True,
-            seed=seed,
-        )
-    else:
-        auxiliary_dataset = None
 
-    logger.info(f"Effective calibration set size for hypothesis testing: {len(calib_dataset)}")
+        opt_probe_scores = calib_probe_scores[opt_indices]
+        opt_baseline_scores = calib_baseline_scores[opt_indices]
+        opt_labels = calib_labels[opt_indices]
 
-    # --- Probe ---
-    logger.info("Fitting probe...")
-    base_probe = SequenceProbe(reduction_strategy=config.reduction_strategy)
-    probe = DegradedProbe(base_probe, enabled=degrade_enabled, seed=seed)
-    probe.fit(train_dataset)
+        calib_probe_scores = calib_probe_scores[calib_indices]
+        calib_baseline_scores = calib_baseline_scores[calib_indices]
+        calib_labels = calib_labels[calib_indices]
 
-    if calibration_method is not None:
-        assert auxiliary_dataset is not None
-        logger.info(f"Calibrating probe scores ({calibration_method}) on auxiliary dataset...")
-        probe.calibrate(auxiliary_dataset, method=calibration_method)
-
-    logger.info("Computing probe scores on training dataset...")
-    train_probe_scores = probe.predict(train_dataset)
-    train_labels = train_dataset.labels_numpy()
-
-    # --- Calibration scores ---
-    logger.info("Computing probe scores on calibration dataset...")
-    calib_probe_scores = probe.predict(calib_dataset)
-    calib_labels = calib_dataset.labels_numpy()
-
-    logger.info("Computing baseline scores on calibration dataset...")
-    calib_baseline_scores = run_llm_baseline(
-        baseline_model_name=config.baseline_model_name,
-        dataset=calib_dataset,
-        baseline_batch_size=config.baseline_batch_size,
-        local=not getattr(config, "use_modal", False),
-        gpu=getattr(config, "modal_gpu", None),
-    )
-
-    if pareto_testing:
-        logger.info("Computing probe scores on optimisation dataset...")
-        opt_probe_scores = probe.predict(opt_dataset)
-        logger.info("Computing baseline scores on optimisation dataset...")
-        opt_baseline_scores = run_llm_baseline(
-            baseline_model_name=config.baseline_model_name,
-            dataset=opt_dataset,
-            baseline_batch_size=config.baseline_batch_size,
-            local=not getattr(config, "use_modal", False),
-            gpu=getattr(config, "modal_gpu", None),
-        )
+    logger.info(f"Effective calibration set size for hypothesis testing: {len(calib_labels)}")
 
     # --- Candidate thresholds ---
     thresholds = np.linspace(
@@ -323,14 +271,12 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
     )
 
     # --- Evaluate guaranteed risk on calibration data ---
-    guaranteed_needs_dataset = GuaranteedRisk is not BudgetCostRisk
-
     calib_eval_result = evaluate_threshold_risks(
         calib_probe_scores,
         calib_baseline_scores,
         thresholds,
         risks=GuaranteedRisk,
-        dataset=calib_dataset if guaranteed_needs_dataset else None,
+        labels=calib_labels if GuaranteedRisk is not BudgetCostRisk else None,
         merge_strategy=config.cascade_merge_strategy,
     )
 
@@ -351,12 +297,14 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
         if OptRisk.name == GuaranteedRisk.name:
             raise ValueError(f"opt_risk and guaranteed_risk must differ, both are '{OptRisk.name}'")
 
+        assert opt_probe_scores is not None
+        assert opt_baseline_scores is not None
         opt_eval_result = evaluate_threshold_risks(
             opt_probe_scores,
             opt_baseline_scores,
             thresholds,
             risks=[GuaranteedRisk, OptRisk],
-            dataset=opt_dataset,
+            labels=opt_labels,
             merge_strategy=config.cascade_merge_strategy,
         )
 
@@ -482,9 +430,6 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
             logger.info(f"  alpha={alpha_val:.3f}: {len(valid_t)} valid thresholds ({t_range})")
 
     # --- Determine selection mode ---
-    # Default: inferred from graph structure
-    #   row_dim="threshold" → best_alpha, row_dim="alpha" → best_threshold
-    # Can be overridden explicitly via config.selection_mode
     default_mode = "best_alpha" if row_dim == "threshold" else "best_threshold"
     selection_mode = getattr(config, "selection_mode", default_mode)
     budget_target: float | None = None
@@ -496,23 +441,7 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
     else:
         logger.info(f"Selection mode: {selection_mode} (row_dim={row_dim})")
 
-    # --- Test-set scores (expensive -- LLM inference) ---
-    logger.info("Computing probe scores on test dataset...")
-    test_probe_scores = probe.predict(test_dataset)
-    test_labels = test_dataset.labels_numpy()
-
-    logger.info("Computing baseline scores on test dataset...")
-    test_baseline_scores = run_llm_baseline(
-        baseline_model_name=config.baseline_model_name,
-        dataset=test_dataset,
-        baseline_batch_size=config.baseline_batch_size,
-        local=not getattr(config, "use_modal", False),
-        gpu=getattr(config, "modal_gpu", None),
-    )
-
     # --- Run cascade for every unique valid threshold ---
-    from collections import defaultdict
-
     valid_by_threshold: dict[int, list[int]] = defaultdict(list)
     for t_idx, a_idx in rejected_pairs:
         valid_by_threshold[t_idx].append(a_idx)
@@ -576,20 +505,14 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
 
     # --- Select headline threshold ---
     if selection_mode == "best_alpha":
-        # Tightest alpha (largest alpha_idx since ordered_alphas is descending)
-        # Break ties: lowest budget
         selected = min(threshold_results, key=lambda r: (-max(r.valid_alpha_indices), r.mean_budget_cost))
     elif selection_mode == "budget_target":
-        # Closest to desired budget target
-        # Break ties: tightest alpha (smallest best_alpha value)
         assert budget_target is not None
         selected = min(
             threshold_results,
             key=lambda r: (abs(r.mean_budget_cost - budget_target), r.best_alpha),
         )
     else:  # best_threshold
-        # Lowest budget (most aggressive threshold)
-        # Break ties: tightest alpha
         selected = min(threshold_results, key=lambda r: (r.mean_budget_cost, -max(r.valid_alpha_indices)))
 
     reliable_threshold = selected.threshold
@@ -621,10 +544,10 @@ def run_sgt_cascade_experiment(config) -> SGTCascadeResults | None:
     logger.info("===================================\n")
 
     return SGTCascadeResults(
-        config=vars(config),
+        config=vars(config) if hasattr(config, "__dict__") else dict(config),
         seed=seed,
         debug_mode=debug_mode,
-        test_size=len(test_dataset),
+        test_size=len(test_labels),
         cascade_batch_size=cascade_batch_size,
         num_batches=num_batches,
         guaranteed_risk_name=guaranteed_risk_name,
@@ -680,6 +603,8 @@ if __name__ == "__main__":
     args = parse_args()
     config = load_config(args.config)
 
+    scores = load_score_artifact(args.scores)
+
     clearml_logger = None
     if args.use_clearml:
         from clearml_logger import ClearMLLogger
@@ -691,7 +616,7 @@ if __name__ == "__main__":
             enabled=True,
         )
 
-    results = run_sgt_cascade_experiment(config)
+    results = run_sgt_cascade_experiment(config, scores)
 
     if results is None:
         logger.warning("Experiment failed: no reliable (threshold, alpha) pair found.")
@@ -726,7 +651,6 @@ if __name__ == "__main__":
 
             serializer = ClearMLSerializer()
             scalars = serializer.to_clearml_scalars(results)
-            # Ensure all scalar values are plain Python types (not numpy arrays)
             scalars = {
                 k: float(v) if isinstance(v, (float, int, np.floating, np.integer)) else v for k, v in scalars.items()
             }

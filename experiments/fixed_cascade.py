@@ -1,8 +1,8 @@
-"""Fixed-budget cascade experiment using test data from a previous adaptive experiment.
+"""Fixed-budget cascade experiment.
 
-Loads saved results from an adaptive cascade experiment (SGT or guaranteed-risk)
-via ClearML, runs a fixed-budget cascade on the **same** test data, and produces
-comparable results.  Fast to run (no LLM inference, no probe training).
+Can load test data from a previous adaptive experiment (SGT or guaranteed-risk)
+or directly from a ``ScoreArtifact``.  Fast to run (no LLM inference, no probe
+training).
 """
 
 import argparse
@@ -21,6 +21,7 @@ from cascade_utils import (
 )
 from clearml_logger import ClearMLLogger
 from clearml_serialization import ClearMLSerializer, artifact_field, derived_field, scalar_field
+from score_artifact import ScoreArtifact
 
 from reliable_monitoring.cascade import offline_batch_cascade
 
@@ -194,6 +195,97 @@ def run_fixed_cascade(
         test_labels=test_labels,
         cascade_final_scores=cascade_result.final_scores,
         test_groups=getattr(source_results, "test_groups", None),
+    )
+
+
+def run_fixed_cascade_from_scores(
+    scores: ScoreArtifact,
+    budget_rate: float,
+    cascade_batch_size: int = 128,
+    merge_strategy: str = "replace",
+) -> FixedCascadeResults:
+    """Run a fixed-budget cascade directly from a ScoreArtifact.
+
+    This is an alternative to ``run_fixed_cascade`` that does not require
+    a previous adaptive experiment — it works directly with pre-computed
+    scores.
+
+    Args:
+        scores: Pre-computed ScoreArtifact.
+        budget_rate: Budget rate for ``fixed_budget_rate`` strategy.
+        cascade_batch_size: Batch size for cascade execution.
+        merge_strategy: How to merge probe and baseline scores.
+    """
+    test_probe_scores = scores.get_probe_scores("test", calibrated=True)
+    test_baseline_scores = scores.test.baseline_scores
+    if test_baseline_scores is None:
+        raise ValueError("ScoreArtifact must have baseline scores for the test split")
+    test_labels = scores.test.labels
+
+    logger.info(f"Running fixed cascade from scores (rate={budget_rate:.4f}, batch_size={cascade_batch_size})...")
+    cascade_result = offline_batch_cascade(
+        probe_scores=test_probe_scores,
+        baseline_scores=test_baseline_scores,
+        batch_size=cascade_batch_size,
+        selection_strategy="fixed_budget_rate",
+        merge_strategy=merge_strategy,
+        rate=budget_rate,
+    )
+
+    num_batches = (len(test_probe_scores) + cascade_batch_size - 1) // cascade_batch_size
+    batches: list[BatchCascadeStatistics] = []
+    for batch_idx in range(num_batches):
+        s = batch_idx * cascade_batch_size
+        e = min(s + cascade_batch_size, len(test_probe_scores))
+        batches.append(
+            compute_batch_statistics(
+                batch_index=batch_idx,
+                probe_scores=cascade_result.probe_scores[s:e],
+                baseline_scores=cascade_result.baseline_scores[s:e],
+                used_baseline=cascade_result.used_baseline[s:e],
+                final_scores=cascade_result.final_scores[s:e],
+                labels=test_labels[s:e],
+            )
+        )
+
+    budget_costs = np.array([b.budget_cost for b in batches])
+    cascade_m = compute_overall_metrics(cascade_result.final_scores, test_labels)
+    probe_m = compute_overall_metrics(test_probe_scores, test_labels)
+    baseline_m = compute_overall_metrics(test_baseline_scores, test_labels)
+
+    logger.info(f"Fixed cascade: budget={budget_costs.mean():.4f}, acc={cascade_m['accuracy']:.4f}")
+
+    return FixedCascadeResults(
+        config={
+            "fixed_budget_rate": budget_rate,
+            "cascade_batch_size": cascade_batch_size,
+            "cascade_merge_strategy": merge_strategy,
+        },
+        seed=scores.seed,
+        source_task_id="",
+        test_size=len(test_labels),
+        cascade_batch_size=cascade_batch_size,
+        num_batches=num_batches,
+        fixed_budget_rate=budget_rate,
+        mean_budget_cost=float(budget_costs.mean()),
+        std_budget_cost=float(budget_costs.std()),
+        min_budget_cost=float(budget_costs.min()),
+        max_budget_cost=float(budget_costs.max()),
+        cascade_accuracy=cascade_m["accuracy"],
+        cascade_f1_score=cascade_m["f1_score"],
+        cascade_roc_auc=cascade_m["roc_auc"],
+        probe_only_accuracy=probe_m["accuracy"],
+        probe_only_f1_score=probe_m["f1_score"],
+        probe_only_roc_auc=probe_m["roc_auc"],
+        baseline_only_accuracy=baseline_m["accuracy"],
+        baseline_only_f1_score=baseline_m["f1_score"],
+        baseline_only_roc_auc=baseline_m["roc_auc"],
+        batches=batches,
+        test_probe_scores=test_probe_scores,
+        test_baseline_scores=test_baseline_scores,
+        test_labels=test_labels,
+        cascade_final_scores=cascade_result.final_scores,
+        test_groups=scores.test.groups,
     )
 
 

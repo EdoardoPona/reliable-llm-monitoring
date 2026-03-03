@@ -9,10 +9,12 @@ natural performance variability across groups.
 from __future__ import annotations
 
 import logging
+import random
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
 from models_under_pressure.interfaces.dataset import LabelledDataset
 
 from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset
@@ -74,6 +76,82 @@ def load_mixed_dataset(
     combined = LabelledDataset.concatenate(datasets, col_conflict="intersection")
     logger.info(f"Combined mixed dataset: {len(combined)} total examples across {len(sources)} groups")
     return combined
+
+
+def load_mixed_dataset_with_baselines(
+    sources: list[dict[str, str]],
+    split: str,
+    per_source_baselines: list[np.ndarray],
+    activation_config: ActivationConfig | None,
+    balance_strategy: str | int = "min_size",
+    seed: int = 42,
+    **load_kwargs: Any,
+) -> tuple[LabelledDataset, np.ndarray]:
+    """Load mixed dataset and assemble baselines in one pass.
+
+    Like :func:`load_mixed_dataset`, but also carries pre-computed per-source
+    baseline arrays through the same balancing/subsampling.  Subsampling
+    indices are generated once and applied to both the dataset and the
+    baseline scores, guaranteeing alignment.
+
+    Args:
+        sources: Source dicts with ``'group'``, ``'dev'``, ``'test'`` keys.
+        split: Which split to load (``'dev'`` or ``'test'``).
+        per_source_baselines: Pre-computed baseline scores per source
+            (one array per source, matching the full unsampled file).
+        activation_config: Config for loading activations.
+        balance_strategy: Same semantics as :func:`load_mixed_dataset`.
+        seed: Random seed for reproducibility.
+        **load_kwargs: Additional keyword arguments passed to ``load_dataset``.
+
+    Returns:
+        ``(dataset, baselines)`` tuple, both aligned and balanced.
+    """
+    if len(sources) != len(per_source_baselines):
+        raise ValueError(f"Expected {len(sources)} baseline arrays (one per source), got {len(per_source_baselines)}")
+
+    datasets: list[LabelledDataset] = []
+    baselines: list[np.ndarray] = []
+
+    for source, bl in zip(sources, per_source_baselines, strict=True):
+        group_name = source["group"]
+        path = Path(source[split])
+
+        logger.info(f"Loading {split} dataset for group '{group_name}' from {path}")
+        ds = load_dataset(path, activation_config, **load_kwargs)
+        ds = ds.assign(group=[group_name] * len(ds))
+
+        if len(bl) != len(ds):
+            raise ValueError(f"Baseline length {len(bl)} != dataset length {len(ds)} for group '{group_name}'")
+
+        logger.info(f"  Group '{group_name}': {len(ds)} examples")
+        datasets.append(ds)
+        baselines.append(bl)
+
+    # Determine balance target
+    target: int | None = None
+    if balance_strategy == "min_size":
+        target = min(len(ds) for ds in datasets)
+        logger.info(f"Balancing to min group size: {target}")
+    elif isinstance(balance_strategy, int):
+        target = balance_strategy
+        logger.info(f"Capping each group at {target} examples")
+    elif balance_strategy != "none":
+        raise ValueError(f"Unknown balance_strategy: {balance_strategy!r}. Use 'min_size', 'none', or an integer.")
+
+    # Subsample BOTH dataset and baselines with the same indices
+    if target is not None:
+        for i, (ds, bl) in enumerate(zip(datasets, baselines, strict=True)):
+            if len(ds) > target:
+                random.seed(seed)
+                indices = random.sample(range(len(ds)), target)
+                datasets[i] = ds[indices]
+                baselines[i] = bl[indices]
+
+    combined_ds = LabelledDataset.concatenate(datasets, col_conflict="intersection")
+    combined_bl = np.concatenate(baselines)
+    logger.info(f"Combined mixed dataset: {len(combined_ds)} examples across {len(sources)} groups")
+    return combined_ds, combined_bl
 
 
 def has_mixed_config(config: SimpleNamespace) -> bool:

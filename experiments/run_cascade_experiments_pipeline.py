@@ -1,4 +1,4 @@
-"""Run the full paper pipeline: SGT cascade → analysis → fixed cascade → analysis → comparison.
+"""Run the full paper pipeline: scores → calibration → SGT → analysis → fixed → analysis → comparison.
 
 Each step logs to ClearML and task IDs are piped between steps automatically.
 All tasks in a pipeline run share a common datetime prefix for easy identification.
@@ -8,17 +8,17 @@ All results, scalars, configs, and figures are saved locally to ``--output-dir``
 
 Usage::
 
-    # Default config
+    # Default config (computes scores + runs full pipeline)
     uv run experiments/run_cascade_experiments_pipeline.py --config configs/sgt_cascade.yaml
 
     # Skip ClearML logging
     uv run experiments/run_cascade_experiments_pipeline.py --config configs/sgt_cascade.yaml --no-clearml
 
+    # Use pre-computed scores (skips expensive score computation)
+    uv run experiments/run_cascade_experiments_pipeline.py --config configs/sgt_cascade.yaml --scores-path scores.pkl
+
     # Override fixed-cascade budget rate
     uv run experiments/run_cascade_experiments_pipeline.py --config configs/sgt_cascade.yaml --budget-rate 0.25
-
-    # Custom output directory
-    uv run experiments/run_cascade_experiments_pipeline.py --config configs/sgt_cascade.yaml --output-dir results/run1
 """
 
 import argparse
@@ -35,11 +35,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 from analyse_cascade import analyse_comparison, analyse_single
 from analyse_grouped_cascade import run_grouped_analysis
+from calibrate_scores import calibrate_scores
 from cascade_utils import save_results_to_clearml
 from clearml_logger import ClearMLLogger
 from clearml_serialization import ClearMLSerializer
+from compute_scores import compute_scores
 from config import load_config
 from fixed_cascade import run_fixed_cascade
+from score_artifact import ScoreArtifact, load_score_artifact, save_score_artifact
 from sgt_cascade import SGTCascadeResults, run_sgt_cascade_experiment
 from sgt_cascade_plotting import log_sgt_figures_to_clearml, make_sgt_figures
 
@@ -54,6 +57,12 @@ def parse_args():
         type=str,
         required=True,
         help="Path to SGT cascade config YAML.",
+    )
+    parser.add_argument(
+        "--scores-path",
+        type=str,
+        default=None,
+        help="Path to pre-computed ScoreArtifact pickle. Skips score computation and calibration.",
     )
     parser.add_argument(
         "--budget-rate",
@@ -71,6 +80,11 @@ def parse_args():
         "--no-clearml",
         action="store_true",
         help="Disable ClearML logging.",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Skip the ClearML baseline score cache (always compute from scratch).",
     )
     return parser.parse_args()
 
@@ -140,8 +154,50 @@ def _make_clearml_logger(run_prefix: str, step_name: str) -> ClearMLLogger:
 # ---------------------------------------------------------------------------
 
 
+def step_compute_scores(
+    config: Any, output_dir: Path, run_prefix: str, use_clearml: bool, *, skip_cache: bool = False
+) -> ScoreArtifact:
+    """Step 0: Compute probe and baseline scores."""
+    logger.info("\n" + "=" * 60)
+    logger.info("STEP 0: Compute Scores")
+    logger.info("=" * 60)
+
+    scores = compute_scores(config, skip_cache=skip_cache)
+
+    # Save locally
+    step_dir = output_dir / "scores"
+    scores_path = step_dir / "scores.pkl"
+    save_score_artifact(scores, scores_path)
+
+    return scores
+
+
+def step_calibrate_scores(
+    scores: ScoreArtifact, config: Any, output_dir: Path, run_prefix: str, use_clearml: bool
+) -> ScoreArtifact:
+    """Step 0.5: Calibrate probe scores (optional)."""
+    logger.info("\n" + "=" * 60)
+    logger.info("STEP 0.5: Calibrate Scores")
+    logger.info("=" * 60)
+
+    calibration_method: str = config.calibration_method
+    auxiliary_proportion = getattr(config, "auxiliary_split_proportion", 0.15)
+
+    scores = calibrate_scores(
+        scores,
+        method=calibration_method,
+        auxiliary_proportion=auxiliary_proportion,
+    )
+
+    # Save calibrated artifact
+    step_dir = output_dir / "scores"
+    save_score_artifact(scores, step_dir / "scores_calibrated.pkl")
+
+    return scores
+
+
 def step_sgt_cascade(
-    config: dict[str, Any], output_dir: Path, run_prefix: str, use_clearml: bool
+    config: Any, scores: ScoreArtifact, output_dir: Path, run_prefix: str, use_clearml: bool
 ) -> tuple[SGTCascadeResults, str | None]:
     """Step 1: Run the SGT cascade experiment.
 
@@ -153,7 +209,7 @@ def step_sgt_cascade(
 
     clearml_logger = _make_clearml_logger(run_prefix, "sgt_cascade") if use_clearml else None
 
-    results = run_sgt_cascade_experiment(config)
+    results = run_sgt_cascade_experiment(config, scores)
     if results is None:
         logger.error("SGT experiment failed: no reliable (threshold, alpha) pair found.")
         if clearml_logger is not None:
@@ -351,8 +407,20 @@ def main():
     logger.info(f"ClearML: {'enabled' if use_clearml else 'disabled'}")
     logger.info(f"Run prefix: {run_prefix}")
 
+    # --- Score computation (or load pre-computed) ---
+    if args.scores_path:
+        logger.info(f"Loading pre-computed scores from {args.scores_path}")
+        scores = load_score_artifact(args.scores_path)
+    else:
+        # Step 0: Compute scores
+        scores = step_compute_scores(config, output_dir, run_prefix, use_clearml, skip_cache=args.no_cache)
+
+        # Step 0.5: Calibrate (if config specifies calibration_method)
+        if getattr(config, "calibration_method", None) is not None:
+            scores = step_calibrate_scores(scores, config, output_dir, run_prefix, use_clearml)
+
     # Step 1: SGT cascade
-    sgt_results, sgt_task_id = step_sgt_cascade(config, output_dir, run_prefix, use_clearml)
+    sgt_results, sgt_task_id = step_sgt_cascade(config, scores, output_dir, run_prefix, use_clearml)
 
     # Step 2: Analyse SGT
     step_analyse_sgt(sgt_results, output_dir, run_prefix, use_clearml)
@@ -375,6 +443,7 @@ def main():
     metadata: dict[str, Any] = {
         "run_prefix": run_prefix,
         "config_path": str(args.config),
+        "scores_path": args.scores_path,
         "clearml_enabled": use_clearml,
     }
     if use_clearml:
