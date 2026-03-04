@@ -24,6 +24,7 @@ Usage::
 
 import argparse
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -36,7 +37,7 @@ from dotenv import load_dotenv
 from mixed_dataset import has_mixed_config, load_mixed_dataset_with_baselines
 from sklearn.metrics import accuracy_score, roc_auc_score
 
-from reliable_monitoring.cascade import CascadePredictionResults
+from reliable_monitoring.cascade import CascadePredictionResults, offline_batch_cascade, run_offline_cascade
 from reliable_monitoring.dataset import ActivationConfig, load_dataset, reduce_activations
 from reliable_monitoring.learn_then_test import fixed_sequence_testing
 from reliable_monitoring.probes import SequenceProbe
@@ -76,7 +77,9 @@ def ltt_budget_threshold(
 
     # Fixed-sequence testing: reject from safe end, stop at first failure
     rejected = fixed_sequence_testing(p_values, delta)
-    logger.info(f"  LTT: alpha_budget={alpha_budget:.2f}, delta={delta:.2f}, "f"rejected {len(rejected)}/{len(tau_grid)} taus")
+    logger.info(
+        f"  LTT: alpha_budget={alpha_budget:.2f}, delta={delta:.2f}, rejected {len(rejected)}/{len(tau_grid)} taus"
+    )
     if not rejected:
         return None
     # Last rejected index = most aggressive valid tau
@@ -95,32 +98,6 @@ def threshold_cascade(
     other per-example signal.  Higher score = more likely to delegate.
     """
     used_baseline = delegation_scores > tau
-    final = np.where(used_baseline, baseline_scores, probe_scores)
-    return CascadePredictionResults(
-        probe_scores=probe_scores,
-        baseline_scores=baseline_scores,
-        used_baseline=used_baseline,
-        final_scores=final,
-    )
-
-
-def topk_cascade(
-    probe_scores: np.ndarray,
-    baseline_scores: np.ndarray,
-    delegation_scores: np.ndarray,
-    budget: float,
-) -> CascadePredictionResults:
-    """Delegate the top (budget * n) examples by delegation_scores.
-
-    The delegation_scores array can be DV scores, uncertainty, or any
-    other per-example signal.  Higher score = more likely to delegate.
-    """
-    n = len(probe_scores)
-    k = int(budget * n)
-    order = np.argsort(-delegation_scores)
-    used_baseline = np.zeros(n, dtype=bool)
-    if k > 0:
-        used_baseline[order[:k]] = True
     final = np.where(used_baseline, baseline_scores, probe_scores)
     return CascadePredictionResults(
         probe_scores=probe_scores,
@@ -326,11 +303,21 @@ def plot_adaptivity(
     alpha_budget: float,
     batch_size: int,
     output_dir: Path,
+    baseline_cascade_fn: Callable[[np.ndarray, np.ndarray, float], CascadePredictionResults] | None = None,
 ) -> plt.Figure:
     """Per-batch delegation rate histogram for DV threshold vs fixed-k."""
     dv_result = threshold_cascade(probe_scores, baseline_scores, dv_scores, tau)
-    unc_scores = np.minimum(probe_scores, 1 - probe_scores)
-    unc_result = topk_cascade(probe_scores, baseline_scores, unc_scores, alpha_budget)
+    if baseline_cascade_fn is None:
+        unc_result = offline_batch_cascade(
+            probe_scores,
+            baseline_scores,
+            batch_size,
+            selection_strategy="fixed_budget_rate",
+            merge_strategy="replace",
+            rate=alpha_budget,
+        )
+    else:
+        unc_result = baseline_cascade_fn(probe_scores, baseline_scores, alpha_budget)
 
     n = len(probe_scores)
     n_batches = n // batch_size
@@ -491,6 +478,22 @@ def main():
     assert eval_dv is not None and eval_v is not None
     logger.info(f"Calib: n={len(calib_labels)}, Eval: n={len(eval_labels)}")
 
+    # --- Baseline cascade mode ---
+    baseline_global_topk = getattr(config, "baseline_global_topk", False)
+    batch_size = getattr(config, "cascade_batch_size", 128)
+
+    def run_baseline_cascade(ps: np.ndarray, bs: np.ndarray, budget: float) -> CascadePredictionResults:
+        if baseline_global_topk:
+            return run_offline_cascade(
+                ps, bs, selection_strategy="fixed_budget_rate", merge_strategy="replace", rate=budget
+            )
+        return offline_batch_cascade(
+            ps, bs, batch_size, selection_strategy="fixed_budget_rate", merge_strategy="replace", rate=budget
+        )
+
+    baseline_label = "Global top-k uncertainty" if baseline_global_topk else "Batched top-k uncertainty"
+    logger.info(f"Baseline mode: {baseline_label} (batch_size={batch_size})")
+
     # --- LTT: find valid tau at each alpha_budget ---
     alpha_budgets = np.linspace(config.alpha_budget_start, config.alpha_budget_end, config.alpha_budget_steps)
     delta = 1.0 - config.guarantee_probability
@@ -516,9 +519,8 @@ def main():
         dv_budget = float(dv_result.used_baseline.mean())
         dv_met = cascade_metrics(dv_result, eval_labels)
 
-        # Fixed-k uncertainty baseline at same alpha_budget constraint
-        unc_scores = np.minimum(eval_ps, 1 - eval_ps)
-        unc_result = topk_cascade(eval_ps, eval_bs, unc_scores, alpha_b)
+        # Uncertainty baseline at same alpha_budget constraint
+        unc_result = run_baseline_cascade(eval_ps, eval_bs, alpha_b)
         unc_budget = float(unc_result.used_baseline.mean())
         unc_met = cascade_metrics(unc_result, eval_labels)
 
@@ -559,8 +561,7 @@ def main():
         tau_mid = mid_result["tau"]
         logger.info(f"\nPer-group breakdown at alpha_budget={mid_result['alpha_budget']:.2f} (tau={tau_mid:.4f}):")
         dv_result = threshold_cascade(eval_ps, eval_bs, eval_dv, tau_mid)
-        unc_scores = np.minimum(eval_ps, 1 - eval_ps)
-        unc_result = topk_cascade(eval_ps, eval_bs, unc_scores, mid_result["alpha_budget"])
+        unc_result = run_baseline_cascade(eval_ps, eval_bs, mid_result["alpha_budget"])
         for g in np.unique(eval_groups):
             mask = eval_groups == g
             logger.info(
@@ -585,7 +586,6 @@ def main():
     # Adaptivity figure at the median valid budget level
     if valid_results:
         mid = valid_results[len(valid_results) // 2]
-        batch_size = getattr(config, "cascade_batch_size", 128)
         figs["adaptivity"] = plot_adaptivity(
             eval_ps,
             eval_bs,
@@ -596,6 +596,7 @@ def main():
             mid["alpha_budget"],
             batch_size,
             output_dir,
+            baseline_cascade_fn=run_baseline_cascade,
         )
 
     plt.close("all")

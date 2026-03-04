@@ -24,6 +24,9 @@ tau_steps: 200
 # --- Cascade settings ---
 cascade_batch_size: 128
 cascade_merge_strategy: replace
+# When false (default), the uncertainty baseline applies top-k per batch
+# (realistic setting).  When true, it ranks globally (strongest baseline).
+baseline_global_topk: false
 
 # --- Model settings ---
 activations_model_name: meta-llama/Llama-3.2-1B-Instruct
