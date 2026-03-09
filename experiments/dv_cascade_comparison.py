@@ -104,7 +104,7 @@ COLORS = {
     "Oracle (top-k)": "C2",
     "DV threshold (LTT)": "C3",
 }
-MARKERS = {"Probe uncertainty (top-k)": "s", "DV probe (top-k)": "o", "Oracle (top-k)": "^", "DV threshold (LTT)": "D"}
+MARKERS = {"Probe uncertainty (top-k)": "s", "DV probe (top-k)": "D", "Oracle (top-k)": "^", "DV threshold (LTT)": "D"}
 STYLES = {"Probe uncertainty (top-k)": "-", "DV probe (top-k)": "-", "Oracle (top-k)": "--", "DV threshold (LTT)": "-"}
 
 
