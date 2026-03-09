@@ -184,6 +184,7 @@ def evaluate_threshold_risks(
     dataset: "LabelledDataset | None" = None,
     labels: np.ndarray | None = None,
     merge_strategy: str = "avg",
+    delegation_scores: np.ndarray | None = None,
 ) -> ThresholdEvaluationResult:
     """Evaluate empirical risks for a grid of cascade thresholds.
 
@@ -201,6 +202,11 @@ def evaluate_threshold_risks(
         labels: Optional label array, shape (n,).  Alternative to ``dataset`` for
             providing labels.  When both are given, ``labels`` takes precedence.
         merge_strategy: Cascade merge strategy ("avg", "probe", "baseline")
+        delegation_scores: Optional array of scores to threshold on
+            (higher = delegate).  When provided, delegates where
+            ``delegation_scores > threshold`` instead of the default
+            probe-uncertainty logic.  Follows the same convention as
+            ``ranking_scores`` in the fixed-budget strategies.
 
     Returns:
         ThresholdEvaluationResult with:
@@ -231,6 +237,11 @@ def evaluate_threshold_risks(
     n_samples = len(probe_scores)
     n_thresholds = len(thresholds)
 
+    # Build extra kwargs for the selection strategy
+    selection_kwargs: dict = {}
+    if delegation_scores is not None:
+        selection_kwargs["delegation_scores"] = delegation_scores
+
     # Initialize storage for all risks
     empirical_risks_dict = {r.name: np.zeros(n_thresholds) for r in risk_list}
 
@@ -241,6 +252,7 @@ def evaluate_threshold_risks(
             baseline_scores,
             threshold=threshold,
             merge_strategy=merge_strategy,
+            **selection_kwargs,
         )
         context = RiskEvaluationContext(
             cascade_scores=cascade_result,
