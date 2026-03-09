@@ -84,18 +84,37 @@ def get_selection_strategy(name: str) -> SelectionStrategy:
 
 
 @register_selection_strategy("fixed_threshold")
-def select_fixed_threshold(probe_scores: np.ndarray, threshold: float, **kwargs) -> np.ndarray:
-    """Send examples where probe is uncertain (both classes' scores < threshold).
+def select_fixed_threshold(
+    probe_scores: np.ndarray,
+    threshold: float,
+    delegation_scores: np.ndarray | None = None,
+    **kwargs,
+) -> np.ndarray:
+    """Send examples to baseline based on a threshold.
+
+    By default, delegates where the probe is uncertain (both classes'
+    scores < threshold, i.e. near the 0.5 decision boundary).
+    When ``delegation_scores`` is provided, delegates where
+    ``delegation_scores > threshold`` instead (higher = delegate first),
+    following the same convention as ``ranking_scores`` in the
+    fixed-budget strategies.
 
     Args:
-        probe_scores: Array of probe scores for all examples
-        threshold: Threshold for uncertainty (between 0.5 and 1)
+        probe_scores: Array of probe scores for all examples.
+        threshold: Threshold value.  For default mode must be in [0.5, 1].
+            For delegation_scores mode, any float is valid.
+        delegation_scores: Optional array to threshold on (higher = delegate).
+            When None, uses the default probe-uncertainty logic.
 
     Returns:
-        Boolean array indicating which examples to send to baseline
+        Boolean array indicating which examples to send to baseline.
     """
     if threshold is None:
         raise ValueError("fixed_threshold strategy requires 'threshold' parameter")
+
+    if delegation_scores is not None:
+        return delegation_scores > threshold
+
     if not (0.5 <= threshold <= 1):
         raise ValueError(f"threshold must be in (0.5, 1], got {threshold}")
     return np.logical_and(probe_scores < threshold, 1 - probe_scores < threshold)
