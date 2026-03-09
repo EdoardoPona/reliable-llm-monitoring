@@ -70,6 +70,15 @@ class TestFixedBudgetRate:
         with pytest.raises(TypeError):
             select_fixed_budget_rate(scores)
 
+    def test_ranking_scores_selects_topk(self):
+        """With ranking_scores, select top fraction by that signal."""
+        scores = np.arange(100) / 100.0
+        ranking = np.random.default_rng(42).random(100)
+        mask = select_fixed_budget_rate(scores, rate=0.2, ranking_scores=ranking)
+        assert mask.sum() == 20
+        # Selected examples should have the highest ranking scores
+        assert ranking[mask].min() >= np.sort(ranking)[-20]
+
 
 class TestFixedBudgetAmount:
     """Test fixed_budget_amount selection strategy."""
@@ -99,6 +108,22 @@ class TestFixedBudgetAmount:
         scores = np.array([0.5])
         with pytest.raises(TypeError):
             select_fixed_budget_amount(scores)
+
+    def test_ranking_scores_selects_topk(self):
+        """With ranking_scores, select top-k by that signal instead of median-centered."""
+        scores = np.array([0.1, 0.2, 0.8, 0.9, 0.5])
+        ranking = np.array([0.0, 0.0, 1.0, 0.0, 1.0])
+        mask = select_fixed_budget_amount(scores, amount=2, ranking_scores=ranking)
+        assert mask.sum() == 2
+        # Should select indices 2 and 4 (highest ranking scores)
+        assert np.array_equal(np.where(mask)[0], [2, 4])
+
+    def test_ranking_scores_zero_amount(self):
+        """Amount <= 0 returns empty mask even with ranking_scores."""
+        scores = np.array([0.1, 0.5, 0.9])
+        ranking = np.array([1.0, 0.0, 0.5])
+        mask = select_fixed_budget_amount(scores, amount=0, ranking_scores=ranking)
+        assert mask.sum() == 0
 
 
 class TestSelectionRegistry:

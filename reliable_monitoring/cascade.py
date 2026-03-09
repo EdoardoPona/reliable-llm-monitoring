@@ -102,60 +102,89 @@ def select_fixed_threshold(probe_scores: np.ndarray, threshold: float, **kwargs)
 
 
 @register_selection_strategy("fixed_budget_rate")
-def select_fixed_budget_rate(probe_scores: np.ndarray, rate: float, **kwargs) -> np.ndarray:
-    """Send middle portion of examples based on percentiles.
+def select_fixed_budget_rate(
+    probe_scores: np.ndarray,
+    rate: float,
+    ranking_scores: np.ndarray | None = None,
+    **kwargs,
+) -> np.ndarray:
+    """Send a fraction of examples to the baseline.
+
+    By default, selects the middle portion of examples by probe score
+    (i.e. the most uncertain predictions closest to the decision boundary).
+    When ``ranking_scores`` is provided, selects the top fraction ranked by
+    that signal instead (higher = delegate first).
 
     Args:
-        probe_scores: Array of probe scores for all examples
-        rate: Fraction of examples to send (e.g., 0.5 sends middle 50%)
+        probe_scores: Array of probe scores for all examples.
+        rate: Fraction of examples to send (e.g., 0.5 sends 50%).
+        ranking_scores: Optional array to rank by (higher = delegate first).
+            When None, selects the middle portion of the probe score
+            distribution (default / backwards-compatible behaviour).
 
     Returns:
-        Boolean array indicating which examples to send to baseline
+        Boolean array indicating which examples to send to baseline.
     """
     if rate is None:
         raise ValueError("fixed_budget_rate strategy requires 'rate' parameter")
     if not (0 < rate <= 1):
         raise ValueError(f"rate must be in (0, 1], got {rate}")
     n_samples = len(probe_scores)
-    sorted_indices = np.argsort(probe_scores)
-    lower_rank = int((1 - rate) / 2 * n_samples)
-    upper_rank = int((1 + rate) / 2 * n_samples)
-    mask = np.zeros(n_samples, dtype=bool)
-    selected_indices = sorted_indices[lower_rank:upper_rank]
-    mask[selected_indices] = True
-    return mask
+    amount = int(rate * n_samples)
+    return select_fixed_budget_amount(probe_scores, amount=amount, ranking_scores=ranking_scores)
 
 
 @register_selection_strategy("fixed_budget_amount")
-def select_fixed_budget_amount(probe_scores: np.ndarray, amount: int, **kwargs) -> np.ndarray:
-    """Send fixed number of examples centered around median.
+def select_fixed_budget_amount(
+    probe_scores: np.ndarray,
+    amount: int,
+    ranking_scores: np.ndarray | None = None,
+    **kwargs,
+) -> np.ndarray:
+    """Send a fixed number of examples to the baseline.
+
+    By default, selects examples centered around the median probe score
+    (i.e. the most uncertain predictions closest to the decision boundary).
+    When ``ranking_scores`` is provided, selects the top-k ranked by that
+    signal instead (higher = delegate first).
 
     Args:
-        probe_scores: Array of probe scores for all examples
-        amount: Number of examples to send to baseline
+        probe_scores: Array of probe scores for all examples.
+        amount: Number of examples to send to baseline.
+        ranking_scores: Optional array to rank by (higher = delegate first).
+            When None, selects examples centered around the median probe
+            score (default / backwards-compatible behaviour).
 
     Returns:
-        Boolean array indicating which examples to send to baseline
+        Boolean array indicating which examples to send to baseline.
     """
     if amount is None:
         raise ValueError("fixed_budget_amount strategy requires 'amount' parameter")
     if not isinstance(amount, int) or amount <= 0:
-        raise ValueError(f"amount must be a positive integer, got {amount}")
+        return np.zeros(len(probe_scores), dtype=bool)
 
     n_samples = len(probe_scores)
+    amount = min(amount, n_samples)
+
+    if ranking_scores is not None:
+        # Top-k by the provided ranking signal (higher = delegate first)
+        mask = np.zeros(n_samples, dtype=bool)
+        top_idx = np.argsort(-ranking_scores)[:amount]
+        mask[top_idx] = True
+        return mask
+
+    # Default: select examples centered around the median probe score
     sorted_indices = np.argsort(probe_scores)
+    half_lo = amount // 2
     median_rank = n_samples // 2
+    start_rank = max(0, median_rank - half_lo)
+    end_rank = min(n_samples, start_rank + amount)
+    # Shift window back if it overflows the right end
+    if end_rank - start_rank < amount:
+        start_rank = max(0, end_rank - amount)
 
-    # Compute range centered on median
-    half_amount = amount // 2
-    start_rank = max(0, median_rank - half_amount)
-    end_rank = min(n_samples, median_rank + half_amount)
-
-    # Create boolean mask
     mask = np.zeros(n_samples, dtype=bool)
-    selected_indices = sorted_indices[start_rank:end_rank]
-    mask[selected_indices] = True
-
+    mask[sorted_indices[start_rank:end_rank]] = True
     return mask
 
 
@@ -383,12 +412,20 @@ def offline_batch_cascade(
         batch_probe_scores = probe_scores[start_idx:end_idx]
         batch_baseline_scores = baseline_scores[start_idx:end_idx]
 
+        # Slice any array-valued kwargs that are aligned with probe_scores
+        batch_kwargs = {}
+        for key, val in selection_kwargs.items():
+            if isinstance(val, np.ndarray) and val.shape[0] == n_samples:
+                batch_kwargs[key] = val[start_idx:end_idx]
+            else:
+                batch_kwargs[key] = val
+
         batch_results = run_offline_cascade(
             probe_scores=batch_probe_scores,
             baseline_scores=batch_baseline_scores,
             selection_strategy=selection_strategy,
             merge_strategy=merge_strategy,
-            **selection_kwargs,
+            **batch_kwargs,
         )
 
         all_used_baseline[start_idx:end_idx] = batch_results.used_baseline

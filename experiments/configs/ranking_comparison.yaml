@@ -1,0 +1,47 @@
+# Ranking Comparison: Batched top-k cascade with different ranking signals
+#
+# Compares probe uncertainty vs DV probe vs oracle as ranking signals
+# in a batched top-k cascade setting across multiple batch sizes.
+#
+# Usage:
+#   uv run experiments/ranking_comparison.py --config configs/ranking_comparison.yaml
+
+# --- Batch sizes to compare ---
+batch_sizes: [32, 64, 128]
+# Number of k steps to sweep (0 to batch_size)
+n_k_steps: 20
+
+# --- Model settings (same as dv_ltt_cascade) ---
+activations_model_name: meta-llama/Llama-3.2-1B-Instruct
+activations_layer: 11
+baseline_model_name: google/gemma-3-27b-it
+reduction_strategy: mean
+
+# When true, dispatch baseline LLM inference to Modal cloud GPUs on cache miss
+use_modal: true
+
+seed: 42
+
+# --- Training data ---
+train_dataset_path: ${DATA_DIR}/training/prompts_4x/train.jsonl
+
+# --- Fallback paths (used when mixed_datasets is absent) ---
+dev_dataset_path: ${DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl
+test_dataset_path: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
+
+# --- Mixed dataset configuration ---
+mixed_datasets:
+  balance_strategy: 500
+  sources:
+    - group: anthropic
+      dev: ${DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl
+      test: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
+    - group: mt
+      dev: ${DATA_DIR}/evals/dev/mt_balanced_apr_30.jsonl
+      test: ${DATA_DIR}/evals/test/mt_test_balanced_apr_30.jsonl
+    - group: mts
+      dev: ${DATA_DIR}/evals/dev/mts_balanced_apr_22.jsonl
+      test: ${DATA_DIR}/evals/test/mts_test_balanced_apr_22.jsonl
+    - group: toolace
+      dev: ${DATA_DIR}/evals/dev/toolace_balanced_apr_22.jsonl
+      test: ${DATA_DIR}/evals/test/toolace_test_balanced_apr_22.jsonl
