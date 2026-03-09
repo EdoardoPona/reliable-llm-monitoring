@@ -142,25 +142,38 @@ def fetch_cached_baseline(
         logger.info(f"ClearML cache miss: model={model_name}, dataset={dataset_key}")
         return None
 
-    task = tasks[0]
-    artifact = task.artifacts.get("baseline_scores")
-    if artifact is None:
-        logger.warning(f"ClearML cache hit but no 'baseline_scores' artifact in task {task.id}")
-        return None
+    # Try tasks in order — some may have broken artifacts (e.g. from
+    # failed uploads).  Fall through to the next task on failure.
+    for task in tasks:
+        artifact = task.artifacts.get("baseline_scores")
+        if artifact is None:
+            logger.warning(f"ClearML cache hit but no 'baseline_scores' artifact in task {task.id}")
+            continue
 
-    try:
-        local_path = artifact.get_local_copy()
-        with open(local_path, "rb") as f:
-            scores = pickle.load(f)  # noqa: S301
-        scores = np.asarray(scores)
-        logger.info(
-            f"ClearML cache hit: loaded {len(scores)} baseline scores "
-            f"(model={model_name}, dataset={dataset_key}, task={task.id})"
-        )
-        return scores
-    except Exception as e:
-        warnings.warn(f"Failed to load cached baseline from task {task.id}: {e}", UserWarning, stacklevel=2)
-        return None
+        try:
+            local_path = artifact.get_local_copy()
+            if local_path is None:
+                logger.warning(f"Artifact download returned None for task {task.id}")
+                continue
+            with open(local_path, "rb") as f:
+                scores = pickle.load(f)  # noqa: S301
+            scores = np.asarray(scores)
+            logger.info(
+                f"ClearML cache hit: loaded {len(scores)} baseline scores "
+                f"(model={model_name}, dataset={dataset_key}, task={task.id})"
+            )
+            return scores
+        except Exception as e:
+            logger.warning(f"Failed to load cached baseline from task {task.id}: {e}")
+            continue
+
+    warnings.warn(
+        f"ClearML found {len(tasks)} matching tasks but all artifact downloads failed "
+        f"(model={model_name}, dataset={dataset_key})",
+        UserWarning,
+        stacklevel=2,
+    )
+    return None
 
 
 def upload_baseline_to_cache(
@@ -207,7 +220,9 @@ def upload_baseline_to_cache(
             wait_on_upload=True,
         )
 
-        # Mark as completed
+        # Task.create() produces tasks in "created" status.
+        # mark_completed() only works after mark_started().
+        task.mark_started()
         task.mark_completed()
 
         task_id = task.id

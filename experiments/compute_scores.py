@@ -26,6 +26,7 @@ from baseline_registry import compute_or_fetch_baseline
 from config import load_config
 from dotenv import load_dotenv
 from mixed_dataset import (
+    fetch_per_source_baselines,
     get_mixed_splits,
     has_mixed_config,
     load_mixed_dataset,
@@ -51,37 +52,6 @@ def _baseline_kwargs(config) -> dict:
         "local": not getattr(config, "use_modal", False),
         "gpu": getattr(config, "modal_gpu", None),
     }
-
-
-def _fetch_per_source_baselines(
-    sources: list[dict],
-    split: str,
-    model_name: str,
-    activation_config: ActivationConfig,
-    *,
-    skip_cache: bool = False,
-    **baseline_kwargs,
-) -> list[np.ndarray]:
-    """Fetch or compute baselines for each source file in a mixed config.
-
-    Loads each source dataset individually and runs
-    :func:`compute_or_fetch_baseline` on the full (unsubsampled) file.
-    Returns one baseline array per source.
-    """
-    per_source_baselines: list[np.ndarray] = []
-    for source in sources:
-        path = source[split]
-        logger.info(f"Fetching baseline for source '{source['group']}' ({path})")
-        ds = load_dataset(Path(path), activation_config=activation_config)
-        bl = compute_or_fetch_baseline(
-            model_name=model_name,
-            dataset=ds,
-            dataset_path=path,
-            skip_cache=skip_cache,
-            **baseline_kwargs,
-        )
-        per_source_baselines.append(bl)
-    return per_source_baselines
 
 
 def _debug_subsample(dataset, baselines: np.ndarray | None, size: int, seed: int) -> tuple:
@@ -149,11 +119,10 @@ def compute_scores(
             test_baseline_scores = np.full(len(test_dataset), np.nan)
         else:
             logger.info("Fetching per-source baselines for MIXED test split")
-            test_baselines = _fetch_per_source_baselines(
+            test_baselines = fetch_per_source_baselines(
                 sources,
                 "test",
                 config.baseline_model_name,
-                activation_config,
                 skip_cache=skip_cache,
                 **bl_kwargs,
             )
@@ -173,11 +142,10 @@ def compute_scores(
                 calib_baseline_scores = np.full(len(calib_dataset), np.nan)
             else:
                 logger.info("Fetching per-source baselines for MIXED calib split")
-                calib_baselines = _fetch_per_source_baselines(
+                calib_baselines = fetch_per_source_baselines(
                     sources,
                     "dev",
                     config.baseline_model_name,
-                    activation_config,
                     skip_cache=skip_cache,
                     **bl_kwargs,
                 )

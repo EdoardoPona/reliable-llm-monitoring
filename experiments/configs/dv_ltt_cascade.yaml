@@ -34,6 +34,9 @@ activations_layer: 11
 baseline_model_name: google/gemma-3-27b-it
 reduction_strategy: mean
 
+# When true, dispatch baseline LLM inference to Modal cloud GPUs on cache miss
+use_modal: true
+
 # Fraction of test data used for LTT calibration (rest is evaluation)
 calib_fraction: 0.5
 
