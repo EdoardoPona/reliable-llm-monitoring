@@ -1,27 +1,25 @@
-"""Experiment: Batched top-k ranking comparison.
+"""DV cascade comparison experiment.
 
-Compares the ranking quality of different delegation signals in the
-batched cascade setting.  For each batch, examples are ranked by signal
-and the top-k are delegated to the baseline.  This isolates ranking
-quality by using the same mechanism (batched top-k) for all signals.
+Compares delegation strategies for the probe-baseline safety cascade:
 
-Additionally compares the LTT-calibrated DV threshold cascade, which
-uses a global (non-batched) threshold with PAC budget guarantees.
+1. **Batched top-k** (three ranking signals):
+   - Probe uncertainty: u(x) = min(p, 1-p)
+   - DV probe score:    d(x) = P(v=1 | z)
+   - Oracle:            v(x) = 1[probe wrong AND baseline correct]
 
-Signals compared:
-  - Probe uncertainty: u(x) = min(p, 1-p)       [batched top-k]
-  - DV probe score:    d(x) = P(v=1 | z)         [batched top-k]
-  - Oracle:            v(x) = 1[probe wrong AND baseline correct] [batched top-k]
-  - DV threshold (LTT): delegate where d(x) > tau, with tau calibrated
-    via Learn-then-Test for each target budget alpha  [global threshold]
+2. **LTT threshold** (global, with PAC budget guarantee):
+   - DV threshold (LTT): delegate where d(x) > tau, with tau calibrated
+     via Pareto-filtered Learn-then-Test for each target budget alpha.
 
 Outputs:
-  - ranking_comparison_B{batch_size}.png  (per batch size, for appendix)
+  - ranking_comparison_B{batch_size}.png  (per batch size)
   - ranking_comparison_grid.png           (all batch sizes side by side)
+  - budget_control.png                    (LTT budget guarantee validation)
+  - adaptivity.png                        (per-batch/group delegation rates)
 
 Usage::
 
-    uv run experiments/ranking_comparison.py --config configs/ranking_comparison.yaml
+    uv run experiments/dv_cascade_comparison.py --config configs/dv_cascade_comparison.yaml
 """
 
 import argparse
@@ -45,9 +43,9 @@ from sklearn.metrics import accuracy_score, roc_auc_score
 
 from reliable_monitoring.cascade import offline_batch_cascade
 from reliable_monitoring.dataset import ActivationConfig, load_dataset
-from reliable_monitoring.learn_then_test import fixed_sequence_testing, is_pareto
+from reliable_monitoring.learn_then_test import build_pareto_ltt
 from reliable_monitoring.probes import SequenceProbe
-from reliable_monitoring.risks import RISK_RGISTRY, BudgetCostRisk, evaluate_threshold_risks
+from reliable_monitoring.risks import RISK_RGISTRY, BudgetCostRisk
 
 load_dotenv()
 
@@ -100,9 +98,14 @@ def batched_topk_sweep(
 # Plotting
 # ---------------------------------------------------------------------------
 
-COLORS = {"Probe uncertainty": "C1", "DV probe": "C0", "Oracle": "C2", "DV threshold (LTT)": "C3"}
-MARKERS = {"Probe uncertainty": "s", "DV probe": "o", "Oracle": "^", "DV threshold (LTT)": "D"}
-STYLES = {"Probe uncertainty": "-", "DV probe": "-", "Oracle": "--", "DV threshold (LTT)": "-"}
+COLORS = {
+    "Probe uncertainty (top-k)": "C1",
+    "DV probe (top-k)": "C0",
+    "Oracle (top-k)": "C2",
+    "DV threshold (LTT)": "C3",
+}
+MARKERS = {"Probe uncertainty (top-k)": "s", "DV probe (top-k)": "o", "Oracle (top-k)": "^", "DV threshold (LTT)": "D"}
+STYLES = {"Probe uncertainty (top-k)": "-", "DV probe (top-k)": "-", "Oracle (top-k)": "--", "DV threshold (LTT)": "-"}
 
 
 def _plot_single_batch_size(
@@ -258,15 +261,123 @@ def plot_grid(
     return fig
 
 
+def plot_budget_control(
+    ltt_budget_only: list[dict] | None,
+    ltt_pareto: list[dict] | None,
+    output_dir: Path,
+) -> plt.Figure:
+    """Budget control: target vs realized delegation rate for LTT variants."""
+    fig, ax = plt.subplots(figsize=(8, 4))
+
+    all_alphas = []
+    if ltt_budget_only:
+        alphas = np.array([r["alpha"] for r in ltt_budget_only])
+        realized = np.array([r["realized_budget"] for r in ltt_budget_only])
+        ax.plot(alphas, realized, "o-", label="DV threshold", color="C0")
+        all_alphas.extend(alphas)
+
+    if ltt_pareto:
+        alphas = np.array([r["alpha"] for r in ltt_pareto])
+        realized = np.array([r["realized_budget"] for r in ltt_pareto])
+        ax.plot(alphas, realized, "^-", label="DV threshold + Pareto", color="C2")
+        all_alphas.extend(alphas)
+
+    if all_alphas:
+        a_range = np.array(sorted(set(all_alphas)))
+        ax.plot(a_range, a_range, "k--", alpha=0.4, label=r"$\alpha_{\mathrm{budget}}$ = realized")
+        ax.fill_between(a_range, 0, a_range, alpha=0.08, color="green", label="Valid region")
+
+    ax.set_ylabel("Delegation rate")
+    ax.set_xlabel(r"Budget constraint $\alpha_{\mathrm{budget}}$")
+    ax.set_title("Budget control")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(output_dir / "budget_control.png", dpi=150)
+    return fig
+
+
+def plot_adaptivity(
+    probe_scores: np.ndarray,
+    baseline_scores: np.ndarray,
+    dv_scores: np.ndarray,
+    labels: np.ndarray,
+    groups: np.ndarray | None,
+    tau: float,
+    alpha_budget: float,
+    batch_size: int,
+    output_dir: Path,
+) -> plt.Figure:
+    """Per-batch delegation rate histogram for DV threshold vs fixed-k."""
+    dv_result = threshold_cascade(probe_scores, baseline_scores, dv_scores, tau)
+    unc_result = offline_batch_cascade(
+        probe_scores,
+        baseline_scores,
+        batch_size,
+        selection_strategy="fixed_budget_rate",
+        merge_strategy="replace",
+        rate=alpha_budget,
+    )
+
+    n = len(probe_scores)
+    n_batches = n // batch_size
+    n_used = n_batches * batch_size
+
+    dv_batch_rates = []
+    unc_batch_rates = []
+    for i in range(n_batches):
+        s, e = i * batch_size, (i + 1) * batch_size
+        dv_batch_rates.append(float(dv_result.used_baseline[s:e].mean()))
+        unc_batch_rates.append(float(unc_result.used_baseline[s:e].mean()))
+
+    n_cols = 2 if groups is not None else 1
+    fig, axes = plt.subplots(1, n_cols, figsize=(6 * n_cols, 4))
+    if n_cols == 1:
+        axes = [axes]
+
+    # Histogram of per-batch delegation rates
+    ax = axes[0]
+    bins = np.linspace(0, max(max(dv_batch_rates), max(unc_batch_rates)) * 1.2, 20)
+    ax.hist(dv_batch_rates, bins=bins, alpha=0.6, label="DV threshold", color="C0", edgecolor="black")
+    ax.axvline(np.mean(dv_batch_rates), color="C0", ls="--", label=f"DV mean ({np.mean(dv_batch_rates):.1%})")
+    ax.axvline(alpha_budget, color="red", ls=":", lw=2, label=f"Budget constraint ({alpha_budget:.0%})")
+    ax.axvline(np.mean(unc_batch_rates), color="C1", ls="--", label=f"Fixed-k ({np.mean(unc_batch_rates):.1%})")
+    ax.set_xlabel("Per-batch delegation rate")
+    ax.set_ylabel("Count")
+    ax.set_title(rf"Adaptivity at $\alpha_{{\mathrm{{budget}}}}$ = {alpha_budget:.0%}")
+    ax.legend(fontsize=7)
+
+    # Per-group delegation rates
+    if groups is not None:
+        ax = axes[1]
+        unique_groups = np.unique(groups[:n_used])
+        dv_group_rates = [float(dv_result.used_baseline[:n_used][groups[:n_used] == g].mean()) for g in unique_groups]
+        unc_group_rates = [float(unc_result.used_baseline[:n_used][groups[:n_used] == g].mean()) for g in unique_groups]
+        x = np.arange(len(unique_groups))
+        w = 0.35
+        ax.bar(x - w / 2, dv_group_rates, w, label="DV threshold", color="C0", alpha=0.7, edgecolor="black")
+        ax.bar(x + w / 2, unc_group_rates, w, label="Fixed-k uncertainty", color="C1", alpha=0.7, edgecolor="black")
+        ax.axhline(alpha_budget, color="red", ls=":", lw=2, label=f"Budget ({alpha_budget:.0%})")
+        ax.set_xticks(x)
+        ax.set_xticklabels(unique_groups)
+        ax.set_ylabel("Delegation rate")
+        ax.set_title("Per-group delegation rates")
+        ax.legend(fontsize=7)
+
+    fig.tight_layout()
+    fig.savefig(output_dir / "adaptivity.png", dpi=150)
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # CLI & main
 # ---------------------------------------------------------------------------
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Batched top-k ranking comparison")
-    parser.add_argument("--config", type=str, default="configs/ranking_comparison.yaml")
-    parser.add_argument("--output-dir", type=str, default="results/ranking_comparison")
+    parser = argparse.ArgumentParser(description="DV cascade comparison experiment")
+    parser.add_argument("--config", type=str, default="configs/dv_cascade_comparison.yaml")
+    parser.add_argument("--output-dir", type=str, default="results/dv_cascade_comparison")
     parser.add_argument("--use-clearml", action="store_true")
     return parser.parse_args()
 
@@ -287,12 +398,12 @@ def main():
 
         clearml_logger = ClearMLLogger(
             project_name=os.environ.get("CLEARML_PROJECT_NAME", "reliable-llm-monitoring"),
-            task_name="ranking_comparison",
+            task_name="dv_cascade_comparison",
             enabled=True,
         )
         clearml_logger.add_tags(
             [
-                "ranking-comparison",
+                "dv-cascade-comparison",
                 f"baseline:{config.baseline_model_name}",
                 f"activations:{config.activations_model_name}",
                 f"layer:{config.activations_layer}",
@@ -371,11 +482,12 @@ def main():
         test_labels,
         dv_scores_full,
         v_test,
+        test_groups,
         calib_fraction=calib_fraction,
         seed=seed,
     )
-    calib_ps, calib_bs, calib_labels, calib_dv, calib_v = calib_arrays
-    eval_ps, eval_bs, eval_labels, eval_dv, eval_v = eval_arrays
+    calib_ps, calib_bs, calib_labels, calib_dv, calib_v, calib_groups = calib_arrays
+    eval_ps, eval_bs, eval_labels, eval_dv, eval_v, eval_groups = eval_arrays
     assert eval_ps is not None and eval_bs is not None and eval_labels is not None
     assert eval_dv is not None and eval_v is not None
     assert calib_dv is not None
@@ -387,9 +499,9 @@ def main():
     oracle = eval_v.astype(float)
 
     signals = {
-        "Probe uncertainty": uncertainty,
-        "DV probe": eval_dv,
-        "Oracle": oracle,
+        "Probe uncertainty (top-k)": uncertainty,
+        "DV probe (top-k)": eval_dv,
+        "Oracle (top-k)": oracle,
     }
 
     # --- Reference metrics (on eval split) ---
@@ -429,75 +541,76 @@ def main():
         )
         logger.info(f"Pareto testing: ht={len(ht_dv)}, opt={len(opt_dv)}, opt_risk={opt_risk_name}")
 
-        # Evaluate budget + opt risk for each tau on the opt split
-        opt_eval_result = evaluate_threshold_risks(
-            opt_ps,
-            opt_bs,
-            tau_grid,
-            risks=[BudgetCostRisk, OptRisk],
-            labels=opt_labels,
+        pareto_ltt = build_pareto_ltt(
+            ht_delegation_scores=ht_dv,
+            opt_probe_scores=opt_ps,
+            opt_baseline_scores=opt_bs,
+            opt_labels=opt_labels,
+            opt_delegation_scores=opt_dv,
+            tau_grid=tau_grid,
+            opt_risk=OptRisk,
+            budget_risk=BudgetCostRisk,
             merge_strategy="replace",
-            delegation_scores=opt_dv,
         )
-
-        # Pareto filter: keep only thresholds on the budget-vs-performance frontier
-        risks_2d = opt_eval_result.get_empirical_risks_array()
-        pareto_mask = is_pareto(risks_2d, maximize=False)
-        n_pareto = int(pareto_mask.sum())
-        logger.info(f"Pareto frontier: {n_pareto}/{len(tau_grid)} thresholds retained")
-        if n_pareto == 0:
-            logger.warning("No Pareto-efficient thresholds found, falling back to all.")
-            pareto_mask = np.ones(len(tau_grid), dtype=bool)
-
-        pareto_taus = tau_grid[pareto_mask]
-        pareto_opt_risks = opt_eval_result[OptRisk.name][pareto_mask]
+        logger.info(f"Pareto frontier: {len(pareto_ltt.taus)}/{len(tau_grid)} thresholds retained")
     else:
         ht_dv = calib_dv
-        pareto_taus = tau_grid
-        pareto_opt_risks = None
+        pareto_ltt = None
 
     logger.info(f"\n--- LTT threshold sweep ({len(alpha_budgets)} alpha levels, delta={delta}) ---")
-    ltt_alphas: list[float] = []
-    ltt_aucs: list[float] = []
-    ltt_accs: list[float] = []
 
+    # Run budget-only LTT sweep (always, for budget control figure)
+    ltt_budget_only_results: list[dict] = []
     for alpha_b in alpha_budgets:
-        if pareto_testing:
-            # Compute p-values on hypothesis-testing split, for Pareto-filtered taus
-            ordered_idx = np.argsort(-pareto_taus)  # safest (largest tau) first
-            ordered_taus = pareto_taus[ordered_idx]
-            assert pareto_opt_risks is not None
-            ordered_opt_risks = pareto_opt_risks[ordered_idx]
-
-            bound_fn = BudgetCostRisk.p_value_bound_fn
-            n_ht = len(ht_dv)
-            p_values = np.array([float(bound_fn(float((ht_dv > tau).mean()), n_ht, alpha_b)) for tau in ordered_taus])
-            rejected = fixed_sequence_testing(p_values, delta)
-            if not rejected:
-                continue
-            # Among reliable taus, pick the one minimising the opt risk
-            reliable_opt = ordered_opt_risks[rejected]
-            best_among_reliable = int(np.argmin(reliable_opt))
-            tau = float(ordered_taus[rejected[best_among_reliable]])
-        else:
-            tau = ltt_budget_threshold(ht_dv, alpha_b, delta, tau_grid)
-            if tau is None:
-                continue
-
+        tau = ltt_budget_threshold(calib_dv, alpha_b, delta, tau_grid)
+        if tau is None:
+            continue
         result = threshold_cascade(eval_ps, eval_bs, eval_dv, tau)
         met = cascade_metrics(result, eval_labels)
-        realized_budget = float(result.used_baseline.mean())
-        ltt_alphas.append(float(alpha_b))
-        ltt_aucs.append(met["auc"])
-        ltt_accs.append(met["accuracy"])
-        logger.info(
-            f"  alpha={alpha_b:.2f}: tau={tau:.4f}, realized={realized_budget:.1%}, "
-            f"AUC={met['auc']:.4f}, Acc={met['accuracy']:.4f}"
+        ltt_budget_only_results.append(
+            {
+                "alpha": float(alpha_b),
+                "tau": tau,
+                "realized_budget": float(result.used_baseline.mean()),
+                "auc": met["auc"],
+                "accuracy": met["accuracy"],
+            }
         )
 
+    # Run Pareto LTT sweep (if enabled)
+    ltt_pareto_results: list[dict] = []
+    if pareto_ltt is not None:
+        for alpha_b in alpha_budgets:
+            tau = pareto_ltt.select_threshold(alpha_b, delta)
+            if tau is None:
+                continue
+            result = threshold_cascade(eval_ps, eval_bs, eval_dv, tau)
+            met = cascade_metrics(result, eval_labels)
+            ltt_pareto_results.append(
+                {
+                    "alpha": float(alpha_b),
+                    "tau": tau,
+                    "realized_budget": float(result.used_baseline.mean()),
+                    "auc": met["auc"],
+                    "accuracy": met["accuracy"],
+                }
+            )
+
+    # Use Pareto results for the ranking comparison plots (falls back to budget-only)
+    ltt_for_plots = ltt_pareto_results if ltt_pareto_results else ltt_budget_only_results
     ltt_results: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
-    if ltt_alphas:
-        ltt_results = (np.array(ltt_alphas), np.array(ltt_aucs), np.array(ltt_accs))
+    if ltt_for_plots:
+        ltt_results = (
+            np.array([r["alpha"] for r in ltt_for_plots]),
+            np.array([r["auc"] for r in ltt_for_plots]),
+            np.array([r["accuracy"] for r in ltt_for_plots]),
+        )
+
+    for r in ltt_for_plots:
+        logger.info(
+            f"  alpha={r['alpha']:.2f}: tau={r['tau']:.4f}, realized={r['realized_budget']:.1%}, "
+            f"AUC={r['auc']:.4f}, Acc={r['accuracy']:.4f}"
+        )
 
     # --- Run batched top-k sweep for each batch size (on eval split) ---
     batch_sizes = getattr(config, "batch_sizes", [32, 64, 128])
@@ -565,6 +678,28 @@ def main():
     )
     figs["grid"] = fig_grid
 
+    # Budget control plot (LTT budget guarantee validation)
+    figs["budget_control"] = plot_budget_control(
+        ltt_budget_only_results or None,
+        ltt_pareto_results or None,
+        output_dir,
+    )
+
+    # Adaptivity plot at a representative budget level
+    representative = ltt_for_plots[len(ltt_for_plots) // 2] if ltt_for_plots else None
+    if representative is not None:
+        figs["adaptivity"] = plot_adaptivity(
+            eval_ps,
+            eval_bs,
+            eval_dv,
+            eval_labels,
+            eval_groups,
+            representative["tau"],
+            representative["alpha"],
+            batch_sizes[-1],
+            output_dir,
+        )
+
     plt.close("all")
     logger.info(f"Plots saved to {output_dir}")
 
@@ -579,13 +714,13 @@ def main():
         for bs in batch_sizes:
             budget_fractions, signal_results = all_results[bs]
             idx_20 = np.argmin(np.abs(budget_fractions - 0.2))
-            dv_auc_20 = signal_results["DV probe"][0][idx_20]
-            unc_auc_20 = signal_results["Probe uncertainty"][0][idx_20]
+            dv_auc_20 = signal_results["DV probe (top-k)"][0][idx_20]
+            unc_auc_20 = signal_results["Probe uncertainty (top-k)"][0][idx_20]
             scalars[f"dv_advantage_auc_B{bs}_at_20pct"] = dv_auc_20 - unc_auc_20
 
         clearml_logger.log_scalars(scalars)
         for name, fig in figs.items():
-            clearml_logger.log_figure("Ranking Comparison", name, fig)
+            clearml_logger.log_figure("DV Cascade Comparison", name, fig)
         clearml_logger.finalize()
         logger.info("Results logged to ClearML.")
 

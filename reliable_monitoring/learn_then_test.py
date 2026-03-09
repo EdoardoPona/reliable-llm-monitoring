@@ -1,8 +1,13 @@
+from __future__ import annotations
+
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from reliable_monitoring.risks import Risk
 
 
 @dataclass
@@ -193,3 +198,122 @@ def fixed_sequence_testing(p_values: np.ndarray, delta: float) -> list[int]:
         else:
             break
     return rejected_indices
+
+
+# ---------------------------------------------------------------------------
+# Pareto-filtered LTT threshold selection
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ParetoLTTResult:
+    """Precomputed Pareto-filtered threshold grid for per-alpha LTT testing.
+
+    Constructed once (expensive: risk evaluation + Pareto filtering), then
+    queried cheaply per alpha via :meth:`select_threshold`.
+
+    Attributes:
+        taus: Pareto-filtered thresholds, ordered safest-first (descending).
+        opt_risks: Optimisation-risk values for each tau (same order).
+        ht_delegation_scores: Delegation scores on the hypothesis-testing split.
+        budget_bound_fn: P-value bound function for the budget risk.
+    """
+
+    taus: np.ndarray
+    opt_risks: np.ndarray
+    ht_delegation_scores: np.ndarray
+    budget_bound_fn: Callable
+
+    def select_threshold(self, alpha_budget: float, delta: float) -> float | None:
+        """Find the best reliable threshold for a given budget level.
+
+        Runs fixed-sequence testing on the Pareto-filtered taus (safest first)
+        using the hypothesis-testing split, then picks the reliable tau with
+        the lowest optimisation risk.
+
+        Returns None if no threshold passes the test at this alpha level.
+        """
+        n_ht = len(self.ht_delegation_scores)
+        p_values = np.array(
+            [
+                float(
+                    self.budget_bound_fn(
+                        float((self.ht_delegation_scores > tau).mean()),
+                        n_ht,
+                        alpha_budget,
+                    )
+                )
+                for tau in self.taus
+            ]
+        )
+        rejected = fixed_sequence_testing(p_values, delta)
+        if not rejected:
+            return None
+        # Among reliable taus, pick the one minimising the opt risk
+        reliable_opt = self.opt_risks[rejected]
+        best_idx = int(np.argmin(reliable_opt))
+        return float(self.taus[rejected[best_idx]])
+
+
+def build_pareto_ltt(
+    ht_delegation_scores: np.ndarray,
+    opt_probe_scores: np.ndarray,
+    opt_baseline_scores: np.ndarray,
+    opt_labels: np.ndarray,
+    opt_delegation_scores: np.ndarray,
+    tau_grid: np.ndarray,
+    opt_risk: Risk,
+    budget_risk: Risk,
+    merge_strategy: str = "replace",
+) -> ParetoLTTResult:
+    """Build a Pareto-filtered LTT threshold selector.
+
+    Evaluates budget and optimisation risks on the opt split for every tau,
+    Pareto-filters, and returns a :class:`ParetoLTTResult` that can be
+    queried per alpha cheaply.
+
+    Args:
+        ht_delegation_scores: Delegation scores on the hypothesis-testing split
+            (used only for per-alpha p-value computation later).
+        opt_probe_scores: Probe scores on the optimisation split.
+        opt_baseline_scores: Baseline scores on the optimisation split.
+        opt_labels: Ground-truth labels on the optimisation split.
+        opt_delegation_scores: Delegation scores on the optimisation split.
+        tau_grid: Full grid of candidate thresholds.
+        opt_risk: Risk object for the optimisation objective (e.g. AccuracyRisk).
+        budget_risk: Risk object for the budget constraint (e.g. BudgetCostRisk).
+        merge_strategy: Cascade merge strategy.
+
+    Returns:
+        ParetoLTTResult ready for per-alpha queries.
+    """
+    from reliable_monitoring.risks import evaluate_threshold_risks
+
+    # Evaluate both risks on the opt split
+    eval_result = evaluate_threshold_risks(
+        opt_probe_scores,
+        opt_baseline_scores,
+        tau_grid,
+        risks=[budget_risk, opt_risk],
+        labels=opt_labels,
+        merge_strategy=merge_strategy,
+        delegation_scores=opt_delegation_scores,
+    )
+
+    # Pareto filter
+    risks_2d = eval_result.get_empirical_risks_array()
+    pareto_mask = is_pareto(risks_2d, maximize=False)
+    if not pareto_mask.any():
+        pareto_mask = np.ones(len(tau_grid), dtype=bool)
+
+    pareto_taus = tau_grid[pareto_mask]
+    pareto_opt_risks = eval_result[opt_risk.name][pareto_mask]
+
+    # Order safest (largest tau) first
+    order = np.argsort(-pareto_taus)
+    return ParetoLTTResult(
+        taus=pareto_taus[order],
+        opt_risks=pareto_opt_risks[order],
+        ht_delegation_scores=ht_delegation_scores,
+        budget_bound_fn=budget_risk.p_value_bound_fn,
+    )
