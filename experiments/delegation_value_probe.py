@@ -197,7 +197,7 @@ def plot_delegation_value_rates(
     ax.set_title("Prediction outcome breakdown")
 
     fig.tight_layout()
-    fig.savefig(output_dir / "delegation_value_rates.png", dpi=150)
+    fig.savefig(output_dir / "delegation_value_rates.pdf", bbox_inches="tight")
     return fig
 
 
@@ -248,7 +248,7 @@ def plot_dv_probe_roc(
         ax.text(0.5, 0.5, "No group labels", ha="center", va="center", transform=ax.transAxes)
 
     fig.tight_layout()
-    fig.savefig(output_dir / "dv_probe_roc.png", dpi=150)
+    fig.savefig(output_dir / "dv_probe_roc.pdf", bbox_inches="tight")
     return fig
 
 
@@ -331,7 +331,7 @@ def plot_cascade_budget_sweep(
     axes[1].set_xlabel("Delegation budget (fraction)")
 
     fig.tight_layout()
-    fig.savefig(output_dir / "cascade_budget_sweep.png", dpi=150)
+    fig.savefig(output_dir / "cascade_budget_sweep.pdf", bbox_inches="tight")
     return fig
 
 
@@ -417,7 +417,7 @@ def plot_per_group_budget_sweep(
 
     fig.suptitle("Per-group: cascade performance vs delegation budget")
     fig.tight_layout()
-    fig.savefig(output_dir / "per_group_budget_sweep.png", dpi=150)
+    fig.savefig(output_dir / "per_group_budget_sweep.pdf", bbox_inches="tight")
     return fig
 
 

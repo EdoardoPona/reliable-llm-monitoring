@@ -12,10 +12,10 @@ Compares delegation strategies for the probe-baseline safety cascade:
      via Pareto-filtered Learn-then-Test for each target budget alpha.
 
 Outputs:
-  - ranking_comparison_B{batch_size}.png  (per batch size)
-  - ranking_comparison_grid.png           (all batch sizes side by side)
-  - budget_control.png                    (LTT budget guarantee validation)
-  - adaptivity.png                        (per-batch/group delegation rates)
+  - ranking_comparison_B{batch_size}.pdf  (per batch size)
+  - ranking_comparison_grid.pdf           (all batch sizes side by side)
+  - budget_control.pdf                    (LTT budget guarantee validation)
+  - adaptivity.pdf                        (per-batch/group delegation rates)
 
 Usage::
 
@@ -201,6 +201,7 @@ def plot_single_batch_size(
     batch_size: int,
     output_dir: Path,
     ltt_results: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+    file_prefix: str = "",
 ) -> plt.Figure:
     """Main-paper figure: 1x2 (AUC, accuracy) for a single batch size."""
     fig, (ax_auc, ax_acc) = plt.subplots(1, 2, figsize=(10, 4))
@@ -218,7 +219,7 @@ def plot_single_batch_size(
         ltt_results=ltt_results,
     )
     fig.tight_layout()
-    fig.savefig(output_dir / f"ranking_comparison_B{batch_size}.png", dpi=150, bbox_inches="tight")
+    fig.savefig(output_dir / f"{file_prefix}ranking_comparison_B{batch_size}.pdf", bbox_inches="tight")
     return fig
 
 
@@ -230,6 +231,7 @@ def plot_grid(
     baseline_acc: float,
     output_dir: Path,
     ltt_results: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+    file_prefix: str = "",
 ) -> plt.Figure:
     """Appendix figure: 2-row x N-col grid (rows: AUC/accuracy, cols: batch sizes)."""
     batch_sizes = sorted(all_results.keys())
@@ -257,7 +259,7 @@ def plot_grid(
             axes[1, j].set_ylabel("")
 
     fig.tight_layout()
-    fig.savefig(output_dir / "ranking_comparison_grid.png", dpi=150, bbox_inches="tight")
+    fig.savefig(output_dir / f"{file_prefix}ranking_comparison_grid.pdf", bbox_inches="tight")
     return fig
 
 
@@ -265,6 +267,7 @@ def plot_budget_control(
     ltt_budget_only: list[dict] | None,
     ltt_pareto: list[dict] | None,
     output_dir: Path,
+    file_prefix: str = "",
 ) -> plt.Figure:
     """Budget control: target vs realized delegation rate for LTT variants."""
     fig, ax = plt.subplots(figsize=(8, 4))
@@ -293,7 +296,7 @@ def plot_budget_control(
     ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
     fig.tight_layout()
-    fig.savefig(output_dir / "budget_control.png", dpi=150)
+    fig.savefig(output_dir / f"{file_prefix}budget_control.pdf", bbox_inches="tight")
     return fig
 
 
@@ -307,6 +310,7 @@ def plot_adaptivity(
     alpha_budget: float,
     batch_size: int,
     output_dir: Path,
+    file_prefix: str = "",
 ) -> plt.Figure:
     """Per-batch delegation rate histogram for DV threshold vs fixed-k."""
     dv_result = threshold_cascade(probe_scores, baseline_scores, dv_scores, tau)
@@ -365,7 +369,7 @@ def plot_adaptivity(
         ax.legend(fontsize=7)
 
     fig.tight_layout()
-    fig.savefig(output_dir / "adaptivity.png", dpi=150)
+    fig.savefig(output_dir / f"{file_prefix}adaptivity.pdf", bbox_inches="tight")
     return fig
 
 
@@ -378,6 +382,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="DV cascade comparison experiment")
     parser.add_argument("--config", type=str, default="configs/dv_cascade_comparison.yaml")
     parser.add_argument("--output-dir", type=str, default="results/dv_cascade_comparison")
+    parser.add_argument("--file-prefix", type=str, default="", help="Prefix for output filenames (e.g. 'llama1b_')")
     parser.add_argument("--use-clearml", action="store_true")
     return parser.parse_args()
 
@@ -386,6 +391,7 @@ def main():
     args = parse_args()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    file_prefix = args.file_prefix
 
     config = load_config(args.config)
 
@@ -663,6 +669,7 @@ def main():
             bs,
             output_dir,
             ltt_results=ltt_results,
+            file_prefix=file_prefix,
         )
         figs[f"B{bs}"] = fig
 
@@ -675,6 +682,7 @@ def main():
         baseline_acc,
         output_dir,
         ltt_results=ltt_results,
+        file_prefix=file_prefix,
     )
     figs["grid"] = fig_grid
 
@@ -683,6 +691,7 @@ def main():
         ltt_budget_only_results or None,
         ltt_pareto_results or None,
         output_dir,
+        file_prefix=file_prefix,
     )
 
     # Adaptivity plot at a representative budget level
@@ -698,6 +707,7 @@ def main():
             representative["alpha"],
             batch_sizes[-1],
             output_dir,
+            file_prefix=file_prefix,
         )
 
     plt.close("all")
