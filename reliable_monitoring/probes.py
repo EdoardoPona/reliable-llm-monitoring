@@ -228,8 +228,29 @@ class SequenceProbe:
         self.clf = LogisticRegression(max_iter=max_iter, **sklearn_kwargs)
         self.calibration_clf: LogisticRegression | IsotonicRegression | None = None
 
+    @property
+    def _pre_reduced_field(self) -> str | None:
+        """Field name for pre-reduced activations, or None if using a custom callable."""
+        if isinstance(self.reduction_strategy, str):
+            return f"activations_{self.reduction_strategy}"
+        return None
+
     def _get_reduced_activations(self, dataset: LabelledDataset) -> np.ndarray:
-        """Compute reduced activations from raw sequence activations."""
+        """Get reduced activations, using pre-computed ones if available.
+
+        Checks for a pre-reduced field ``activations_{reduction_strategy}``
+        first.  If found, returns it directly (avoids recomputing from raw
+        activations).  Otherwise falls back to reducing raw activations
+        on-the-fly.
+        """
+        pre_reduced_key = self._pre_reduced_field
+        if pre_reduced_key is not None and pre_reduced_key in dataset.other_fields:
+            reduced = dataset.other_fields[pre_reduced_key]
+            if isinstance(reduced, torch.Tensor):
+                reduced = reduced.numpy()
+            return np.asarray(reduced)
+
+        # Fall back to computing from raw activations
         from reliable_monitoring.reductions import apply_reduction_batched, get_reduction_function
 
         activations = dataset.other_fields["activations"]
@@ -258,19 +279,29 @@ class SequenceProbe:
 
         return reduced.numpy()
 
-    def fit(self, dataset: LabelledDataset) -> None:
-        """Train the probe on raw sequence activations.
-
-        Args:
-            dataset: Dataset with "activations" and "attention_mask" fields
-
-        Raises:
-            ValueError: If required fields are missing
-        """
+    def _validate_activation_fields(self, dataset: LabelledDataset) -> None:
+        """Validate that dataset has required activation fields."""
+        pre_reduced_key = self._pre_reduced_field
+        if pre_reduced_key is not None and pre_reduced_key in dataset.other_fields:
+            return  # Pre-reduced activations available, no raw needed
         if "activations" not in dataset.other_fields:
             raise ValueError("Dataset missing 'activations' field")
         if "attention_mask" not in dataset.other_fields:
             raise ValueError("Dataset missing 'attention_mask' field")
+
+    def fit(self, dataset: LabelledDataset) -> None:
+        """Train the probe on sequence activations.
+
+        Accepts either raw activations (with attention_mask) or pre-reduced
+        activations (``activations_{reduction_strategy}`` field).
+
+        Args:
+            dataset: Dataset with activation fields
+
+        Raises:
+            ValueError: If required fields are missing
+        """
+        self._validate_activation_fields(dataset)
 
         X = self._get_reduced_activations(dataset)
         y = dataset.labels_numpy()
@@ -279,8 +310,11 @@ class SequenceProbe:
     def predict(self, dataset: LabelledDataset) -> np.ndarray:
         """Predict probabilities for positive class.
 
+        Accepts either raw activations (with attention_mask) or pre-reduced
+        activations (``activations_{reduction_strategy}`` field).
+
         Args:
-            dataset: Dataset with "activations" and "attention_mask" fields
+            dataset: Dataset with activation fields
 
         Returns:
             Probability scores for positive class, shape (n_samples,)
@@ -288,10 +322,7 @@ class SequenceProbe:
         Raises:
             ValueError: If required fields are missing
         """
-        if "activations" not in dataset.other_fields:
-            raise ValueError("Dataset missing 'activations' field")
-        if "attention_mask" not in dataset.other_fields:
-            raise ValueError("Dataset missing 'attention_mask' field")
+        self._validate_activation_fields(dataset)
 
         X = self._get_reduced_activations(dataset)
         scores = self.clf.predict_proba(X)[:, 1]
@@ -318,10 +349,7 @@ class SequenceProbe:
         if method not in ("platt-scaling", "isotonic-regression"):
             raise ValueError(f"Unknown calibration method: {method}")
 
-        if "activations" not in dataset.other_fields:
-            raise ValueError("Dataset missing 'activations' field")
-        if "attention_mask" not in dataset.other_fields:
-            raise ValueError("Dataset missing 'attention_mask' field")
+        self._validate_activation_fields(dataset)
 
         X = self._get_reduced_activations(dataset)
         y = dataset.labels_numpy()

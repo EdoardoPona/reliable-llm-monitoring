@@ -24,14 +24,14 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from baseline_registry import compute_or_fetch_baseline
+from activation_registry import compute_or_fetch_activations
 from config import load_config
 from dotenv import load_dotenv
-from mixed_dataset import load_mixed_dataset_with_baselines
+from mixed_dataset import fetch_per_source_activations, fetch_per_source_baselines, load_mixed_dataset_with_baselines
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
 
-from reliable_monitoring.dataset import ActivationConfig, load_dataset, reduce_activations
+from reliable_monitoring.dataset import ActivationConfig, load_dataset
 from reliable_monitoring.probes import SequenceProbe
 
 load_dotenv()
@@ -113,31 +113,6 @@ def cascade_at_dv_threshold(
     auc = float(roc_auc_score(labels, final_scores))
     acc = float(accuracy_score(labels, (final_scores >= 0.5).astype(int)))
     return budget, auc, acc
-
-
-def fetch_per_source_baselines(
-    sources: list[dict],
-    split: str,
-    model_name: str,
-) -> list[np.ndarray]:
-    """Fetch cached baselines for each source dataset.
-
-    Loads each source dataset (without activations) just for cache key
-    resolution and size validation, then returns cached baseline arrays.
-    """
-    per_source: list[np.ndarray] = []
-    for source in sources:
-        path = source[split]
-        group = source["group"]
-        logger.info(f"Fetching cached baseline for '{group}' / {split} ({path})")
-        ds = load_dataset(Path(path), activation_config=None)
-        bl = compute_or_fetch_baseline(
-            model_name=model_name,
-            dataset=ds,
-            dataset_path=path,
-        )
-        per_source.append(bl)
-    return per_source
 
 
 def train_dv_probe(
@@ -459,19 +434,39 @@ def _load_split(
     balance: str | int,
     seed: int,
     safety_probe: SequenceProbe,
+    *,
+    local: bool = True,
+    gpu: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
     """Load a split, returning (probe_scores, baseline_scores, labels, activations, groups)."""
-    logger.info(f"Fetching cached baselines for {split}...")
-    per_source_bl = fetch_per_source_baselines(sources, split, baseline_model)
+    strategy = activation_config.aggregation_strategy
+    reduction = strategy if isinstance(strategy, str) else "mean"
 
-    logger.info(f"Loading {split} datasets with activations...")
+    logger.info(f"Fetching cached baselines for {split}...")
+    per_source_bl = fetch_per_source_baselines(sources, split, baseline_model, local=local, gpu=gpu)
+
+    logger.info(f"Fetching cached activations for {split}...")
+    per_source_acts = fetch_per_source_activations(
+        sources,
+        split,
+        activation_config.model_name,
+        activation_config.layer,
+        reduction,
+        local=local,
+        gpu=gpu,
+    )
+
+    logger.info(f"Loading {split} datasets with cached activations and baselines...")
+    activation_field = f"activations_{reduction}"
     dataset, baseline_scores = load_mixed_dataset_with_baselines(
         sources,
         split,
         per_source_bl,
-        activation_config,
-        balance,
-        seed,
+        activation_config=None,
+        balance_strategy=balance,
+        seed=seed,
+        per_source_activations=per_source_acts,
+        activation_field_name=activation_field,
     )
 
     logger.info(f"Computing safety probe scores on {split}...")
@@ -479,9 +474,7 @@ def _load_split(
     labels = dataset.labels_numpy()
     groups = np.array(dataset.other_fields["group"]) if "group" in dataset.other_fields else None
 
-    logger.info(f"Extracting mean-pooled activations for {split}...")
-    reduced = reduce_activations(dataset, "mean")
-    X = reduced.other_fields["activations_mean"]
+    X = dataset.other_fields[activation_field]
     if isinstance(X, torch.Tensor):
         X = X.numpy()
     X = np.asarray(X)
@@ -553,13 +546,26 @@ def main():
     mixed_cfg = config.mixed_datasets
     sources = mixed_cfg["sources"]
     balance = mixed_cfg.get("balance_strategy", "min_size")
+    use_modal = getattr(config, "use_modal", False)
+    modal_gpu = getattr(config, "modal_gpu", None)
 
     # --- Train safety probe ---
     logger.info("Loading training data and fitting safety probe...")
-    train_dataset = load_dataset(Path(config.train_dataset_path), activation_config)
-    safety_probe = SequenceProbe(reduction_strategy=config.reduction_strategy)
+    train_dataset = load_dataset(Path(config.train_dataset_path), activation_config=None)
+    reduction = config.reduction_strategy
+    train_acts = compute_or_fetch_activations(
+        model_name=config.activations_model_name,
+        layer=config.activations_layer,
+        reduction=reduction,
+        dataset=train_dataset,
+        dataset_path=config.train_dataset_path,
+        local=not use_modal,
+        gpu=modal_gpu,
+    )
+    train_dataset = train_dataset.assign(**{f"activations_{reduction}": train_acts})
+    safety_probe = SequenceProbe(reduction_strategy=reduction)
     safety_probe.fit(train_dataset)
-    del train_dataset
+    del train_dataset, train_acts
 
     # --- Load dev split (DV probe training) ---
     dev_probe_scores, dev_baseline_scores, dev_labels, X_dev, dev_groups = _load_split(
@@ -570,6 +576,8 @@ def main():
         balance,
         seed,
         safety_probe,
+        local=not use_modal,
+        gpu=modal_gpu,
     )
     v_dev = compute_delegation_value(dev_probe_scores, dev_baseline_scores, dev_labels)
     logger.info(f"Dev delegation value: v=1 rate={v_dev.mean():.1%} (n={len(v_dev)})")
@@ -588,6 +596,8 @@ def main():
         balance,
         seed,
         safety_probe,
+        local=not use_modal,
+        gpu=modal_gpu,
     )
     v = compute_delegation_value(probe_scores, baseline_scores, labels)
     logger.info(f"Test delegation value: v=1 rate={v.mean():.1%} (n={len(v)})")

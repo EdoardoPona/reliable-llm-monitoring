@@ -29,6 +29,15 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["reliable_monitoring"]
 
+# On macOS we don't need GPU-only packages that mup pulls in.
+# override-dependencies replaces the transitive requirement entirely,
+# so the environment marker makes them linux-only.
+[tool.uv]
+override-dependencies = [
+    "bitsandbytes>=0.45.0 ; sys_platform == 'linux'",
+    "deepspeed>=0.10.0 ; sys_platform == 'linux'",
+]
+
 [tool.uv.sources.models-under-pressure]
 git = "ssh://git@github.com/EdoardoPona/models-under-pressure.git"
 

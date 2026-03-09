@@ -30,15 +30,24 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from activation_registry import compute_or_fetch_activations
 from baseline_registry import compute_or_fetch_baseline
 from config import load_config
-from delegation_value_probe import compute_delegation_value, fetch_per_source_baselines, train_dv_probe
+from delegation_value_probe import (
+    compute_delegation_value,
+    train_dv_probe,
+)
 from dotenv import load_dotenv
-from mixed_dataset import has_mixed_config, load_mixed_dataset_with_baselines
+from mixed_dataset import (
+    fetch_per_source_activations,
+    fetch_per_source_baselines,
+    has_mixed_config,
+    load_mixed_dataset_with_baselines,
+)
 from sklearn.metrics import accuracy_score, roc_auc_score
 
 from reliable_monitoring.cascade import CascadePredictionResults, offline_batch_cascade, run_offline_cascade
-from reliable_monitoring.dataset import ActivationConfig, load_dataset, reduce_activations
+from reliable_monitoring.dataset import ActivationConfig, load_dataset
 from reliable_monitoring.learn_then_test import fixed_sequence_testing
 from reliable_monitoring.probes import SequenceProbe
 from reliable_monitoring.risks import BudgetCostRisk
@@ -131,24 +140,45 @@ def _load_split(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
     """Load a data split, returning (probe_scores, baseline_scores, labels, activations, groups).
 
-    Handles both mixed-dataset and single-dataset configs.
+    Handles both mixed-dataset and single-dataset configs.  Uses the
+    activation and baseline caches to avoid recomputation.
     """
+    use_modal = getattr(config, "use_modal", False)
+    modal_gpu = getattr(config, "modal_gpu", None)
+    reduction = config.reduction_strategy
+    activation_field = f"activations_{reduction}"
+
     if has_mixed_config(config):
         mixed_cfg = config.mixed_datasets
         sources = mixed_cfg["sources"]
         balance = mixed_cfg.get("balance_strategy", "min_size")
 
         logger.info(f"Fetching cached baselines for {split}...")
-        per_source_bl = fetch_per_source_baselines(sources, split, config.baseline_model_name)
+        per_source_bl = fetch_per_source_baselines(
+            sources, split, config.baseline_model_name, local=not use_modal, gpu=modal_gpu
+        )
 
-        logger.info(f"Loading {split} datasets with activations...")
+        logger.info(f"Fetching cached activations for {split}...")
+        per_source_acts = fetch_per_source_activations(
+            sources,
+            split,
+            activation_config.model_name,
+            activation_config.layer,
+            reduction,
+            local=not use_modal,
+            gpu=modal_gpu,
+        )
+
+        logger.info(f"Loading {split} datasets with cached activations and baselines...")
         dataset, baseline_scores = load_mixed_dataset_with_baselines(
             sources,
             split,
             per_source_bl,
-            activation_config,
-            balance,
-            config.seed,
+            activation_config=None,
+            balance_strategy=balance,
+            seed=config.seed,
+            per_source_activations=per_source_acts,
+            activation_field_name=activation_field,
         )
         groups = np.array(dataset.other_fields["group"]) if "group" in dataset.other_fields else None
     else:
@@ -156,21 +186,33 @@ def _load_split(
         path_attr = f"{split}_dataset_path"
         path = Path(getattr(config, path_attr))
         logger.info(f"Loading {split} dataset from {path}...")
-        dataset = load_dataset(path, activation_config)
+        dataset = load_dataset(path, activation_config=None)
+
         baseline_scores = compute_or_fetch_baseline(
             model_name=config.baseline_model_name,
             dataset=dataset,
             dataset_path=str(path),
+            local=not use_modal,
+            gpu=modal_gpu,
         )
+
+        acts = compute_or_fetch_activations(
+            model_name=activation_config.model_name,
+            layer=activation_config.layer,
+            reduction=reduction,
+            dataset=dataset,
+            dataset_path=str(path),
+            local=not use_modal,
+            gpu=modal_gpu,
+        )
+        dataset = dataset.assign(**{activation_field: acts})
         groups = None
 
     logger.info(f"Computing safety probe scores on {split}...")
     probe_scores = safety_probe.predict(dataset)
     labels = dataset.labels_numpy()
 
-    logger.info(f"Extracting mean-pooled activations for {split}...")
-    reduced = reduce_activations(dataset, "mean")
-    X = reduced.other_fields["activations_mean"]
+    X = dataset.other_fields[activation_field]
     if isinstance(X, torch.Tensor):
         X = X.numpy()
     X = np.asarray(X)
@@ -418,11 +460,25 @@ def main():
     )
 
     # --- Train safety probe ---
+    use_modal = getattr(config, "use_modal", False)
+    modal_gpu = getattr(config, "modal_gpu", None)
+    reduction = config.reduction_strategy
+
     logger.info("Loading training data and fitting safety probe...")
-    train_dataset = load_dataset(Path(config.train_dataset_path), activation_config)
-    safety_probe = SequenceProbe(reduction_strategy=config.reduction_strategy)
+    train_dataset = load_dataset(Path(config.train_dataset_path), activation_config=None)
+    train_acts = compute_or_fetch_activations(
+        model_name=config.activations_model_name,
+        layer=config.activations_layer,
+        reduction=reduction,
+        dataset=train_dataset,
+        dataset_path=config.train_dataset_path,
+        local=not use_modal,
+        gpu=modal_gpu,
+    )
+    train_dataset = train_dataset.assign(**{f"activations_{reduction}": train_acts})
+    safety_probe = SequenceProbe(reduction_strategy=reduction)
     safety_probe.fit(train_dataset)
-    del train_dataset
+    del train_dataset, train_acts
 
     # --- Load dev split and train DV probe ---
     logger.info("Loading dev split for DV probe training...")
