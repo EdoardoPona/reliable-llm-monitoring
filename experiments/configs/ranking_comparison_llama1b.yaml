@@ -1,10 +1,12 @@
-# Ranking Comparison: Batched top-k cascade with different ranking signals
+# Ranking Comparison: Batched top-k cascade with VERY WEAK baseline (Llama-3.2-1B)
 #
-# Compares probe uncertainty vs DV probe vs oracle as ranking signals
-# in a batched top-k cascade setting across multiple batch sizes.
+# Same as ranking_comparison.yaml but with the smallest baseline model (1B).
+# The baseline is the same model as the activations source, so it should be
+# much weaker than Gemma-27B. Expected: clear performance degradation at high
+# budget for naive delegation strategies.
 #
 # Usage:
-#   uv run experiments/ranking_comparison.py --config configs/ranking_comparison.yaml
+#   uv run experiments/ranking_comparison.py --config configs/ranking_comparison_llama1b.yaml
 
 # --- Batch sizes to compare ---
 batch_sizes: [32, 64, 128]
@@ -27,14 +29,16 @@ pareto_split_proportion: 0.3
 # Risk to optimise (accuracy_error or roc_auc_error)
 opt_risk: accuracy_error
 
-# --- Model settings (same as dv_ltt_cascade) ---
+# --- Model settings ---
 activations_model_name: meta-llama/Llama-3.2-1B-Instruct
 activations_layer: 11
-baseline_model_name: google/gemma-3-27b-it
+baseline_model_name: meta-llama/Llama-3.2-1B-Instruct
 reduction_strategy: mean
 
 # When true, dispatch baseline LLM inference to Modal cloud GPUs on cache miss
 use_modal: true
+# Llama-1B OOMs on T4 and A10G for baseline inference (long sequences), use A100
+modal_gpu: "A100-80GB"
 
 seed: 42
 
