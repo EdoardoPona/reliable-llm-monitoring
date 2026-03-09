@@ -1,0 +1,33 @@
+# Delegation value probe: CONTINUOUS target variant
+#
+# Same as delegation_value_probe.yaml but uses continuous DV target:
+#   v(x) = P_baseline(y|x) - P_probe(y|x)
+# instead of binary v(x) = 1[probe wrong AND baseline correct].
+#
+# The DV probe is trained as a Ridge regressor on this continuous target.
+
+dv_target: continuous
+
+activations_model_name: meta-llama/Llama-3.2-1B-Instruct
+activations_layer: 11
+baseline_model_name: google/gemma-3-27b-it
+reduction_strategy: mean
+seed: 42
+
+train_dataset_path: ${DATA_DIR}/training/prompts_4x/train.jsonl
+
+mixed_datasets:
+  balance_strategy: 500
+  sources:
+    - group: anthropic
+      dev: ${DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl
+      test: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
+    - group: mt
+      dev: ${DATA_DIR}/evals/dev/mt_balanced_apr_30.jsonl
+      test: ${DATA_DIR}/evals/test/mt_test_balanced_apr_30.jsonl
+    - group: mts
+      dev: ${DATA_DIR}/evals/dev/mts_balanced_apr_22.jsonl
+      test: ${DATA_DIR}/evals/test/mts_test_balanced_apr_22.jsonl
+    - group: toolace
+      dev: ${DATA_DIR}/evals/dev/toolace_balanced_apr_22.jsonl
+      test: ${DATA_DIR}/evals/test/toolace_test_balanced_apr_22.jsonl

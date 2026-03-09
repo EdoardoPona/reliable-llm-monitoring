@@ -30,7 +30,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from activation_registry import compute_or_fetch_activations
 from config import load_config
-from delegation_value_probe import compute_delegation_value, train_dv_probe
+from delegation_value_probe import compute_delegation_value, predict_dv_scores, train_dv_probe
 from dotenv import load_dotenv
 from dv_ltt_cascade import (
     _load_split,
@@ -473,7 +473,7 @@ def main():
     logger.info(f"Test delegation value: v=1 rate={v_test.mean():.1%} (n={len(v_test)})")
 
     # DV scores (out-of-sample)
-    dv_scores_full = dv_clf.predict_proba(X_test)[:, 1]
+    dv_scores_full = predict_dv_scores(dv_clf, X_test)
     del X_test
 
     dv_auc = roc_auc_score(v_test, dv_scores_full)

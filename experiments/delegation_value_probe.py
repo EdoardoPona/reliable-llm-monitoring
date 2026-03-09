@@ -28,7 +28,7 @@ from activation_registry import compute_or_fetch_activations
 from config import load_config
 from dotenv import load_dotenv
 from mixed_dataset import fetch_per_source_activations, fetch_per_source_baselines, load_mixed_dataset_with_baselines
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
 
 from reliable_monitoring.dataset import ActivationConfig, load_dataset
@@ -58,6 +58,21 @@ def compute_delegation_value(
     probe_correct = (probe_scores >= 0.5).astype(int) == labels
     baseline_correct = (baseline_scores >= 0.5).astype(int) == labels
     return (~probe_correct & baseline_correct).astype(int)
+
+
+def compute_continuous_delegation_value(
+    probe_scores: np.ndarray,
+    baseline_scores: np.ndarray,
+    labels: np.ndarray,
+) -> np.ndarray:
+    """Continuous delegation value: improvement in probability of the correct class.
+
+    v(x) = P_baseline(y|x) - P_probe(y|x) = (2y - 1)(b(x) - p(x)).
+
+    Positive when delegation improves the score toward the correct label.
+    """
+    sign = 2 * labels - 1  # +1 for y=1, -1 for y=0
+    return sign * (baseline_scores - probe_scores)
 
 
 def cascade_scores_at_budget(
@@ -118,13 +133,47 @@ def cascade_at_dv_threshold(
 def train_dv_probe(
     X_train: np.ndarray,
     v_train: np.ndarray,
-) -> LogisticRegression:
-    """Train delegation value probe on dev data."""
-    clf = LogisticRegression(max_iter=1000)
-    clf.fit(X_train, v_train)
-    train_auc = roc_auc_score(v_train, clf.predict_proba(X_train)[:, 1])
-    logger.info(f"  Train AUC: {train_auc:.4f}")
+    mode: str = "binary",
+) -> LogisticRegression | Ridge:
+    """Train delegation value probe on dev data.
+
+    Args:
+        mode: "binary" for LogisticRegression on binary v,
+              "continuous" for Ridge regression on continuous v.
+    """
+    if mode == "binary":
+        clf = LogisticRegression(max_iter=1000)
+        clf.fit(X_train, v_train)
+        train_scores = clf.predict_proba(X_train)[:, 1]
+        train_auc = roc_auc_score(v_train, train_scores)
+        logger.info(f"  Train AUC: {train_auc:.4f}")
+    elif mode == "continuous":
+        clf = Ridge(alpha=1.0)
+        clf.fit(X_train, v_train)
+        train_scores = clf.predict(X_train)
+        # Evaluate against binarized target for comparability
+        v_binary = (v_train > 0).astype(int)
+        if len(np.unique(v_binary)) > 1:
+            train_auc = roc_auc_score(v_binary, train_scores)
+            logger.info(f"  Train AUC (vs v>0): {train_auc:.4f}")
+        from scipy.stats import spearmanr
+
+        rho, _ = spearmanr(v_train, train_scores)
+        logger.info(f"  Train Spearman rho: {rho:.4f}")
+    else:
+        raise ValueError(f"Unknown DV target mode: {mode}")
     return clf
+
+
+def predict_dv_scores(
+    clf: LogisticRegression | Ridge,
+    X: np.ndarray,
+    mode: str = "binary",
+) -> np.ndarray:
+    """Get delegation scores from a trained DV probe."""
+    if mode == "binary" and isinstance(clf, LogisticRegression):
+        return clf.predict_proba(X)[:, 1]
+    return clf.predict(X)
 
 
 # ---------------------------------------------------------------------------
@@ -276,11 +325,8 @@ def plot_cascade_budget_sweep(
             accs.append(c)
         strategy_metrics[name] = (aucs, accs)
 
-    # Oracle: capped at v=1 rate
-    oracle_max_budget = float(v.mean())
-    oracle_budgets = budgets[budgets <= oracle_max_budget]
     oracle_aucs, oracle_accs = [], []
-    for b in oracle_budgets:
+    for b in budgets:
         a, c = cascade_metrics_at_budget(probe_scores, baseline_scores, labels, v, b)
         oracle_aucs.append(a)
         oracle_accs.append(c)
@@ -308,7 +354,7 @@ def plot_cascade_budget_sweep(
             vals = strategy_metrics[name][metric_idx]
             ax.plot(budgets, vals, label=name, marker="o", markersize=3)
 
-        ax.plot(oracle_budgets, oracle_vals, label="Oracle", marker="o", markersize=3, linestyle="--", alpha=0.6)
+        ax.plot(budgets, oracle_vals, label="Oracle", marker="o", markersize=3, linestyle="--", alpha=0.6)
 
         # DV threshold star
         ax.plot(dt_budget, dt_val, "*", color="C1", markersize=15, zorder=5)
@@ -375,11 +421,8 @@ def plot_per_group_budget_sweep(
                 accs.append(c)
             strategy_metrics[name] = (aucs, accs)
 
-        # Oracle: capped at v=1 rate
-        g_oracle_max = float(g_v.mean())
-        g_oracle_budgets = budgets[budgets <= g_oracle_max]
         oracle_aucs, oracle_accs = [], []
-        for b in g_oracle_budgets:
+        for b in budgets:
             try:
                 a, c = cascade_metrics_at_budget(ps, bs, lb, g_v, b)
             except ValueError:
@@ -403,7 +446,7 @@ def plot_per_group_budget_sweep(
             for name in strategy_metrics:
                 ax.plot(budgets, strategy_metrics[name][metric_idx], label=name)
 
-            ax.plot(g_oracle_budgets, oracle_vals_list[row], label="Oracle", linestyle="--", alpha=0.6)
+            ax.plot(budgets, oracle_vals_list[row], label="Oracle", linestyle="--", alpha=0.6)
 
             if g_budget is not None and dt_vals[row] is not None:
                 ax.plot(g_budget, dt_vals[row], "*", color="C1", markersize=12, zorder=5)
@@ -579,12 +622,23 @@ def main():
         local=not use_modal,
         gpu=modal_gpu,
     )
-    v_dev = compute_delegation_value(dev_probe_scores, dev_baseline_scores, dev_labels)
-    logger.info(f"Dev delegation value: v=1 rate={v_dev.mean():.1%} (n={len(v_dev)})")
+    dv_target = getattr(config, "dv_target", "binary")
+    logger.info(f"DV target mode: {dv_target}")
+
+    v_dev_binary = compute_delegation_value(dev_probe_scores, dev_baseline_scores, dev_labels)
+    if dv_target == "continuous":
+        v_dev = compute_continuous_delegation_value(dev_probe_scores, dev_baseline_scores, dev_labels)
+        logger.info(
+            f"Dev delegation value: v>0 rate={float((v_dev > 0).mean()):.1%}, "
+            f"mean={float(v_dev.mean()):.3f}, std={float(v_dev.std()):.3f} (n={len(v_dev)})"
+        )
+    else:
+        v_dev = v_dev_binary.astype(float)
+        logger.info(f"Dev delegation value: v=1 rate={v_dev.mean():.1%} (n={len(v_dev)})")
 
     # --- Train DV probe on dev ---
     logger.info("Training DV probe on dev split...")
-    dv_clf = train_dv_probe(X_dev, v_dev)
+    dv_clf = train_dv_probe(X_dev, v_dev, mode=dv_target)
     del X_dev  # free memory
 
     # --- Load test split (evaluation) ---
@@ -599,29 +653,46 @@ def main():
         local=not use_modal,
         gpu=modal_gpu,
     )
-    v = compute_delegation_value(probe_scores, baseline_scores, labels)
-    logger.info(f"Test delegation value: v=1 rate={v.mean():.1%} (n={len(v)})")
+    v_binary = compute_delegation_value(probe_scores, baseline_scores, labels)
+    if dv_target == "continuous":
+        v = compute_continuous_delegation_value(probe_scores, baseline_scores, labels)
+        logger.info(
+            f"Test delegation value: v>0 rate={float((v > 0).mean()):.1%}, "
+            f"mean={float(v.mean()):.3f}, std={float(v.std()):.3f} (n={len(v)})"
+        )
+    else:
+        v = v_binary.astype(float)
+        logger.info(f"Test delegation value: v=1 rate={v.mean():.1%} (n={len(v)})")
     if groups is not None:
         for g in np.unique(groups):
             mask = groups == g
-            logger.info(f"  {g}: v=1 rate={v[mask].mean():.1%}")
+            if dv_target == "continuous":
+                logger.info(f"  {g}: v>0 rate={float((v[mask] > 0).mean()):.1%}, mean={float(v[mask].mean()):.3f}")
+            else:
+                logger.info(f"  {g}: v=1 rate={v[mask].mean():.1%}")
 
     # --- Predict DV scores on test ---
-    dv_scores = dv_clf.predict_proba(X_test)[:, 1]
+    dv_scores = predict_dv_scores(dv_clf, X_test, mode=dv_target)
     del X_test
 
-    dv_auc = roc_auc_score(v, dv_scores)
-    dv_acc = accuracy_score(v, (dv_scores >= 0.5).astype(int))
+    # Evaluate DV probe quality against binarized target (for comparability)
+    dv_auc = roc_auc_score(v_binary, dv_scores)
+    dv_acc = accuracy_score(v_binary, (dv_scores >= 0.5 if dv_target == "binary" else dv_scores > 0).astype(int))
     logger.info(f"DV probe (test): AUC={dv_auc:.4f}, Acc={dv_acc:.4f}")
 
     # --- DV threshold operating point ---
-    dt_budget, dt_auc, dt_acc = cascade_at_dv_threshold(probe_scores, baseline_scores, labels, dv_scores)
-    logger.info(f"DV threshold (>= 0.5): budget={dt_budget:.1%}, cascade AUC={dt_auc:.4f}, accuracy={dt_acc:.4f}")
+    dv_threshold = 0.0 if dv_target == "continuous" else 0.5
+    dt_budget, dt_auc, dt_acc = cascade_at_dv_threshold(
+        probe_scores, baseline_scores, labels, dv_scores, threshold=dv_threshold
+    )
+    logger.info(
+        f"DV threshold (>= {dv_threshold}): budget={dt_budget:.1%}, cascade AUC={dt_auc:.4f}, accuracy={dt_acc:.4f}"
+    )
     if groups is not None:
         for g in np.unique(groups):
             mask = groups == g
             g_budget, g_auc, g_acc = cascade_at_dv_threshold(
-                probe_scores[mask], baseline_scores[mask], labels[mask], dv_scores[mask]
+                probe_scores[mask], baseline_scores[mask], labels[mask], dv_scores[mask], threshold=dv_threshold
             )
             logger.info(f"  {g}: budget={g_budget:.1%}, AUC={g_auc:.4f}, accuracy={g_acc:.4f}")
 
@@ -644,8 +715,10 @@ def main():
     # --- Generate figures ---
     logger.info("Generating figures...")
     figs: dict[str, plt.Figure | None] = {}
-    figs["delegation_value"] = plot_delegation_value_rates(v, groups, probe_scores, baseline_scores, labels, output_dir)
-    figs["dv_roc"] = plot_dv_probe_roc(v, dv_scores, groups, output_dir)
+    figs["delegation_value"] = plot_delegation_value_rates(
+        v_binary, groups, probe_scores, baseline_scores, labels, output_dir
+    )
+    figs["dv_roc"] = plot_dv_probe_roc(v_binary, dv_scores, groups, output_dir)
     figs["budget_sweep"] = plot_cascade_budget_sweep(
         probe_scores, baseline_scores, labels, dv_scores, v, (dt_budget, dt_auc, dt_acc), output_dir
     )
