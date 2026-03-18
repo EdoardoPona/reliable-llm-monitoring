@@ -14,7 +14,6 @@ Compares delegation strategies for the probe-baseline safety cascade:
 Outputs:
   - ranking_comparison_B{batch_size}.pdf  (per batch size)
   - ranking_comparison_grid.pdf           (all batch sizes side by side)
-  - budget_control.pdf                    (LTT budget guarantee validation)
   - adaptivity.pdf                        (per-batch/group delegation rates)
 
 Usage::
@@ -43,7 +42,6 @@ from dotenv import load_dotenv
 from dv_ltt_cascade import (
     _load_split,
     cascade_metrics,
-    ltt_budget_threshold,
     split_calib_eval,
     threshold_cascade,
 )
@@ -114,9 +112,22 @@ COLORS = {
     "DV probe (top-k)": "C0",
     "Oracle (top-k)": "C2",
     "DV threshold (LTT)": "C3",
+    "Uncertainty threshold (LTT)": "C4",
 }
-MARKERS = {"Probe uncertainty (top-k)": "s", "DV probe (top-k)": "D", "Oracle (top-k)": "^", "DV threshold (LTT)": "D"}
-STYLES = {"Probe uncertainty (top-k)": "-", "DV probe (top-k)": "-", "Oracle (top-k)": "--", "DV threshold (LTT)": "-"}
+MARKERS = {
+    "Probe uncertainty (top-k)": "s",
+    "DV probe (top-k)": "D",
+    "Oracle (top-k)": "^",
+    "DV threshold (LTT)": "D",
+    "Uncertainty threshold (LTT)": "s",
+}
+STYLES = {
+    "Probe uncertainty (top-k)": "-",
+    "DV probe (top-k)": "-",
+    "Oracle (top-k)": "--",
+    "DV threshold (LTT)": "-",
+    "Uncertainty threshold (LTT)": "-",
+}
 
 
 def _plot_single_batch_size(
@@ -130,14 +141,14 @@ def _plot_single_batch_size(
     baseline_acc: float,
     batch_size: int,
     show_legend: bool = True,
-    ltt_results: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+    ltt_results: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] | None = None,
 ) -> None:
     """Plot AUC and accuracy vs budget for one batch size on given axes.
 
     Args:
-        ltt_results: Optional (alpha_budgets, ltt_aucs, ltt_accs) for the
-            LTT-calibrated DV threshold cascade.  Plotted as an additional
-            line; independent of batch size.
+        ltt_results: Optional dict mapping line name to
+            (alpha_budgets, ltt_aucs, ltt_accs) for LTT-calibrated threshold
+            cascades.  Plotted as additional lines; independent of batch size.
     """
     for name, (aucs, accs) in signal_results.items():
         me = max(1, len(budget_fractions) // 10)
@@ -162,31 +173,30 @@ def _plot_single_batch_size(
             markevery=me,
         )
 
-    # LTT calibrated line (global threshold, not batched)
+    # LTT calibrated lines (global threshold, not batched)
     if ltt_results is not None:
-        ltt_name = "DV threshold (LTT)"
-        alphas, ltt_aucs, ltt_accs = ltt_results
-        me = max(1, len(alphas) // 10)
-        ax_auc.plot(
-            alphas,
-            ltt_aucs,
-            label=ltt_name,
-            color=COLORS[ltt_name],
-            marker=MARKERS[ltt_name],
-            linestyle=STYLES[ltt_name],
-            markersize=4,
-            markevery=me,
-        )
-        ax_acc.plot(
-            alphas,
-            ltt_accs,
-            label=ltt_name,
-            color=COLORS[ltt_name],
-            marker=MARKERS[ltt_name],
-            linestyle=STYLES[ltt_name],
-            markersize=4,
-            markevery=me,
-        )
+        for ltt_name, (alphas, ltt_aucs, ltt_accs) in ltt_results.items():
+            me = max(1, len(alphas) // 10)
+            ax_auc.plot(
+                alphas,
+                ltt_aucs,
+                label=ltt_name,
+                color=COLORS[ltt_name],
+                marker=MARKERS[ltt_name],
+                linestyle=STYLES[ltt_name],
+                markersize=4,
+                markevery=me,
+            )
+            ax_acc.plot(
+                alphas,
+                ltt_accs,
+                label=ltt_name,
+                color=COLORS[ltt_name],
+                marker=MARKERS[ltt_name],
+                linestyle=STYLES[ltt_name],
+                markersize=4,
+                markevery=me,
+            )
 
     for ax, ref_probe, ref_base, ylabel in [
         (ax_auc, probe_auc, baseline_auc, "Cascade ROC AUC"),
@@ -211,7 +221,7 @@ def plot_single_batch_size(
     baseline_acc: float,
     batch_size: int,
     output_dir: Path,
-    ltt_results: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+    ltt_results: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] | None = None,
     file_prefix: str = "",
 ) -> plt.Figure:
     """Main-paper figure: 1x2 (AUC, accuracy) for a single batch size."""
@@ -241,7 +251,7 @@ def plot_grid(
     baseline_auc: float,
     baseline_acc: float,
     output_dir: Path,
-    ltt_results: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+    ltt_results: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] | None = None,
     file_prefix: str = "",
 ) -> plt.Figure:
     """Appendix figure: 2-row x N-col grid (rows: AUC/accuracy, cols: batch sizes)."""
@@ -271,43 +281,6 @@ def plot_grid(
 
     fig.tight_layout()
     fig.savefig(output_dir / f"{file_prefix}ranking_comparison_grid.pdf", bbox_inches="tight")
-    return fig
-
-
-def plot_budget_control(
-    ltt_budget_only: list[dict] | None,
-    ltt_pareto: list[dict] | None,
-    output_dir: Path,
-    file_prefix: str = "",
-) -> plt.Figure:
-    """Budget control: target vs realized delegation rate for LTT variants."""
-    fig, ax = plt.subplots(figsize=(8, 4))
-
-    all_alphas = []
-    if ltt_budget_only:
-        alphas = np.array([r["alpha"] for r in ltt_budget_only])
-        realized = np.array([r["realized_budget"] for r in ltt_budget_only])
-        ax.plot(alphas, realized, "o-", label="DV threshold", color="C0")
-        all_alphas.extend(alphas)
-
-    if ltt_pareto:
-        alphas = np.array([r["alpha"] for r in ltt_pareto])
-        realized = np.array([r["realized_budget"] for r in ltt_pareto])
-        ax.plot(alphas, realized, "^-", label="DV threshold + Pareto", color="C2")
-        all_alphas.extend(alphas)
-
-    if all_alphas:
-        a_range = np.array(sorted(set(all_alphas)))
-        ax.plot(a_range, a_range, "k--", alpha=0.4, label=r"$\alpha_{\mathrm{budget}}$ = realized")
-        ax.fill_between(a_range, 0, a_range, alpha=0.08, color="green", label="Valid region")
-
-    ax.set_ylabel("Delegation rate")
-    ax.set_xlabel(r"Budget constraint $\alpha_{\mathrm{budget}}$")
-    ax.set_title("Budget control")
-    ax.legend(fontsize=8)
-    ax.grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(output_dir / f"{file_prefix}budget_control.pdf", bbox_inches="tight")
     return fig
 
 
@@ -597,30 +570,35 @@ def main():
             budget_risk=BudgetCostRisk,
             merge_strategy=merge_strategy,
         )
-        logger.info(f"Pareto frontier: {len(pareto_ltt.taus)}/{len(tau_grid)} thresholds retained")
+        logger.info(f"Pareto frontier (DV): {len(pareto_ltt.taus)}/{len(tau_grid)} thresholds retained")
+
+        # Build Pareto LTT for uncertainty delegation signal
+        calib_uncertainty = np.minimum(calib_ps, 1 - calib_ps)
+        ht_unc = calib_uncertainty[ht_idx]
+        opt_unc = calib_uncertainty[opt_idx]
+        unc_tau_min = float(np.min(calib_uncertainty)) - 0.01
+        unc_tau_max = float(np.max(calib_uncertainty)) + 0.01
+        unc_tau_grid = np.linspace(unc_tau_min, unc_tau_max, tau_steps)
+        pareto_ltt_unc = build_pareto_ltt(
+            ht_delegation_scores=ht_unc,
+            opt_probe_scores=opt_ps,
+            opt_baseline_scores=opt_bs,
+            opt_labels=opt_labels,
+            opt_delegation_scores=opt_unc,
+            tau_grid=unc_tau_grid,
+            opt_risk=OptRisk,
+            budget_risk=BudgetCostRisk,
+            merge_strategy=merge_strategy,
+        )
+        logger.info(
+            f"Pareto frontier (uncertainty): {len(pareto_ltt_unc.taus)}/{len(unc_tau_grid)} thresholds retained"
+        )
     else:
         ht_dv = calib_dv
         pareto_ltt = None
+        pareto_ltt_unc = None
 
     logger.info(f"\n--- LTT threshold sweep ({len(alpha_budgets)} alpha levels, delta={delta}) ---")
-
-    # Run budget-only LTT sweep (always, for budget control figure)
-    ltt_budget_only_results: list[dict] = []
-    for alpha_b in alpha_budgets:
-        tau = ltt_budget_threshold(calib_dv, alpha_b, delta, tau_grid)
-        if tau is None:
-            continue
-        result = threshold_cascade(eval_ps, eval_bs, eval_dv, tau, merge_strategy=merge_strategy)
-        met = cascade_metrics(result, eval_labels)
-        ltt_budget_only_results.append(
-            {
-                "alpha": float(alpha_b),
-                "tau": tau,
-                "realized_budget": float(result.used_baseline.mean()),
-                "auc": met["auc"],
-                "accuracy": met["accuracy"],
-            }
-        )
 
     # Run Pareto LTT sweep (if enabled)
     ltt_pareto_results: list[dict] = []
@@ -641,17 +619,44 @@ def main():
                 }
             )
 
-    # Use Pareto results for the ranking comparison plots (falls back to budget-only)
-    ltt_for_plots = ltt_pareto_results if ltt_pareto_results else ltt_budget_only_results
-    ltt_results: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
-    if ltt_for_plots:
-        ltt_results = (
-            np.array([r["alpha"] for r in ltt_for_plots]),
-            np.array([r["auc"] for r in ltt_for_plots]),
-            np.array([r["accuracy"] for r in ltt_for_plots]),
-        )
+    # Run uncertainty Pareto LTT sweep (if enabled)
+    ltt_unc_pareto_results: list[dict] = []
+    if pareto_ltt_unc is not None:
+        for alpha_b in alpha_budgets:
+            tau = pareto_ltt_unc.select_threshold(alpha_b, delta)
+            if tau is None:
+                continue
+            result = threshold_cascade(eval_ps, eval_bs, uncertainty, tau, merge_strategy=merge_strategy)
+            met = cascade_metrics(result, eval_labels)
+            ltt_unc_pareto_results.append(
+                {
+                    "alpha": float(alpha_b),
+                    "tau": tau,
+                    "realized_budget": float(result.used_baseline.mean()),
+                    "auc": met["auc"],
+                    "accuracy": met["accuracy"],
+                }
+            )
 
-    for r in ltt_for_plots:
+    # Assemble LTT results for plots
+    ltt_results: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] | None = None
+    ltt_lines: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    if ltt_pareto_results:
+        ltt_lines["DV threshold (LTT)"] = (
+            np.array([r["alpha"] for r in ltt_pareto_results]),
+            np.array([r["auc"] for r in ltt_pareto_results]),
+            np.array([r["accuracy"] for r in ltt_pareto_results]),
+        )
+    if ltt_unc_pareto_results:
+        ltt_lines["Uncertainty threshold (LTT)"] = (
+            np.array([r["alpha"] for r in ltt_unc_pareto_results]),
+            np.array([r["auc"] for r in ltt_unc_pareto_results]),
+            np.array([r["accuracy"] for r in ltt_unc_pareto_results]),
+        )
+    if ltt_lines:
+        ltt_results = ltt_lines
+
+    for r in ltt_pareto_results:
         logger.info(
             f"  alpha={r['alpha']:.2f}: tau={r['tau']:.4f}, realized={r['realized_budget']:.1%}, "
             f"AUC={r['auc']:.4f}, Acc={r['accuracy']:.4f}"
@@ -726,16 +731,8 @@ def main():
     )
     figs["grid"] = fig_grid
 
-    # Budget control plot (LTT budget guarantee validation)
-    figs["budget_control"] = plot_budget_control(
-        ltt_budget_only_results or None,
-        ltt_pareto_results or None,
-        output_dir,
-        file_prefix=file_prefix,
-    )
-
     # Adaptivity plot at a representative budget level
-    representative = ltt_for_plots[len(ltt_for_plots) // 2] if ltt_for_plots else None
+    representative = ltt_pareto_results[len(ltt_pareto_results) // 2] if ltt_pareto_results else None
     if representative is not None:
         figs["adaptivity"] = plot_adaptivity(
             eval_ps,
@@ -775,9 +772,9 @@ def main():
             {k: float(v) if isinstance(v, (float, np.floating)) else v for k, v in r.items()}
             for r in ltt_pareto_results
         ],
-        "ltt_budget_only": [
+        "ltt_unc_pareto": [
             {k: float(v) if isinstance(v, (float, np.floating)) else v for k, v in r.items()}
-            for r in ltt_budget_only_results
+            for r in ltt_unc_pareto_results
         ],
     }
     for bs in batch_sizes:
