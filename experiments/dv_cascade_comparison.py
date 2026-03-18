@@ -51,7 +51,7 @@ from sklearn.metrics import accuracy_score, roc_auc_score
 
 from reliable_monitoring.cascade import offline_batch_cascade
 from reliable_monitoring.dataset import ActivationConfig, load_dataset
-from reliable_monitoring.learn_then_test import build_pareto_ltt
+from reliable_monitoring.learn_then_test import ParetoLTTResult, build_pareto_ltt
 from reliable_monitoring.probes import SequenceProbe
 from reliable_monitoring.risks import RISK_RGISTRY, BudgetCostRisk
 
@@ -101,6 +101,40 @@ def batched_topk_sweep(
         accs[i] = accuracy_score(labels, (result.final_scores >= 0.5).astype(int))
 
     return aucs, accs
+
+
+def pareto_ltt_sweep(
+    pareto_ltt: ParetoLTTResult,
+    alpha_budgets: np.ndarray,
+    delta: float,
+    eval_ps: np.ndarray,
+    eval_bs: np.ndarray,
+    eval_labels: np.ndarray,
+    eval_delegation_scores: np.ndarray,
+    merge_strategy: str = "replace",
+) -> list[dict]:
+    """Sweep budget levels for a Pareto-calibrated LTT threshold cascade.
+
+    Returns a list of per-alpha result dicts with keys:
+    alpha, tau, realized_budget, auc, accuracy.
+    """
+    results: list[dict] = []
+    for alpha_b in alpha_budgets:
+        tau = pareto_ltt.select_threshold(alpha_b, delta)
+        if tau is None:
+            continue
+        result = threshold_cascade(eval_ps, eval_bs, eval_delegation_scores, tau, merge_strategy=merge_strategy)
+        met = cascade_metrics(result, eval_labels)
+        results.append(
+            {
+                "alpha": float(alpha_b),
+                "tau": tau,
+                "realized_budget": float(result.used_baseline.mean()),
+                "auc": met["auc"],
+                "accuracy": met["accuracy"],
+            }
+        )
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -528,13 +562,13 @@ def main():
     guarantee_probability = getattr(config, "guarantee_probability", 0.9)
     delta = 1.0 - guarantee_probability
     tau_steps = getattr(config, "tau_steps", 30)
-    # For continuous DV scores, adapt tau grid to actual score range
+    # Tau grids for each delegation signal
     if dv_target == "continuous":
-        tau_min = float(np.min(dv_scores_full)) - 0.01
-        tau_max = float(np.max(dv_scores_full)) + 0.01
-        tau_grid = np.linspace(tau_min, tau_max, tau_steps)
+        dv_tau_min = float(np.min(dv_scores_full)) - 0.01
+        dv_tau_max = float(np.max(dv_scores_full)) + 0.01
+        dv_tau_grid = np.linspace(dv_tau_min, dv_tau_max, tau_steps)
     else:
-        tau_grid = np.linspace(0.0, 1.0, tau_steps)
+        dv_tau_grid = np.linspace(0.0, 1.0, tau_steps)
     n_alpha_steps = getattr(config, "n_alpha_steps", 20)
     alpha_budgets = np.linspace(0.05, 0.95, n_alpha_steps)
 
@@ -559,18 +593,19 @@ def main():
         )
         logger.info(f"Pareto testing: ht={len(ht_dv)}, opt={len(opt_dv)}, opt_risk={opt_risk_name}")
 
-        pareto_ltt = build_pareto_ltt(
+        # Build Pareto LTT for DV delegation signal
+        dv_pareto_ltt = build_pareto_ltt(
             ht_delegation_scores=ht_dv,
             opt_probe_scores=opt_ps,
             opt_baseline_scores=opt_bs,
             opt_labels=opt_labels,
             opt_delegation_scores=opt_dv,
-            tau_grid=tau_grid,
+            tau_grid=dv_tau_grid,
             opt_risk=OptRisk,
             budget_risk=BudgetCostRisk,
             merge_strategy=merge_strategy,
         )
-        logger.info(f"Pareto frontier (DV): {len(pareto_ltt.taus)}/{len(tau_grid)} thresholds retained")
+        logger.info(f"Pareto frontier (DV): {len(dv_pareto_ltt.taus)}/{len(dv_tau_grid)} thresholds retained")
 
         # Build Pareto LTT for uncertainty delegation signal
         calib_uncertainty = np.minimum(calib_ps, 1 - calib_ps)
@@ -579,7 +614,7 @@ def main():
         unc_tau_min = float(np.min(calib_uncertainty)) - 0.01
         unc_tau_max = float(np.max(calib_uncertainty)) + 0.01
         unc_tau_grid = np.linspace(unc_tau_min, unc_tau_max, tau_steps)
-        pareto_ltt_unc = build_pareto_ltt(
+        unc_pareto_ltt = build_pareto_ltt(
             ht_delegation_scores=ht_unc,
             opt_probe_scores=opt_ps,
             opt_baseline_scores=opt_bs,
@@ -591,76 +626,45 @@ def main():
             merge_strategy=merge_strategy,
         )
         logger.info(
-            f"Pareto frontier (uncertainty): {len(pareto_ltt_unc.taus)}/{len(unc_tau_grid)} thresholds retained"
+            f"Pareto frontier (uncertainty): {len(unc_pareto_ltt.taus)}/{len(unc_tau_grid)} thresholds retained"
         )
     else:
         ht_dv = calib_dv
-        pareto_ltt = None
-        pareto_ltt_unc = None
+        dv_pareto_ltt = None
+        unc_pareto_ltt = None
 
     logger.info(f"\n--- LTT threshold sweep ({len(alpha_budgets)} alpha levels, delta={delta}) ---")
 
-    # Run Pareto LTT sweep (if enabled)
-    ltt_pareto_results: list[dict] = []
-    if pareto_ltt is not None:
-        for alpha_b in alpha_budgets:
-            tau = pareto_ltt.select_threshold(alpha_b, delta)
-            if tau is None:
-                continue
-            result = threshold_cascade(eval_ps, eval_bs, eval_dv, tau, merge_strategy=merge_strategy)
-            met = cascade_metrics(result, eval_labels)
-            ltt_pareto_results.append(
-                {
-                    "alpha": float(alpha_b),
-                    "tau": tau,
-                    "realized_budget": float(result.used_baseline.mean()),
-                    "auc": met["auc"],
-                    "accuracy": met["accuracy"],
-                }
+    # Sweep each Pareto-calibrated LTT signal
+    ltt_sweep_configs: dict[str, tuple[ParetoLTTResult | None, np.ndarray]] = {
+        "DV threshold (LTT)": (dv_pareto_ltt, eval_dv),
+        "Uncertainty threshold (LTT)": (unc_pareto_ltt, uncertainty),
+    }
+    ltt_sweep_results: dict[str, list[dict]] = {}
+    for name, (pltt, deleg_scores) in ltt_sweep_configs.items():
+        if pltt is not None:
+            ltt_sweep_results[name] = pareto_ltt_sweep(
+                pltt, alpha_budgets, delta, eval_ps, eval_bs, eval_labels, deleg_scores, merge_strategy
             )
-
-    # Run uncertainty Pareto LTT sweep (if enabled)
-    ltt_unc_pareto_results: list[dict] = []
-    if pareto_ltt_unc is not None:
-        for alpha_b in alpha_budgets:
-            tau = pareto_ltt_unc.select_threshold(alpha_b, delta)
-            if tau is None:
-                continue
-            result = threshold_cascade(eval_ps, eval_bs, uncertainty, tau, merge_strategy=merge_strategy)
-            met = cascade_metrics(result, eval_labels)
-            ltt_unc_pareto_results.append(
-                {
-                    "alpha": float(alpha_b),
-                    "tau": tau,
-                    "realized_budget": float(result.used_baseline.mean()),
-                    "auc": met["auc"],
-                    "accuracy": met["accuracy"],
-                }
-            )
-
     # Assemble LTT results for plots
     ltt_results: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] | None = None
     ltt_lines: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
-    if ltt_pareto_results:
-        ltt_lines["DV threshold (LTT)"] = (
-            np.array([r["alpha"] for r in ltt_pareto_results]),
-            np.array([r["auc"] for r in ltt_pareto_results]),
-            np.array([r["accuracy"] for r in ltt_pareto_results]),
-        )
-    if ltt_unc_pareto_results:
-        ltt_lines["Uncertainty threshold (LTT)"] = (
-            np.array([r["alpha"] for r in ltt_unc_pareto_results]),
-            np.array([r["auc"] for r in ltt_unc_pareto_results]),
-            np.array([r["accuracy"] for r in ltt_unc_pareto_results]),
-        )
+    for name, rows in ltt_sweep_results.items():
+        if rows:
+            ltt_lines[name] = (
+                np.array([r["alpha"] for r in rows]),
+                np.array([r["auc"] for r in rows]),
+                np.array([r["accuracy"] for r in rows]),
+            )
     if ltt_lines:
         ltt_results = ltt_lines
 
-    for r in ltt_pareto_results:
-        logger.info(
-            f"  alpha={r['alpha']:.2f}: tau={r['tau']:.4f}, realized={r['realized_budget']:.1%}, "
-            f"AUC={r['auc']:.4f}, Acc={r['accuracy']:.4f}"
-        )
+    for name, rows in ltt_sweep_results.items():
+        for r in rows:
+            logger.info(
+                f"  [{name}] alpha={r['alpha']:.2f}: tau={r['tau']:.4f}, "
+                f"realized={r['realized_budget']:.1%}, AUC={r['auc']:.4f}, Acc={r['accuracy']:.4f}"
+            )
 
     # --- Run batched top-k sweep for each batch size (on eval split) ---
     batch_sizes = getattr(config, "batch_sizes", [32, 64, 128])
@@ -732,7 +736,8 @@ def main():
     figs["grid"] = fig_grid
 
     # Adaptivity plot at a representative budget level
-    representative = ltt_pareto_results[len(ltt_pareto_results) // 2] if ltt_pareto_results else None
+    dv_ltt_rows = ltt_sweep_results.get("DV threshold (LTT)", [])
+    representative = dv_ltt_rows[len(dv_ltt_rows) // 2] if dv_ltt_rows else None
     if representative is not None:
         figs["adaptivity"] = plot_adaptivity(
             eval_ps,
@@ -768,14 +773,10 @@ def main():
             "dv_probe_auc": float(dv_auc),
         },
         "topk": {},
-        "ltt_pareto": [
-            {k: float(v) if isinstance(v, (float, np.floating)) else v for k, v in r.items()}
-            for r in ltt_pareto_results
-        ],
-        "ltt_unc_pareto": [
-            {k: float(v) if isinstance(v, (float, np.floating)) else v for k, v in r.items()}
-            for r in ltt_unc_pareto_results
-        ],
+        "ltt": {
+            name: [{k: float(v) if isinstance(v, (float, np.floating)) else v for k, v in r.items()} for r in rows]
+            for name, rows in ltt_sweep_results.items()
+        },
     }
     for bs in batch_sizes:
         budget_fractions, signal_results = all_results[bs]
