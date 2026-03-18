@@ -133,6 +133,7 @@ def pareto_ltt_sweep(
     for alpha_b in alpha_budgets:
         tau = pareto_ltt.select_threshold(alpha_b, delta)
         if tau is None:
+            logger.warning(f"  No valid threshold at alpha={alpha_b:.3f} (delta={delta:.3f})")
             continue
         result = threshold_cascade(eval_ps, eval_bs, eval_delegation_scores, tau, merge_strategy=merge_strategy)
         met = cascade_metrics(result, eval_labels)
@@ -196,7 +197,6 @@ def _plot_single_batch_size(
             cascades.  Plotted as additional lines; independent of batch size.
     """
     for name, (aucs, accs) in signal_results.items():
-        me = max(1, len(budget_fractions) // 10)
         ax_auc.plot(
             budget_fractions,
             aucs,
@@ -204,8 +204,7 @@ def _plot_single_batch_size(
             color=COLORS[name],
             marker=MARKERS[name],
             linestyle=STYLES[name],
-            markersize=4,
-            markevery=me,
+            markersize=3,
         )
         ax_acc.plot(
             budget_fractions,
@@ -214,14 +213,12 @@ def _plot_single_batch_size(
             color=COLORS[name],
             marker=MARKERS[name],
             linestyle=STYLES[name],
-            markersize=4,
-            markevery=me,
+            markersize=3,
         )
 
     # LTT calibrated lines (global threshold, not batched)
     if ltt_results is not None:
         for ltt_name, (alphas, ltt_aucs, ltt_accs) in ltt_results.items():
-            me = max(1, len(alphas) // 10)
             ax_auc.plot(
                 alphas,
                 ltt_aucs,
@@ -229,8 +226,7 @@ def _plot_single_batch_size(
                 color=COLORS[ltt_name],
                 marker=MARKERS[ltt_name],
                 linestyle=STYLES[ltt_name],
-                markersize=4,
-                markevery=me,
+                markersize=3,
             )
             ax_acc.plot(
                 alphas,
@@ -239,8 +235,7 @@ def _plot_single_batch_size(
                 color=COLORS[ltt_name],
                 marker=MARKERS[ltt_name],
                 linestyle=STYLES[ltt_name],
-                markersize=4,
-                markevery=me,
+                markersize=3,
             )
 
     for ax, ref_probe, ref_base, ylabel in [
@@ -489,7 +484,7 @@ def run_ltt_calibration(
     delta = 1.0 - guarantee_probability
     tau_steps = getattr(config, "tau_steps", 30)
     n_alpha_steps = getattr(config, "n_alpha_steps", 20)
-    alpha_budgets = np.linspace(0.05, 0.95, n_alpha_steps)
+    alpha_budgets = np.linspace(0.05, 1, n_alpha_steps)
 
     pareto_testing = getattr(config, "pareto_testing", True)
     if not pareto_testing:
