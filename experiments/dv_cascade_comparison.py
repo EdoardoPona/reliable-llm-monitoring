@@ -23,14 +23,22 @@ Usage::
 """
 
 import argparse
+import json
 import logging
+import shutil
+from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 from activation_registry import compute_or_fetch_activations
 from config import load_config
-from delegation_value_probe import compute_delegation_value, predict_dv_scores, train_dv_probe
+from delegation_value_probe import (
+    compute_continuous_delegation_value,
+    compute_delegation_value,
+    predict_dv_scores,
+    train_dv_probe,
+)
 from dotenv import load_dotenv
 from dv_ltt_cascade import (
     _load_split,
@@ -39,6 +47,8 @@ from dv_ltt_cascade import (
     split_calib_eval,
     threshold_cascade,
 )
+from sklearn.linear_model._logistic import LogisticRegression
+from sklearn.linear_model._ridge import Ridge
 from sklearn.metrics import accuracy_score, roc_auc_score
 
 from reliable_monitoring.cascade import offline_batch_cascade
@@ -65,12 +75,13 @@ def batched_topk_sweep(
     ranking_scores: np.ndarray,
     batch_size: int,
     k_values: np.ndarray,
+    merge_strategy: str = "replace",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Sweep over k values and compute AUC and accuracy for each.
 
     Uses ``offline_batch_cascade`` with the ``topk`` selection strategy,
     which ranks by ``ranking_scores`` within each batch and delegates the
-    top-k to the baseline (replace strategy).
+    top-k to the baseline.
 
     Returns:
         (aucs, accs) arrays of shape (len(k_values),).
@@ -84,7 +95,7 @@ def batched_topk_sweep(
             baseline_scores,
             batch_size,
             selection_strategy="fixed_budget_amount",
-            merge_strategy="replace",
+            merge_strategy=merge_strategy,
             amount=int(k),
             ranking_scores=ranking_scores,
         )
@@ -310,16 +321,17 @@ def plot_adaptivity(
     alpha_budget: float,
     batch_size: int,
     output_dir: Path,
+    merge_strategy: str = "replace",
     file_prefix: str = "",
 ) -> plt.Figure:
     """Per-batch delegation rate histogram for DV threshold vs fixed-k."""
-    dv_result = threshold_cascade(probe_scores, baseline_scores, dv_scores, tau)
+    dv_result = threshold_cascade(probe_scores, baseline_scores, dv_scores, tau, merge_strategy=merge_strategy)
     unc_result = offline_batch_cascade(
         probe_scores,
         baseline_scores,
         batch_size,
         selection_strategy="fixed_budget_rate",
-        merge_strategy="replace",
+        merge_strategy=merge_strategy,
         rate=alpha_budget,
     )
 
@@ -389,8 +401,10 @@ def parse_args():
 
 def main():
     args = parse_args()
-    output_dir = Path(args.output_dir)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = Path(args.output_dir) / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(args.config, output_dir / Path(args.config).name)
     file_prefix = args.file_prefix
 
     config = load_config(args.config)
@@ -429,6 +443,7 @@ def main():
     use_modal = getattr(config, "use_modal", False)
     modal_gpu = getattr(config, "modal_gpu", None)
     reduction = config.reduction_strategy
+    merge_strategy = getattr(config, "merge_strategy", "replace")
 
     logger.info("Loading training data and fitting safety probe...")
     train_dataset = load_dataset(Path(config.train_dataset_path), activation_config=None)
@@ -454,11 +469,21 @@ def main():
         activation_config,
         safety_probe,
     )
-    v_dev = compute_delegation_value(dev_ps, dev_bs, dev_labels)
-    logger.info(f"Dev delegation value: v=1 rate={v_dev.mean():.1%} (n={len(v_dev)})")
+    dv_target = getattr(config, "dv_target", "binary")
+    logger.info(f"DV target mode: {dv_target}")
+
+    if dv_target == "continuous":
+        v_dev = compute_continuous_delegation_value(dev_ps, dev_bs, dev_labels)
+        logger.info(
+            f"Dev delegation value: v>0 rate={float((v_dev > 0).mean()):.1%}, "
+            f"mean={float(v_dev.mean()):.3f} (n={len(v_dev)})"
+        )
+    else:
+        v_dev = compute_delegation_value(dev_ps, dev_bs, dev_labels).astype(float)
+        logger.info(f"Dev delegation value: v=1 rate={v_dev.mean():.1%} (n={len(v_dev)})")
 
     logger.info("Training DV probe on dev split...")
-    dv_clf = train_dv_probe(X_dev, v_dev)
+    dv_clf: LogisticRegression | Ridge = train_dv_probe(X_dev, v_dev, mode=dv_target)
     del X_dev
 
     # --- Load test split ---
@@ -469,14 +494,22 @@ def main():
         activation_config,
         safety_probe,
     )
-    v_test = compute_delegation_value(test_ps, test_bs, test_labels)
-    logger.info(f"Test delegation value: v=1 rate={v_test.mean():.1%} (n={len(v_test)})")
+    if dv_target == "continuous":
+        v_test = compute_continuous_delegation_value(test_ps, test_bs, test_labels)
+        logger.info(
+            f"Test delegation value: v>0 rate={float((v_test > 0).mean()):.1%}, "
+            f"mean={float(v_test.mean()):.3f} (n={len(v_test)})"
+        )
+    else:
+        v_test = compute_delegation_value(test_ps, test_bs, test_labels).astype(float)
+        logger.info(f"Test delegation value: v=1 rate={v_test.mean():.1%} (n={len(v_test)})")
 
     # DV scores (out-of-sample)
-    dv_scores_full = predict_dv_scores(dv_clf, X_test)
+    dv_scores_full = predict_dv_scores(dv_clf, X_test, mode=dv_target)
     del X_test
 
-    dv_auc = roc_auc_score(v_test, dv_scores_full)
+    v_test_binary = (v_test > 0).astype(int) if dv_target == "continuous" else v_test.astype(int)
+    dv_auc = roc_auc_score(v_test_binary, dv_scores_full)
     logger.info(f"DV probe AUC on test: {dv_auc:.4f}")
 
     # --- Split test into calib (LTT threshold selection) and eval ---
@@ -521,8 +554,14 @@ def main():
     # --- LTT-calibrated DV threshold sweep with Pareto testing ---
     guarantee_probability = getattr(config, "guarantee_probability", 0.9)
     delta = 1.0 - guarantee_probability
-    tau_steps = getattr(config, "tau_steps", 200)
-    tau_grid = np.linspace(0.0, 1.0, tau_steps)
+    tau_steps = getattr(config, "tau_steps", 30)
+    # For continuous DV scores, adapt tau grid to actual score range
+    if dv_target == "continuous":
+        tau_min = float(np.min(dv_scores_full)) - 0.01
+        tau_max = float(np.max(dv_scores_full)) + 0.01
+        tau_grid = np.linspace(tau_min, tau_max, tau_steps)
+    else:
+        tau_grid = np.linspace(0.0, 1.0, tau_steps)
     n_alpha_steps = getattr(config, "n_alpha_steps", 20)
     alpha_budgets = np.linspace(0.05, 0.95, n_alpha_steps)
 
@@ -556,7 +595,7 @@ def main():
             tau_grid=tau_grid,
             opt_risk=OptRisk,
             budget_risk=BudgetCostRisk,
-            merge_strategy="replace",
+            merge_strategy=merge_strategy,
         )
         logger.info(f"Pareto frontier: {len(pareto_ltt.taus)}/{len(tau_grid)} thresholds retained")
     else:
@@ -571,7 +610,7 @@ def main():
         tau = ltt_budget_threshold(calib_dv, alpha_b, delta, tau_grid)
         if tau is None:
             continue
-        result = threshold_cascade(eval_ps, eval_bs, eval_dv, tau)
+        result = threshold_cascade(eval_ps, eval_bs, eval_dv, tau, merge_strategy=merge_strategy)
         met = cascade_metrics(result, eval_labels)
         ltt_budget_only_results.append(
             {
@@ -590,7 +629,7 @@ def main():
             tau = pareto_ltt.select_threshold(alpha_b, delta)
             if tau is None:
                 continue
-            result = threshold_cascade(eval_ps, eval_bs, eval_dv, tau)
+            result = threshold_cascade(eval_ps, eval_bs, eval_dv, tau, merge_strategy=merge_strategy)
             met = cascade_metrics(result, eval_labels)
             ltt_pareto_results.append(
                 {
@@ -640,6 +679,7 @@ def main():
                 ranking,
                 bs,
                 k_values,
+                merge_strategy=merge_strategy,
             )
             signal_results[name] = (aucs, accs)
 
@@ -707,11 +747,54 @@ def main():
             representative["alpha"],
             batch_sizes[-1],
             output_dir,
+            merge_strategy=merge_strategy,
             file_prefix=file_prefix,
         )
 
     plt.close("all")
     logger.info(f"Plots saved to {output_dir}")
+
+    # --- Save structured results as JSON ---
+    results_json: dict = {
+        "config": {
+            "dv_target": dv_target,
+            "baseline_model_name": getattr(config, "baseline_model_name", "unknown"),
+            "activations_model_name": getattr(config, "activations_model_name", "unknown"),
+            "batch_sizes": batch_sizes,
+            "merge_strategy": merge_strategy,
+        },
+        "reference": {
+            "probe_auc": float(probe_auc),
+            "probe_acc": float(probe_acc),
+            "baseline_auc": float(baseline_auc),
+            "baseline_acc": float(baseline_acc),
+            "dv_probe_auc": float(dv_auc),
+        },
+        "topk": {},
+        "ltt_pareto": [
+            {k: float(v) if isinstance(v, (float, np.floating)) else v for k, v in r.items()}
+            for r in ltt_pareto_results
+        ],
+        "ltt_budget_only": [
+            {k: float(v) if isinstance(v, (float, np.floating)) else v for k, v in r.items()}
+            for r in ltt_budget_only_results
+        ],
+    }
+    for bs in batch_sizes:
+        budget_fractions, signal_results = all_results[bs]
+        results_json["topk"][str(bs)] = {
+            "budget_fractions": budget_fractions.tolist(),
+            "signals": {
+                name: {
+                    "auc": aucs.tolist(),
+                    "accuracy": accs.tolist(),
+                }
+                for name, (aucs, accs) in signal_results.items()
+            },
+        }
+    results_path = output_dir / f"{file_prefix}results.json"
+    results_path.write_text(json.dumps(results_json, indent=2))
+    logger.info(f"Results JSON saved to {results_path}")
 
     # --- ClearML logging ---
     if clearml_logger is not None:
