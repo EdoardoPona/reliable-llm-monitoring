@@ -70,6 +70,7 @@ def threshold_cascade(
     baseline_scores: np.ndarray,
     delegation_scores: np.ndarray,
     tau: float,
+    merge_strategy: str = "replace",
 ) -> CascadePredictionResults:
     """Delegate examples where delegation_scores > tau.
 
@@ -77,7 +78,12 @@ def threshold_cascade(
     other per-example signal.  Higher score = more likely to delegate.
     """
     used_baseline = delegation_scores > tau
-    final = np.where(used_baseline, baseline_scores, probe_scores)
+    if merge_strategy == "replace":
+        final = np.where(used_baseline, baseline_scores, probe_scores)
+    elif merge_strategy == "avg":
+        final = np.where(used_baseline, (probe_scores + baseline_scores) / 2, probe_scores)
+    else:
+        raise ValueError(f"Unknown merge strategy: {merge_strategy}")
     return CascadePredictionResults(
         probe_scores=probe_scores,
         baseline_scores=baseline_scores,
