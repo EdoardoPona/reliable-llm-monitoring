@@ -24,6 +24,7 @@ Usage::
 import argparse
 import json
 import logging
+import os
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
@@ -647,7 +648,8 @@ def save_results_json(
 def parse_args():
     parser = argparse.ArgumentParser(description="DV cascade comparison experiment")
     parser.add_argument("--config", type=str, default="configs/dv_cascade_comparison.yaml")
-    parser.add_argument("--output-dir", type=str, default="results/dv_cascade_comparison")
+    default_output = os.path.join(os.environ.get("RESULTS_DIR", "results"), "dv_cascade_comparison")
+    parser.add_argument("--output-dir", type=str, default=default_output)
     parser.add_argument("--file-prefix", type=str, default="", help="Prefix for output filenames (e.g. 'llama1b_')")
     parser.add_argument("--use-clearml", action="store_true")
     return parser.parse_args()
