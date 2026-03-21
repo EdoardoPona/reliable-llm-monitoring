@@ -1,46 +1,36 @@
-# DV Cascade Comparison: CONTINUOUS delegation value + WEAK baseline (Llama-3.2-1B)
-#
-# Combines continuous DV target with the weakest baseline model.
-#   v(x) = P_baseline(y|x) - P_probe(y|x)
-# DV probe is a Ridge regressor. Baseline = Llama-3.2-1B-Instruct.
+# LTT coverage validation: weak expert (Llama-3.2-1B-Instruct)
 #
 # Usage:
-#   uv run experiments/dv_cascade_comparison.py --config configs/dv_cascade_comparison_continuous_llama1b.yaml
+#   uv run experiments/ltt_coverage_validation.py \
+#       --config configs/ltt_coverage/weak_expert.yaml
 
-dv_target: continuous
-
-# --- Batch sizes to compare ---
-batch_sizes: [32, 64, 128]
-n_k_steps: 20
+# --- Coverage validation ---
+alpha: 0.3
+n_trials: 500
+delta: 0.1
 
 # --- LTT calibration ---
 calib_fraction: 0.5
-guarantee_probability: 0.9
 tau_steps: 100
-n_alpha_steps: 20
-pareto_testing: true
 pareto_split_proportion: 0.3
 opt_risk: accuracy_error
 merge_strategy: replace
+dv_target: continuous
 
-# --- Model settings ---
+# --- Models ---
 activations_model_name: meta-llama/Llama-3.2-1B-Instruct
 activations_layer: 11
 baseline_model_name: meta-llama/Llama-3.2-1B-Instruct
 reduction_strategy: mean
 
 use_modal: true
-modal_gpu: "A100-80GB"
 seed: 42
 
-# --- Training data ---
+# --- Data ---
 train_dataset_path: ${DATA_DIR}/training/prompts_4x/train.jsonl
-
-# --- Fallback paths ---
 dev_dataset_path: ${DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl
 test_dataset_path: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
 
-# --- Mixed dataset configuration ---
 mixed_datasets:
   balance_strategy: 500
   sources:
