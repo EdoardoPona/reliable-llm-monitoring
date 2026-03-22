@@ -32,29 +32,18 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-from activation_registry import compute_or_fetch_activations
 from config import load_config
-from delegation_value_probe import (
-    compute_continuous_delegation_value,
-    compute_delegation_value,
-    predict_dv_scores,
-    train_dv_probe,
-)
 from dotenv import load_dotenv
 from dv_ltt_cascade import (
-    _load_split,
     cascade_metrics,
+    prepare_dv_cascade_data,
     split_calib_eval,
     threshold_cascade,
 )
-from sklearn.linear_model._logistic import LogisticRegression
-from sklearn.linear_model._ridge import Ridge
 from sklearn.metrics import accuracy_score, roc_auc_score
 
 from reliable_monitoring.cascade import offline_batch_cascade
-from reliable_monitoring.dataset import ActivationConfig, load_dataset
 from reliable_monitoring.learn_then_test import ParetoLTTResult, build_pareto_ltt
-from reliable_monitoring.probes import SequenceProbe
 from reliable_monitoring.risks import RISK_RGISTRY, BudgetCostRisk
 
 load_dotenv()
@@ -416,66 +405,6 @@ def plot_adaptivity(
     return fig
 
 
-# ---------------------------------------------------------------------------
-# Experiment stages
-# ---------------------------------------------------------------------------
-
-
-def train_probes(
-    config,
-    activation_config: ActivationConfig,
-) -> tuple[SequenceProbe, LogisticRegression | Ridge, str]:
-    """Train the safety probe (on train split) and DV probe (on dev split).
-
-    Returns:
-        (safety_probe, dv_clf, dv_target) where dv_target is "binary" or "continuous".
-    """
-    use_modal = getattr(config, "use_modal", False)
-    modal_gpu = getattr(config, "modal_gpu", None)
-    reduction = config.reduction_strategy
-
-    logger.info("Loading training data and fitting safety probe...")
-    train_dataset = load_dataset(Path(config.train_dataset_path), activation_config=None)
-    train_acts = compute_or_fetch_activations(
-        model_name=config.activations_model_name,
-        layer=config.activations_layer,
-        reduction=reduction,
-        dataset=train_dataset,
-        dataset_path=config.train_dataset_path,
-        local=not use_modal,
-        gpu=modal_gpu,
-    )
-    train_dataset = train_dataset.assign(**{f"activations_{reduction}": train_acts})
-    safety_probe = SequenceProbe(reduction_strategy=reduction)
-    safety_probe.fit(train_dataset)
-    del train_dataset, train_acts
-
-    logger.info("Loading dev split for DV probe training...")
-    dev_ps, dev_bs, dev_labels, X_dev, dev_groups = _load_split(
-        "dev",
-        config,
-        activation_config,
-        safety_probe,
-    )
-    dv_target = getattr(config, "dv_target", "binary")
-    logger.info(f"DV target mode: {dv_target}")
-
-    if dv_target == "continuous":
-        v_dev = compute_continuous_delegation_value(dev_ps, dev_bs, dev_labels)
-        logger.info(
-            f"Dev delegation value: v>0 rate={float((v_dev > 0).mean()):.1%}, "
-            f"mean={float(v_dev.mean()):.3f} (n={len(v_dev)})"
-        )
-    else:
-        v_dev = compute_delegation_value(dev_ps, dev_bs, dev_labels).astype(float)
-        logger.info(f"Dev delegation value: v=1 rate={v_dev.mean():.1%} (n={len(v_dev)})")
-
-    logger.info("Training DV probe on dev split...")
-    dv_clf: LogisticRegression | Ridge = train_dv_probe(X_dev, v_dev, mode=dv_target)
-
-    return safety_probe, dv_clf, dv_target
-
-
 def run_ltt_calibration(
     calib_ps: np.ndarray,
     calib_bs: np.ndarray,
@@ -691,47 +620,21 @@ def main():
             ]
         )
 
-    activation_config = ActivationConfig(
-        model_name=config.activations_model_name,
-        layer=config.activations_layer,
-    )
-
-    # --- Train probes ---
-    safety_probe, dv_clf, dv_target = train_probes(config, activation_config)
-
-    # --- Load test split and compute scores ---
-    logger.info("Loading test split...")
-    test_ps, test_bs, test_labels, X_test, test_groups = _load_split(
-        "test",
-        config,
-        activation_config,
-        safety_probe,
-    )
-    if dv_target == "continuous":
-        v_test = compute_continuous_delegation_value(test_ps, test_bs, test_labels)
-        logger.info(
-            f"Test delegation value: v>0 rate={float((v_test > 0).mean()):.1%}, "
-            f"mean={float(v_test.mean()):.3f} (n={len(v_test)})"
-        )
-    else:
-        v_test = compute_delegation_value(test_ps, test_bs, test_labels).astype(float)
-        logger.info(f"Test delegation value: v=1 rate={v_test.mean():.1%} (n={len(v_test)})")
-
-    dv_scores_full = predict_dv_scores(dv_clf, X_test, mode=dv_target)
-    del X_test
-
-    v_test_binary = (v_test > 0).astype(int) if dv_target == "continuous" else v_test.astype(int)
-    dv_auc = float(roc_auc_score(v_test_binary, dv_scores_full))
-    logger.info(f"DV probe AUC on test: {dv_auc:.4f}")
+    # --- Train probes & load test data ---
+    data = prepare_dv_cascade_data(config)
+    dv_target = data.dv_target
+    dv_scores_full = data.dv_scores
+    dv_auc = data.dv_auc
 
     # --- Split test into calib / eval ---
+    # v_test is passed through for oracle ranking
     calib_arrays, eval_arrays = split_calib_eval(
-        test_ps,
-        test_bs,
-        test_labels,
-        dv_scores_full,
-        v_test,
-        test_groups,
+        data.test_ps,
+        data.test_bs,
+        data.test_labels,
+        data.dv_scores,
+        data.v_test,
+        data.test_groups,
         calib_fraction=getattr(config, "calib_fraction", 0.5),
         seed=config.seed,
     )

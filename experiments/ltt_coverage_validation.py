@@ -34,23 +34,15 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from config import load_config
-from delegation_value_probe import (
-    compute_continuous_delegation_value,
-    compute_delegation_value,
-    predict_dv_scores,
-)
 from dotenv import load_dotenv
-from dv_cascade_comparison import train_probes
 from dv_ltt_cascade import (
-    _load_split,
     ltt_budget_threshold,
+    prepare_dv_cascade_data,
     split_calib_eval,
     threshold_cascade,
 )
-from sklearn.metrics import roc_auc_score
 from tqdm import tqdm
 
-from reliable_monitoring.dataset import ActivationConfig
 from reliable_monitoring.learn_then_test import build_pareto_ltt
 from reliable_monitoring.risks import RISK_RGISTRY, BudgetCostRisk
 
@@ -259,44 +251,16 @@ def main():
             ]
         )
 
-    activation_config = ActivationConfig(
-        model_name=config.activations_model_name,
-        layer=config.activations_layer,
-    )
-
-    # --- Train probes ---
-    safety_probe, dv_clf, dv_target = train_probes(config, activation_config)
-
-    # --- Load test split and compute scores ---
-    logger.info("Loading test split...")
-    test_ps, test_bs, test_labels, X_test, test_groups = _load_split(
-        "test",
-        config,
-        activation_config,
-        safety_probe,
-    )
-    if dv_target == "continuous":
-        v_test = compute_continuous_delegation_value(test_ps, test_bs, test_labels)
-    else:
-        v_test = compute_delegation_value(test_ps, test_bs, test_labels).astype(float)
-
-    dv_scores = predict_dv_scores(dv_clf, X_test, mode=dv_target)
-    del X_test
-
-    v_test_binary = (v_test > 0).astype(int) if dv_target == "continuous" else v_test.astype(int)
-    dv_auc = float(roc_auc_score(v_test_binary, dv_scores))
-    logger.info(f"DV probe AUC on test: {dv_auc:.4f}")
-
-    # --- Tau grid ---
-    tau_steps = getattr(config, "tau_steps", 30)
-    if dv_target == "continuous":
-        dv_tau_grid = np.linspace(
-            float(np.min(dv_scores)) - 0.01,
-            float(np.max(dv_scores)) + 0.01,
-            tau_steps,
-        )
-    else:
-        dv_tau_grid = np.linspace(0.0, 1.0, tau_steps)
+    # --- Train probes & load test data ---
+    data = prepare_dv_cascade_data(config)
+    test_ps = data.test_ps
+    test_bs = data.test_bs
+    test_labels = data.test_labels
+    test_groups = data.test_groups
+    dv_scores = data.dv_scores
+    v_test = data.v_test
+    dv_auc = data.dv_auc
+    dv_tau_grid = data.dv_tau_grid
 
     # --- Run coverage trials ---
     calib_fraction = getattr(config, "calib_fraction", 0.5)
@@ -357,7 +321,7 @@ def main():
             "alpha": alpha,
             "delta": delta,
             "n_trials": n_trials,
-            "dv_target": dv_target,
+            "dv_target": data.dv_target,
             "baseline_model_name": getattr(config, "baseline_model_name", "unknown"),
             "activations_model_name": getattr(config, "activations_model_name", "unknown"),
             "merge_strategy": merge_strategy,

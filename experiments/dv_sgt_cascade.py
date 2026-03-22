@@ -34,17 +34,14 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from config import load_config
-from delegation_value_probe import predict_dv_scores
 from dotenv import load_dotenv
-from dv_cascade_comparison import train_probes
 from dv_ltt_cascade import (
-    _load_split,
     cascade_metrics,
+    prepare_dv_cascade_data,
     split_calib_eval,
     threshold_cascade,
 )
 
-from reliable_monitoring.dataset import ActivationConfig
 from reliable_monitoring.graphical_test_graphs import lattice_graph, row_chain_graph, uniform_lattice_graph
 from reliable_monitoring.learn_then_test import (
     GraphicalTestResult,
@@ -257,28 +254,19 @@ def run_dv_sgt_cascade(config, output_dir: Path) -> DVSGTCascadeResults | None:
     seed = config.seed
     np.random.seed(seed)
 
-    activation_config = ActivationConfig(
-        model_name=config.activations_model_name,
-        layer=config.activations_layer,
-    )
+    n_thresholds = getattr(config, "n_thresholds", 25)
 
     # ---- Stage 1: Train probes & load data ----
     logger.info("=== Stage 1: Train probes & load data ===")
-    safety_probe, dv_clf, dv_target = train_probes(config, activation_config)
+    data = prepare_dv_cascade_data(config, tau_steps=n_thresholds)
 
-    logger.info("Loading test split...")
-    test_ps, test_bs, test_labels, X_test, test_groups = _load_split("test", config, activation_config, safety_probe)
-    dv_scores_full = predict_dv_scores(dv_clf, X_test, mode=dv_target)
-    del X_test
-
-    # Split into calib / eval
     calib_fraction = getattr(config, "calib_fraction", 0.5)
     calib_arrays, eval_arrays = split_calib_eval(
-        test_ps,
-        test_bs,
-        test_labels,
-        dv_scores_full,
-        test_groups,
+        data.test_ps,
+        data.test_bs,
+        data.test_labels,
+        data.dv_scores,
+        data.test_groups,
         calib_fraction=calib_fraction,
         seed=seed,
     )
@@ -301,12 +289,7 @@ def run_dv_sgt_cascade(config, output_dir: Path) -> DVSGTCascadeResults | None:
         raise ValueError(f"Invalid guaranteed_risk: '{guaranteed_risk_name}'. Available: {list(RISK_RGISTRY.keys())}")
 
     merge_strategy = getattr(config, "merge_strategy", "replace")
-    n_thresholds = getattr(config, "n_thresholds", 25)
-
-    # Build DV threshold grid adapted to score range
-    dv_min = float(np.min(dv_scores_full)) - 0.01
-    dv_max = float(np.max(dv_scores_full)) + 0.01
-    thresholds = np.linspace(dv_min, dv_max, n_thresholds)
+    thresholds = data.dv_tau_grid
 
     calib_eval_result = evaluate_threshold_risks(
         calib_ps,
@@ -526,15 +509,7 @@ def run_dv_sgt_cascade(config, output_dir: Path) -> DVSGTCascadeResults | None:
     baseline_auc = float(roc_auc_score(eval_labels, eval_bs))
     baseline_acc = float(accuracy_score(eval_labels, (eval_bs >= 0.5).astype(int)))
 
-    # DV probe AUC (how well DV scores predict delegation value)
-    from delegation_value_probe import compute_continuous_delegation_value, compute_delegation_value
-
-    if dv_target == "continuous":
-        v_eval = compute_continuous_delegation_value(eval_ps, eval_bs, eval_labels)
-        v_eval_binary = (v_eval > 0).astype(int)
-    else:
-        v_eval_binary = compute_delegation_value(eval_ps, eval_bs, eval_labels)
-    dv_auc = float(roc_auc_score(v_eval_binary, eval_dv))
+    dv_auc = data.dv_auc
 
     logger.info("\n=== OVERALL PERFORMANCE METRICS ===")
     logger.info(f"Probe Only:    AUC={probe_auc:.4f}, Acc={probe_acc:.4f}")
