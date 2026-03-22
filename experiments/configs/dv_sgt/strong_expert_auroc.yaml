@@ -1,0 +1,72 @@
+# DV SGT Cascade: Strong expert, AUROC risk guarantee
+#
+# Applies SGT over a (DV threshold x alpha) grid to discover all
+# (tau, alpha) pairs for which ROC AUC error is formally bounded.
+#
+# Strong expert = Gemma-3-27B baseline (high accuracy).
+# Risk = roc_auc_error (1 - AUC).
+#
+# Usage:
+#   uv run experiments/dv_sgt_cascade.py --config configs/dv_sgt/strong_expert_auroc.yaml
+
+# --- Risk to guarantee ---
+guaranteed_risk: roc_auc_error
+guarantee_probability: 0.9
+
+# --- Alpha grid (safety risk levels to test) ---
+alpha_start: 0.05
+alpha_end: 0.50
+alpha_steps: 15
+
+# --- DV threshold grid ---
+n_thresholds: 25
+
+# --- SGT graph ---
+sgt_graph_type: row_chain
+
+# --- Selection ---
+selection_mode: best_alpha
+
+# --- DV probe ---
+dv_target: continuous
+merge_strategy: replace
+calib_fraction: 0.5
+
+# --- Pareto pre-filtering ---
+pareto_testing: false
+
+# --- Deduplication ---
+deduplicate_thresholds: true
+
+# --- Model settings ---
+activations_model_name: meta-llama/Llama-3.2-1B-Instruct
+activations_layer: 11
+baseline_model_name: google/gemma-3-27b-it
+reduction_strategy: mean
+
+use_modal: true
+seed: 42
+
+# --- Training data ---
+train_dataset_path: ${DATA_DIR}/training/prompts_4x/train.jsonl
+
+# --- Fallback paths ---
+dev_dataset_path: ${DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl
+test_dataset_path: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
+
+# --- Mixed dataset configuration ---
+mixed_datasets:
+  balance_strategy: 500
+  sources:
+    - group: anthropic
+      dev: ${DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl
+      test: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
+    - group: mt
+      dev: ${DATA_DIR}/evals/dev/mt_balanced_apr_30.jsonl
+      test: ${DATA_DIR}/evals/test/mt_test_balanced_apr_30.jsonl
+    - group: mts
+      dev: ${DATA_DIR}/evals/dev/mts_balanced_apr_22.jsonl
+      test: ${DATA_DIR}/evals/test/mts_test_balanced_apr_22.jsonl
+    - group: toolace
+      dev: ${DATA_DIR}/evals/dev/toolace_balanced_apr_22.jsonl
+      test: ${DATA_DIR}/evals/test/toolace_test_balanced_apr_22.jsonl
