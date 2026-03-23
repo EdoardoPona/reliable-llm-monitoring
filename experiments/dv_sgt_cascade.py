@@ -37,6 +37,7 @@ from config import load_config
 from dotenv import load_dotenv
 from dv_ltt_cascade import (
     cascade_metrics,
+    pareto_filter_dv_thresholds,
     prepare_dv_cascade_data,
     split_calib_eval,
     threshold_cascade,
@@ -48,7 +49,6 @@ from reliable_monitoring.learn_then_test import (
     Hypothesis,
     compute_p_values,
     graphical_testing,
-    is_pareto,
 )
 from reliable_monitoring.risks import (
     RISK_RGISTRY,
@@ -312,7 +312,6 @@ def run_dv_sgt_cascade(config, output_dir: Path) -> DVSGTCascadeResults | None:
     n_pareto = None
 
     if pareto_testing:
-        logger.info("Performing Pareto pre-filtering...")
         opt_risk_name = getattr(config, "opt_risk", "budget")
         OptRisk = RISK_RGISTRY.get(opt_risk_name)
         if OptRisk is None:
@@ -320,48 +319,30 @@ def run_dv_sgt_cascade(config, output_dir: Path) -> DVSGTCascadeResults | None:
         if OptRisk.name == GuaranteedRisk.name:
             raise ValueError(f"opt_risk and guaranteed_risk must differ, both are '{OptRisk.name}'")
 
-        # Split calib into ht/opt
         pareto_proportion = getattr(config, "pareto_split_proportion", 0.2)
-        indices = np.arange(n_calib)
-        rng = np.random.RandomState(seed)
-        rng.shuffle(indices)
-        split_point = int(n_calib * (1 - pareto_proportion))
-        ht_indices = indices[:split_point]
-        opt_indices = indices[split_point:]
-
-        logger.info(f"Pareto split: ht={len(ht_indices)}, opt={len(opt_indices)}")
-
-        opt_eval_result = evaluate_threshold_risks(
-            calib_ps[opt_indices],
-            calib_bs[opt_indices],
+        pf, ht_idx, _opt_idx = pareto_filter_dv_thresholds(
+            calib_ps,
+            calib_bs,
+            calib_labels,
+            calib_dv,
             thresholds,
             risks=[GuaranteedRisk, OptRisk],
-            labels=calib_labels[opt_indices],
             merge_strategy=merge_strategy,
-            delegation_scores=calib_dv[opt_indices],
+            pareto_proportion=pareto_proportion,
+            seed=seed,
         )
+        thresholds = pf.taus
+        n_pareto = len(thresholds)
 
-        empirical_risks_2d = opt_eval_result.get_empirical_risks_array()
-        pareto_mask = is_pareto(empirical_risks_2d, maximize=False)
-        n_pareto = int(pareto_mask.sum())
-        logger.info(f"Found {n_pareto}/{len(thresholds)} Pareto-efficient thresholds")
-
-        if n_pareto == 0:
-            logger.warning("No Pareto-efficient points found! Falling back to all thresholds.")
-            pareto_mask = np.ones(len(thresholds), dtype=bool)
-            n_pareto = len(thresholds)
-
-        thresholds = thresholds[pareto_mask]
-
-        # Re-evaluate on ht split only for hypothesis testing
+        # Re-evaluate guaranteed risk on ht split (independent of Pareto selection)
         calib_eval_result = evaluate_threshold_risks(
-            calib_ps[ht_indices],
-            calib_bs[ht_indices],
+            calib_ps[ht_idx],
+            calib_bs[ht_idx],
             thresholds,
             risks=GuaranteedRisk,
-            labels=calib_labels[ht_indices] if GuaranteedRisk is not BudgetCostRisk else None,
+            labels=calib_labels[ht_idx] if GuaranteedRisk is not BudgetCostRisk else None,
             merge_strategy=merge_strategy,
-            delegation_scores=calib_dv[ht_indices],
+            delegation_scores=calib_dv[ht_idx],
         )
         calib_empirical = calib_eval_result[guaranteed_risk_name]
     else:
