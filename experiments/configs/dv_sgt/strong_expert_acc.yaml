@@ -1,20 +1,24 @@
-# DV SGT Cascade: Strong expert, accuracy risk guarantee
+# DV SGT Cascade: Strong expert, joint budget + accuracy guarantees
 #
-# Applies SGT over a (DV threshold x alpha) grid to discover all
-# (tau, alpha) pairs for which accuracy error is formally bounded.
+# Applies SGT over a (DV threshold x alpha_safety) grid with combined
+# p-values (max of safety + budget p-values) to discover all (tau, alpha)
+# pairs with formal guarantees on BOTH budget and accuracy error.
 #
 # Strong expert = Gemma-3-27B baseline (high accuracy).
-# Risk = accuracy_error (1 - accuracy).
+# Safety risk = accuracy_error (1 - accuracy).
 #
 # Usage:
 #   uv run experiments/dv_sgt_cascade.py --config configs/dv_sgt/strong_expert_acc.yaml
 
-# --- Risk to guarantee ---
-guaranteed_risk: accuracy_error
+# --- Safety risk to guarantee ---
+guaranteed_safety_risk: accuracy_error
 guarantee_probability: 0.9
 
-# --- Alpha grid (safety risk levels to test) ---
-alpha_start: 0.05
+# --- Budget guarantee ---
+budget_guarantee_level: 0.4
+
+# --- Safety alpha grid (safety risk levels to test) ---
+alpha_start: 0.1
 alpha_end: 0.50
 alpha_steps: 15
 
@@ -23,6 +27,7 @@ n_thresholds: 25
 
 # --- SGT graph ---
 sgt_graph_type: row_chain
+sgt_row_dimension: safety_first
 
 # --- Selection ---
 selection_mode: best_alpha
