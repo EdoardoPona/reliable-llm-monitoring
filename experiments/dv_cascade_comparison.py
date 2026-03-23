@@ -428,23 +428,23 @@ def run_ltt_calibration(
         to a list of per-alpha result dicts, and ltt_plot_data is formatted for plotting
         (or None if no results).
     """
-    guarantee_probability = getattr(config, "guarantee_probability", 0.9)
+    guarantee_probability = config.guarantee_probability
     delta = 1.0 - guarantee_probability
-    tau_steps = getattr(config, "tau_steps", 30)
-    n_alpha_steps = getattr(config, "n_alpha_steps", 20)
+    tau_steps = config.tau_steps
+    n_alpha_steps = config.n_alpha_steps
     alpha_budgets = np.linspace(0.05, 1, n_alpha_steps)
 
-    pareto_testing = getattr(config, "pareto_testing", True)
+    pareto_testing = config.pareto_testing
     if not pareto_testing:
         return {}, None
 
-    opt_risk_name = getattr(config, "opt_risk", "accuracy_error")
+    opt_risk_name = config.opt_risk
     OptRisk = RISK_RGISTRY.get(opt_risk_name)
     if OptRisk is None:
         raise ValueError(f"Unknown opt_risk: '{opt_risk_name}'. Available: {list(RISK_RGISTRY.keys())}")
 
     # Split calib into ht/opt (shared across both delegation signals)
-    pareto_proportion = getattr(config, "pareto_split_proportion", 0.3)
+    pareto_proportion = config.pareto_split_proportion
     ht_idx, opt_idx = pareto_ht_opt_split(len(calib_dv), pareto_proportion, config.seed)
     opt_ps, opt_bs, opt_labels = calib_ps[opt_idx], calib_bs[opt_idx], calib_labels[opt_idx]
 
@@ -536,8 +536,8 @@ def save_results_json(
     results_json: dict = {
         "config": {
             "dv_target": dv_target,
-            "baseline_model_name": getattr(config, "baseline_model_name", "unknown"),
-            "activations_model_name": getattr(config, "activations_model_name", "unknown"),
+            "baseline_model_name": config.baseline_model_name,
+            "activations_model_name": config.activations_model_name,
             "batch_sizes": sorted(topk_results.keys()),
             "merge_strategy": merge_strategy,
         },
@@ -591,7 +591,7 @@ def main():
     file_prefix = args.file_prefix
 
     config = load_config(args.config)
-    merge_strategy = getattr(config, "merge_strategy", "replace")
+    merge_strategy = config.merge_strategy
 
     # --- ClearML init ---
     clearml_logger = None
@@ -613,8 +613,8 @@ def main():
                 f"layer:{config.activations_layer}",
                 f"reduction:{config.reduction_strategy}",
                 f"batches:{','.join(str(b) for b in config.batch_sizes)}",
-                f"pareto:{getattr(config, 'pareto_testing', True)}",
-                f"opt_risk:{getattr(config, 'opt_risk', 'accuracy_error')}",
+                f"pareto:{config.pareto_testing}",
+                f"opt_risk:{config.opt_risk}",
             ]
         )
 
@@ -633,7 +633,7 @@ def main():
         data.dv_scores,
         data.v_test,
         data.test_groups,
-        calib_fraction=getattr(config, "calib_fraction", 0.5),
+        calib_fraction=config.calib_fraction,
         seed=config.seed,
     )
     calib_ps, calib_bs, calib_labels, calib_dv, calib_v, calib_groups = calib_arrays
@@ -676,8 +676,8 @@ def main():
     )
 
     # --- Batched top-k sweeps ---
-    batch_sizes = getattr(config, "batch_sizes", [32, 64, 128])
-    n_k_steps = getattr(config, "n_k_steps", 20)
+    batch_sizes = config.batch_sizes
+    n_k_steps = config.n_k_steps
 
     topk_results: dict[int, tuple[np.ndarray, dict[str, tuple[np.ndarray, np.ndarray]]]] = {}
     for bs in batch_sizes:

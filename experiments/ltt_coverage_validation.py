@@ -222,10 +222,10 @@ def main():
     shutil.copy2(args.config, output_dir / Path(args.config).name)
 
     config = load_config(args.config)
-    merge_strategy = getattr(config, "merge_strategy", "replace")
+    merge_strategy = config.merge_strategy
     alpha = args.alpha if args.alpha is not None else config.alpha
-    delta = getattr(config, "delta", 0.1)
-    n_trials = args.n_trials if args.n_trials is not None else getattr(config, "n_trials", 500)
+    delta = config.delta
+    n_trials = args.n_trials if args.n_trials is not None else config.n_trials
 
     # --- ClearML init ---
     clearml_logger = None
@@ -261,9 +261,9 @@ def main():
     dv_tau_grid = data.dv_tau_grid
 
     # --- Run coverage trials ---
-    calib_fraction = getattr(config, "calib_fraction", 0.5)
-    pareto_split_proportion = getattr(config, "pareto_split_proportion", 0.3)
-    opt_risk_name = getattr(config, "opt_risk", "accuracy_error")
+    calib_fraction = config.calib_fraction
+    pareto_split_proportion = config.pareto_split_proportion
+    opt_risk_name = config.opt_risk
     base_seed = config.seed
 
     logger.info(f"\n--- Running {n_trials} coverage trials (alpha={alpha}, delta={delta:.2f}) ---")
@@ -320,8 +320,8 @@ def main():
             "delta": delta,
             "n_trials": n_trials,
             "dv_target": data.dv_target,
-            "baseline_model_name": getattr(config, "baseline_model_name", "unknown"),
-            "activations_model_name": getattr(config, "activations_model_name", "unknown"),
+            "baseline_model_name": config.baseline_model_name,
+            "activations_model_name": config.activations_model_name,
             "merge_strategy": merge_strategy,
             "opt_risk": opt_risk_name,
         },

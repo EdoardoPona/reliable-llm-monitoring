@@ -254,13 +254,13 @@ def run_dv_sgt_cascade(config, output_dir: Path) -> DVSGTCascadeResults | None:
     seed = config.seed
     np.random.seed(seed)
 
-    n_thresholds = getattr(config, "n_thresholds", 25)
+    n_thresholds = config.n_thresholds
 
     # ---- Stage 1: Train probes & load data ----
     logger.info("=== Stage 1: Train probes & load data ===")
     data = prepare_dv_cascade_data(config, tau_steps=n_thresholds)
 
-    calib_fraction = getattr(config, "calib_fraction", 0.5)
+    calib_fraction = config.calib_fraction
     calib_arrays, eval_arrays = split_calib_eval(
         data.test_ps,
         data.test_bs,
@@ -283,12 +283,12 @@ def run_dv_sgt_cascade(config, output_dir: Path) -> DVSGTCascadeResults | None:
     # ---- Stage 2: Evaluate empirical safety risks on calib ----
     logger.info("=== Stage 2: Evaluate empirical risks on calib ===")
 
-    guaranteed_risk_name = getattr(config, "guaranteed_risk", "accuracy_error")
+    guaranteed_risk_name = config.guaranteed_risk
     GuaranteedRisk = RISK_RGISTRY.get(guaranteed_risk_name)
     if GuaranteedRisk is None:
         raise ValueError(f"Invalid guaranteed_risk: '{guaranteed_risk_name}'. Available: {list(RISK_RGISTRY.keys())}")
 
-    merge_strategy = getattr(config, "merge_strategy", "replace")
+    merge_strategy = config.merge_strategy
     thresholds = data.dv_tau_grid
 
     calib_eval_result = evaluate_threshold_risks(
@@ -308,18 +308,18 @@ def run_dv_sgt_cascade(config, output_dir: Path) -> DVSGTCascadeResults | None:
     n_original_thresholds = len(thresholds)
 
     # ---- Optional: Pareto pre-filtering ----
-    pareto_testing = getattr(config, "pareto_testing", False)
+    pareto_testing = config.pareto_testing
     n_pareto = None
 
     if pareto_testing:
-        opt_risk_name = getattr(config, "opt_risk", "budget")
+        opt_risk_name = config.opt_risk
         OptRisk = RISK_RGISTRY.get(opt_risk_name)
         if OptRisk is None:
             raise ValueError(f"Invalid opt_risk: '{opt_risk_name}'. Available: {list(RISK_RGISTRY.keys())}")
         if OptRisk.name == GuaranteedRisk.name:
             raise ValueError(f"opt_risk and guaranteed_risk must differ, both are '{OptRisk.name}'")
 
-        pareto_proportion = getattr(config, "pareto_split_proportion", 0.2)
+        pareto_proportion = config.pareto_split_proportion
         pf, ht_idx, _opt_idx = pareto_filter_dv_thresholds(
             calib_ps,
             calib_bs,
@@ -349,7 +349,7 @@ def run_dv_sgt_cascade(config, output_dir: Path) -> DVSGTCascadeResults | None:
         calib_empirical = calib_eval_result[guaranteed_risk_name]
 
     # ---- Optional: Deduplicate thresholds ----
-    deduplicate_thresholds = getattr(config, "deduplicate_thresholds", False)
+    deduplicate_thresholds = config.deduplicate_thresholds
     if deduplicate_thresholds:
         _, unique_indices = np.unique(calib_empirical, return_index=True)
         unique_indices = np.sort(unique_indices)
@@ -361,10 +361,7 @@ def run_dv_sgt_cascade(config, output_dir: Path) -> DVSGTCascadeResults | None:
     # ---- Stage 3: Build SGT grid and run graphical testing ----
     logger.info("=== Stage 3: SGT graphical testing ===")
 
-    alpha_start = getattr(config, "alpha_start", 0.05)
-    alpha_end = getattr(config, "alpha_end", 0.50)
-    alpha_steps = getattr(config, "alpha_steps", 15)
-    alpha_grid = np.linspace(alpha_start, alpha_end, alpha_steps)
+    alpha_grid = np.linspace(config.alpha_start, config.alpha_end, config.alpha_steps)
 
     guarantee_probability = config.guarantee_probability
     delta = 1 - guarantee_probability
@@ -399,7 +396,7 @@ def run_dv_sgt_cascade(config, output_dir: Path) -> DVSGTCascadeResults | None:
     flat_p_values = compute_p_values(hypotheses)
 
     # Build graph
-    graph_type = getattr(config, "sgt_graph_type", "row_chain")
+    graph_type = config.sgt_graph_type
     if graph_type not in GRAPH_FACTORIES:
         raise ValueError(f"Unknown sgt_graph_type: '{graph_type}'. Available: {list(GRAPH_FACTORIES.keys())}")
     weights, transitions = GRAPH_FACTORIES[graph_type](n_rows, n_cols)
@@ -456,16 +453,14 @@ def run_dv_sgt_cascade(config, output_dir: Path) -> DVSGTCascadeResults | None:
         )
 
     # ---- Select headline (threshold, alpha) pair ----
-    selection_mode = getattr(config, "selection_mode", "best_alpha")
+    selection_mode = config.selection_mode
     budget_target: float | None = None
 
     if selection_mode == "best_alpha":
         # Tightest alpha, break ties by lowest budget
         selected = min(threshold_results, key=lambda r: (r["best_alpha"], r["mean_budget_cost"]))
     elif selection_mode == "budget_target":
-        budget_target = getattr(config, "budget_target", None)
-        if budget_target is None:
-            raise ValueError("selection_mode='budget_target' requires 'budget_target' in config")
+        budget_target = config.budget_target
         selected = min(
             threshold_results,
             key=lambda r: (abs(r["mean_budget_cost"] - budget_target), r["best_alpha"]),

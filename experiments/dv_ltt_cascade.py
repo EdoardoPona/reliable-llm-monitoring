@@ -158,7 +158,7 @@ def train_probes(
         activation_config,
         safety_probe,
     )
-    dv_target = getattr(config, "dv_target", "binary")
+    dv_target = config.dv_target
     logger.info(f"DV target mode: {dv_target}")
 
     if dv_target == "continuous":
@@ -450,7 +450,7 @@ def prepare_dv_cascade_data(config, *, tau_steps: int | None = None) -> DVCascad
 
     # --- DV threshold grid ---
     if tau_steps is None:
-        tau_steps = getattr(config, "tau_steps", 30)
+        tau_steps = config.tau_steps
     if dv_target == "continuous":
         dv_tau_grid = np.linspace(
             float(np.min(dv_scores)) - 0.01,
