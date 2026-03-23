@@ -36,6 +36,7 @@ from config import load_config
 from dotenv import load_dotenv
 from dv_ltt_cascade import (
     cascade_metrics,
+    pareto_ht_opt_split,
     prepare_dv_cascade_data,
     split_calib_eval,
     threshold_cascade,
@@ -442,12 +443,9 @@ def run_ltt_calibration(
     if OptRisk is None:
         raise ValueError(f"Unknown opt_risk: '{opt_risk_name}'. Available: {list(RISK_RGISTRY.keys())}")
 
-    # Split calib into hypothesis-testing (ht) and optimisation (opt)
+    # Split calib into ht/opt (shared across both delegation signals)
     pareto_proportion = getattr(config, "pareto_split_proportion", 0.3)
-    n_opt = int(len(calib_dv) * pareto_proportion)
-    rng = np.random.default_rng(config.seed + 1)
-    perm = rng.permutation(len(calib_dv))
-    opt_idx, ht_idx = perm[:n_opt], perm[n_opt:]
+    ht_idx, opt_idx = pareto_ht_opt_split(len(calib_dv), pareto_proportion, config.seed)
     opt_ps, opt_bs, opt_labels = calib_ps[opt_idx], calib_bs[opt_idx], calib_labels[opt_idx]
 
     # Build Pareto LTT for each delegation signal

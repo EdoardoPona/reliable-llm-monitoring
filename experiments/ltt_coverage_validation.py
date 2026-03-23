@@ -37,6 +37,7 @@ from config import load_config
 from dotenv import load_dotenv
 from dv_ltt_cascade import (
     ltt_budget_threshold,
+    pareto_ht_opt_split,
     prepare_dv_cascade_data,
     split_calib_eval,
     threshold_cascade,
@@ -110,10 +111,7 @@ def run_single_trial(
     if OptRisk is None:
         raise ValueError(f"Unknown opt_risk: '{opt_risk_name}'")
 
-    n_opt = int(len(calib_dv) * pareto_split_proportion)
-    rng = np.random.default_rng(seed + 100_000)
-    perm = rng.permutation(len(calib_dv))
-    opt_idx, ht_idx = perm[:n_opt], perm[n_opt:]
+    ht_idx, opt_idx = pareto_ht_opt_split(len(calib_dv), pareto_split_proportion, seed)
 
     pareto_ltt = build_pareto_ltt(
         ht_delegation_scores=calib_dv[ht_idx],

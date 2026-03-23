@@ -31,7 +31,11 @@ from sklearn.metrics import accuracy_score, roc_auc_score
 
 from reliable_monitoring.cascade import CascadePredictionResults
 from reliable_monitoring.dataset import ActivationConfig, load_dataset
-from reliable_monitoring.learn_then_test import fixed_sequence_testing
+from reliable_monitoring.learn_then_test import (
+    ParetoFilterResult,
+    fixed_sequence_testing,
+    pareto_filter_thresholds,
+)
 from reliable_monitoring.probes import SequenceProbe
 from reliable_monitoring.risks import BudgetCostRisk
 
@@ -294,7 +298,91 @@ def split_calib_eval(
 
 
 # ---------------------------------------------------------------------------
-# Shared data preparation pipeline
+# Pareto filtering for DV cascades (step 2)
+# ---------------------------------------------------------------------------
+
+
+def pareto_ht_opt_split(
+    n: int,
+    proportion: float,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Split indices into hypothesis-testing and optimisation subsets.
+
+    Ensures a consistent, reproducible split across all DV cascade
+    experiments (``dv_cascade_comparison``, ``dv_sgt_cascade``,
+    ``ltt_coverage_validation``).
+
+    Args:
+        n: Total number of calibration examples.
+        proportion: Fraction of data for the optimisation subset.
+        seed: RNG seed.
+
+    Returns:
+        ``(ht_idx, opt_idx)`` index arrays.
+    """
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(n)
+    n_opt = int(n * proportion)
+    return perm[n_opt:], perm[:n_opt]
+
+
+def pareto_filter_dv_thresholds(
+    calib_ps: np.ndarray,
+    calib_bs: np.ndarray,
+    calib_labels: np.ndarray,
+    calib_dv: np.ndarray,
+    tau_grid: np.ndarray,
+    *,
+    risks: list,
+    merge_strategy: str = "replace",
+    pareto_proportion: float = 0.3,
+    seed: int = 42,
+) -> tuple[ParetoFilterResult, np.ndarray, np.ndarray]:
+    """Split calib into ht/opt and Pareto-filter DV thresholds.
+
+    This is the shared Pareto filtering step for DV cascade experiments.
+    Splits calibration data into hypothesis-testing and optimisation
+    subsets, evaluates the given risks on the opt subset, and returns
+    the Pareto-efficient thresholds.
+
+    Args:
+        calib_ps: Probe scores on the calibration set.
+        calib_bs: Baseline scores on the calibration set.
+        calib_labels: Ground-truth labels on the calibration set.
+        calib_dv: DV delegation scores on the calibration set.
+        tau_grid: Full grid of candidate thresholds.
+        risks: List of Risk objects to Pareto-filter on.
+        merge_strategy: Cascade merge strategy.
+        pareto_proportion: Fraction of calib data for the opt split.
+        seed: RNG seed for the ht/opt split.
+
+    Returns:
+        ``(pareto_result, ht_idx, opt_idx)`` where ``pareto_result``
+        contains the filtered thresholds and ``ht_idx`` / ``opt_idx``
+        are the indices into the original calib arrays.
+    """
+    ht_idx, opt_idx = pareto_ht_opt_split(len(calib_dv), pareto_proportion, seed)
+
+    pf = pareto_filter_thresholds(
+        calib_ps[opt_idx],
+        calib_bs[opt_idx],
+        calib_labels[opt_idx],
+        calib_dv[opt_idx],
+        tau_grid,
+        risks=risks,
+        merge_strategy=merge_strategy,
+    )
+
+    logger.info(
+        f"Pareto filter: {len(pf.taus)}/{pf.n_original} thresholds retained (ht={len(ht_idx)}, opt={len(opt_idx)})"
+    )
+
+    return pf, ht_idx, opt_idx
+
+
+# ---------------------------------------------------------------------------
+# Shared data preparation pipeline (step 1)
 # ---------------------------------------------------------------------------
 
 
