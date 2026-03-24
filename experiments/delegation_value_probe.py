@@ -31,6 +31,7 @@ from mixed_dataset import fetch_per_source_activations, fetch_per_source_baselin
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
 
+from reliable_monitoring.cascade import probe_uncertainty
 from reliable_monitoring.dataset import ActivationConfig, load_dataset
 from reliable_monitoring.probes import SequenceProbe
 
@@ -312,7 +313,7 @@ def plot_cascade_budget_sweep(
 ) -> plt.Figure:
     """Cascade AUC and accuracy vs delegation budget for different strategies."""
     budgets = np.linspace(0, 1, 21)
-    uncertainty = np.minimum(probe_scores, 1 - probe_scores)
+    uncertainty = probe_uncertainty(probe_scores)
 
     # Compute both metrics for each strategy
     strategies = [("Uncertainty", uncertainty), ("DV probe", dv_scores)]
@@ -396,7 +397,7 @@ def plot_per_group_budget_sweep(
 
     unique_groups = np.unique(groups)
     budgets = np.linspace(0, 1, 21)
-    uncertainty = np.minimum(probe_scores, 1 - probe_scores)
+    uncertainty = probe_uncertainty(probe_scores)
 
     n_groups = len(unique_groups)
     metric_names = ["ROC AUC", "Accuracy"]
@@ -698,7 +699,7 @@ def main():
 
     # --- Budget sweep summary ---
     budget_levels = [0.1, 0.2, 0.3, 0.5]
-    uncertainty = np.minimum(probe_scores, 1 - probe_scores)
+    uncertainty = probe_uncertainty(probe_scores)
 
     logger.info("Cascade metrics at key budgets:")
     logger.info(

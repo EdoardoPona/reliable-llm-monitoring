@@ -21,6 +21,8 @@ from cascade_utils import load_results_from_clearml
 from matplotlib.figure import Figure
 from sklearn.metrics import roc_auc_score
 
+from reliable_monitoring.cascade import probe_uncertainty
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -42,8 +44,7 @@ def compute_diagnostics(results) -> dict:
     probe_correct = probe_preds == labels
     probe_wrong = ~probe_correct
 
-    # Uncertainty: distance from decision boundary (0 = confident, 0.5 = maximally uncertain)
-    uncertainty = np.minimum(probe, 1 - probe)
+    uncertainty = probe_uncertainty(probe)
 
     # Which examples fall inside the escalation band [1-threshold, threshold]
     in_band = (probe >= (1 - threshold)) & (probe <= threshold)

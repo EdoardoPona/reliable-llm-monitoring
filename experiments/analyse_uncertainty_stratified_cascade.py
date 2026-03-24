@@ -39,6 +39,8 @@ from cascade_utils import (
 )
 from scipy import stats
 
+from reliable_monitoring.cascade import probe_uncertainty
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -85,7 +87,7 @@ def compute_marginal_values(
         s, e = i * batch_size, (i + 1) * batch_size
         ps, bs, lb = probe_scores[s:e], baseline_scores[s:e], labels[s:e]
 
-        uncertainty = np.minimum(ps, 1 - ps)
+        uncertainty = probe_uncertainty(ps)
         order = np.argsort(-uncertainty)  # most uncertain first
 
         probe_correct = (ps >= 0.5).astype(int) == lb
@@ -120,8 +122,8 @@ def plot_jensens_verification(
     for i in range(n_batches):
         s, e = i * batch_size, (i + 1) * batch_size
         ps = probe_scores[s:e]
-        unc = np.minimum(ps, 1 - ps)
-        adaptive_ks.append((unc > (1 - threshold)).sum())
+        unc = probe_uncertainty(ps)
+        adaptive_ks.append((unc > -(1 - threshold)).sum())
     adaptive_ks = np.array(adaptive_ks)
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
@@ -533,7 +535,7 @@ def run_uncertainty_stratified_analysis(sgt_results, output_dir: Path, clearml_l
 
     # --- Uncertainty-stratified batching (sorted by uncertainty) ---
     logger.info("Sorting examples by probe uncertainty for stratified batching...")
-    uncertainty = np.minimum(ps, 1 - ps)
+    uncertainty = probe_uncertainty(ps)
     sort_order = np.argsort(uncertainty)  # ascending: easy batches first
     ps_strat, bs_strat, lb_strat = ps[sort_order], bs[sort_order], lb[sort_order]
 
@@ -545,7 +547,7 @@ def run_uncertainty_stratified_analysis(sgt_results, output_dir: Path, clearml_l
     # --- Variance ratio diagnostic ---
     unc_random = random_data["uncertainty_mean"]
     unc_strat = stratified_data["uncertainty_mean"]
-    global_unc = np.minimum(ps, 1 - ps)
+    global_unc = probe_uncertainty(ps)
     expected_var_iid = global_unc.var() / batch_size
     vr_random = unc_random.var() / expected_var_iid
     vr_strat = unc_strat.var() / expected_var_iid

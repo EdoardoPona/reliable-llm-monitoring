@@ -207,6 +207,37 @@ def select_fixed_budget_amount(
     return mask
 
 
+def probe_uncertainty(
+    probe_scores: np.ndarray,
+    reference: np.ndarray | None = None,
+) -> np.ndarray:
+    """Compute the McKenzie et al. delegation signal: proximity to the median probe score.
+
+    Ranks each input by its percentile position in the reference distribution and
+    returns a score that is highest (closest to zero) for inputs near the 50th
+    percentile.  When passed as ``ranking_scores`` to ``select_fixed_budget_amount``,
+    this produces exactly the same selection as the default median-centred behaviour.
+
+    Using normalised ranks (rather than raw score distances) means the signal is
+    on a fixed [-0.5, 0] scale regardless of dataset size, so a threshold calibrated
+    on a calibration split transfers directly to an evaluation split.
+
+    Args:
+        probe_scores: Scores to compute uncertainty for.
+        reference: Reference array used to define the percentile scale.  Pass the
+            calibration split here when computing the signal for an eval split, so
+            both splits share the same reference distribution.  When ``None``,
+            ``probe_scores`` is used as its own reference.
+
+    Returns:
+        Array in [-0.5, 0]; higher (closer to 0) means more uncertain / delegate first.
+    """
+    ref = reference if reference is not None else probe_scores
+    sorted_ref = np.sort(ref)
+    norm_ranks = np.searchsorted(sorted_ref, probe_scores, side="left") / len(ref)
+    return -np.abs(norm_ranks - 0.5)
+
+
 def select_examples_for_baseline(
     probe_scores: np.ndarray,
     strategy: str | SelectionStrategy = "fixed_threshold",

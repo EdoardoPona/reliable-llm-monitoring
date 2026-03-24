@@ -3,7 +3,7 @@
 Compares delegation strategies for the probe-baseline safety cascade:
 
 1. **Batched top-k** (three ranking signals):
-   - Probe uncertainty: u(x) = min(p, 1-p)
+   - Probe uncertainty: McKenzie et al. signal — proximity to median probe score
    - DV probe score:    d(x) = P(v=1 | z)
    - Oracle:            v(x) = 1[probe wrong AND baseline correct]
 
@@ -43,7 +43,7 @@ from dv_ltt_cascade import (
 )
 from sklearn.metrics import accuracy_score, roc_auc_score
 
-from reliable_monitoring.cascade import offline_batch_cascade
+from reliable_monitoring.cascade import offline_batch_cascade, probe_uncertainty
 from reliable_monitoring.learn_then_test import ParetoLTTResult, build_pareto_ltt
 from reliable_monitoring.risks import RISK_RGISTRY, BudgetCostRisk
 
@@ -449,7 +449,7 @@ def run_ltt_calibration(
     opt_ps, opt_bs, opt_labels = calib_ps[opt_idx], calib_bs[opt_idx], calib_labels[opt_idx]
 
     # Build Pareto LTT for each delegation signal
-    calib_uncertainty = np.minimum(calib_ps, 1 - calib_ps)
+    calib_uncertainty = probe_uncertainty(calib_ps)
 
     if dv_target == "continuous":
         dv_tau_min = float(np.min(dv_scores_full)) - 0.01
@@ -645,7 +645,7 @@ def main():
     logger.info(f"Calib: n={len(calib_dv)}, Eval: n={len(eval_labels)}")
 
     # --- Ranking signals and reference metrics (on eval split) ---
-    uncertainty = np.minimum(eval_ps, 1 - eval_ps)
+    uncertainty = probe_uncertainty(eval_ps)
     signals = {
         "Uncertainty top-k": uncertainty,
         "DV top-k": eval_dv,

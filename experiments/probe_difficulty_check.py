@@ -29,6 +29,7 @@ from config import expand_env_vars
 from matplotlib.figure import Figure
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 
+from reliable_monitoring.cascade import probe_uncertainty
 from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset
 from reliable_monitoring.probes import DegradedProbe, SequenceProbe
 
@@ -146,7 +147,7 @@ def run_difficulty_check(
             labels_binary = (labels > 0).astype(int)
 
             predictions = (scores >= 0.5).astype(int)
-            uncertainty = np.minimum(scores, 1 - scores)
+            uncertainty = probe_uncertainty(scores)
 
             metrics = DatasetMetrics(
                 name=dataset_name,
@@ -258,7 +259,7 @@ def plot_uncertainty_distributions(results: DifficultyCheckResults) -> Figure:
 
     for ax, name, color in zip(axes, names, colors, strict=False):
         m = results.per_dataset[name]["test"]
-        uncertainty = np.minimum(m.scores, 1 - m.scores)
+        uncertainty = probe_uncertainty(m.scores)
 
         ax.hist(uncertainty, bins=30, alpha=0.8, color=color, edgecolor="black")
         ax.axvline(m.mean_uncertainty, color="red", linestyle="--", linewidth=2, label=f"mean={m.mean_uncertainty:.3f}")

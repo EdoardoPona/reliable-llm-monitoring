@@ -5,6 +5,7 @@ import pytest
 
 from reliable_monitoring.cascade import (
     get_selection_strategy,
+    probe_uncertainty,
     select_examples_for_baseline,
     select_fixed_budget_amount,
     select_fixed_budget_rate,
@@ -124,6 +125,41 @@ class TestFixedBudgetAmount:
         ranking = np.array([1.0, 0.0, 0.5])
         mask = select_fixed_budget_amount(scores, amount=0, ranking_scores=ranking)
         assert mask.sum() == 0
+
+
+class TestProbeUncertainty:
+    """Test probe_uncertainty and its equivalence to the default McKenzie selection."""
+
+    def test_output_range(self):
+        """Scores are always in [-0.5, 0]."""
+        rng = np.random.default_rng(0)
+        scores = rng.uniform(0, 1, 100)
+        u = probe_uncertainty(scores)
+        assert u.min() >= -0.5
+        assert u.max() <= 0.0
+
+    def test_median_gets_highest_score(self):
+        """The input closest to the median receives the highest uncertainty score (0)."""
+        scores = np.array([0.1, 0.3, 0.5, 0.7, 0.9])
+        u = probe_uncertainty(scores)
+        assert np.argmax(u) == 2  # 0.5 is the median
+
+    def test_reference_shifts_scale(self):
+        """With a reference, ranks are computed against the reference distribution."""
+        probe = np.array([0.5])
+        reference = np.array([0.0, 0.25, 0.75, 1.0])
+        u = probe_uncertainty(probe, reference=reference)
+        # 0.5 sits at the 50th percentile of reference → uncertainty ≈ 0
+        assert abs(u[0]) < 0.1
+
+    def test_matches_default_selection(self):
+        """probe_uncertainty as ranking_scores selects the same inputs as the default."""
+        rng = np.random.default_rng(42)
+        scores = rng.uniform(0, 1, 200)
+        amount = 40
+        mask_default = select_fixed_budget_amount(scores, amount=amount)
+        mask_explicit = select_fixed_budget_amount(scores, amount=amount, ranking_scores=probe_uncertainty(scores))
+        assert np.array_equal(mask_default, mask_explicit)
 
 
 class TestSelectionRegistry:

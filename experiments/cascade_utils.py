@@ -21,6 +21,8 @@ import numpy as np
 from clearml_logger import ClearMLLogger
 from clearml_serialization import artifact_field, scalar_field
 
+from reliable_monitoring.cascade import probe_uncertainty as _probe_uncertainty
+
 logger = logging.getLogger(__name__)
 
 
@@ -73,8 +75,7 @@ def compute_batch_statistics(
     """Compute statistics for a batch cascade run."""
     from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 
-    # Probe uncertainty (closeness to decision boundary)
-    probe_uncertainty = np.minimum(probe_scores, 1 - probe_scores)
+    uncertainty = _probe_uncertainty(probe_scores)
 
     # Baseline scores for examples that used baseline
     baseline_subset = baseline_scores[used_baseline]
@@ -97,10 +98,10 @@ def compute_batch_statistics(
         batch_index=batch_index,
         budget_cost=float(used_baseline.mean()),
         num_examples=len(probe_scores),
-        probe_uncertainty_mean=float(probe_uncertainty.mean()),
-        probe_uncertainty_std=float(probe_uncertainty.std()),
-        probe_uncertainty_min=float(probe_uncertainty.min()),
-        probe_uncertainty_max=float(probe_uncertainty.max()),
+        probe_uncertainty_mean=float(uncertainty.mean()),
+        probe_uncertainty_std=float(uncertainty.std()),
+        probe_uncertainty_min=float(uncertainty.min()),
+        probe_uncertainty_max=float(uncertainty.max()),
         baseline_score_mean=baseline_score_mean,
         baseline_score_std=baseline_score_std,
         accuracy=accuracy,
@@ -294,7 +295,7 @@ def extract_batch_arrays(results: CascadeExperimentResults) -> dict[str, np.ndar
     out["batch_baseline_scores"] = [b.baseline_scores for b in batches]
     out["batch_used_baseline"] = [b.used_baseline for b in batches]
     out["batch_final_scores"] = [b.final_scores for b in batches]
-    out["batch_uncertainty"] = [np.minimum(b.probe_scores, 1 - b.probe_scores) for b in batches]
+    out["batch_uncertainty"] = [_probe_uncertainty(b.probe_scores) for b in batches]
 
     # Reconstruct per-batch labels from test_labels and batch_size
     labels = results.test_labels
