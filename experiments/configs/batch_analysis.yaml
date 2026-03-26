@@ -1,0 +1,16 @@
+# Per-batch comparison: DV cascade vs uncertainty top-k
+# ------------------------------------------------------
+# Same run dirs as probe_analysis — points at the two cascade comparison results.
+
+strong_run_dir: results/dv_cascade_comparison/20260324_135509
+weak_run_dir:   results/dv_cascade_comparison/20260324_135621
+
+output_dir: results/batch_analysis
+
+# Batch size to use for the comparison.
+# Should match one of the batch_sizes in the run configs (32, 64, or 128).
+batch_size: 32
+
+# Target budget fraction α.  The script picks the closest stored α from
+# results.json["ltt"]["DV calibrated threshold"].
+target_alpha: 0.30

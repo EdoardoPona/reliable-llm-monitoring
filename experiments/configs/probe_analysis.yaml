@@ -1,0 +1,17 @@
+# DV probe quality analysis
+# --------------------------
+# References specific cascade comparison run directories.
+# The script reconstructs the EXACT eval splits from the saved configs,
+# then verifies them against results.json before computing any metrics.
+#
+# To update: point these at whichever run directories contain the
+# results you want to report in the paper.
+
+strong_run_dir: results/dv_cascade_comparison/20260324_135509
+weak_run_dir:   results/dv_cascade_comparison/20260324_135621
+
+output_dir: results/probe_analysis
+
+# Analysis parameters
+n_threshold_steps: 40   # grid resolution for AUC-vs-threshold curve
+random_seed: 0          # seed for random baseline in mean-v@k curve
