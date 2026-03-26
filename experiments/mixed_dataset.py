@@ -189,6 +189,7 @@ def fetch_per_source_baselines(
     local: bool = True,
     gpu: str | None = None,
     skip_cache: bool = False,
+    local_only: bool = False,
     **baseline_kwargs: Any,
 ) -> list[np.ndarray]:
     """Fetch cached baselines for each source dataset.
@@ -211,6 +212,7 @@ def fetch_per_source_baselines(
             local=local,
             gpu=gpu,
             skip_cache=skip_cache,
+            local_only=local_only,
             **baseline_kwargs,
         )
         per_source.append(bl)
@@ -226,6 +228,7 @@ def fetch_per_source_activations(
     *,
     local: bool = True,
     gpu: str | None = None,
+    local_only: bool = False,
 ) -> list[np.ndarray]:
     """Fetch cached reduced activations for each source dataset.
 
@@ -248,6 +251,7 @@ def fetch_per_source_activations(
             dataset_path=path,
             local=local,
             gpu=gpu,
+            local_only=local_only,
         )
         per_source.append(acts)
     return per_source

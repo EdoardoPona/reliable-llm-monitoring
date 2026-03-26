@@ -62,7 +62,7 @@ def batched_topk_sweep(
     probe_scores: np.ndarray,
     baseline_scores: np.ndarray,
     labels: np.ndarray,
-    ranking_scores: np.ndarray,
+    ranking_scores: np.ndarray | None,
     batch_size: int,
     k_values: np.ndarray,
     merge_strategy: str = "replace",
@@ -645,9 +645,17 @@ def main():
     logger.info(f"Calib: n={len(calib_dv)}, Eval: n={len(eval_labels)}")
 
     # --- Ranking signals and reference metrics (on eval split) ---
-    uncertainty = probe_uncertainty(eval_ps)
+    # For the batched top-k uncertainty baseline, pass ranking_scores=None so
+    # that select_fixed_budget_amount uses its default within-batch median
+    # ranking (McKenzie et al. applied per batch).  No precomputed scores needed.
+    #
+    # For the uncertainty calibrated threshold (LTT), we need a per-instance
+    # signal in the same space as the calibration scores: rank of each eval
+    # score within the sorted calib distribution.  This makes the tau found
+    # during calibration transfer directly and requires no pool at test time.
+    eval_uncertainty_ltt = probe_uncertainty(eval_ps, reference=calib_ps)
     signals = {
-        "Uncertainty top-k": uncertainty,
+        "Uncertainty top-k": None,  # default: within-batch median ranking (McKenzie)
         "DV top-k": eval_dv,
         "Oracle top-k": eval_v.astype(float),
     }
@@ -668,7 +676,7 @@ def main():
         eval_bs,
         eval_labels,
         eval_dv,
-        uncertainty,
+        eval_uncertainty_ltt,
         dv_scores_full,
         dv_target,
         config,

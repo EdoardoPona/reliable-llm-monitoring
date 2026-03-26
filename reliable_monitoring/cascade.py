@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 from models_under_pressure.baselines.continuation import LikelihoodContinuationBaseline, likelihood_continuation_prompts
@@ -188,7 +188,7 @@ def select_fixed_budget_amount(
     if ranking_scores is not None:
         # Top-k by the provided ranking signal (higher = delegate first)
         mask = np.zeros(n_samples, dtype=bool)
-        top_idx = np.argsort(-ranking_scores)[:amount]
+        top_idx: np.ndarray[Any, np.dtype[np.signedinteger[Any]]] = np.argsort(-ranking_scores)[:amount]
         mask[top_idx] = True
         return mask
 

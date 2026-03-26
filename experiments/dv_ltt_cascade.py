@@ -125,6 +125,8 @@ def cascade_metrics(
 def train_probes(
     config,
     activation_config: ActivationConfig,
+    *,
+    local_only: bool = False,
 ) -> tuple[SequenceProbe, LogisticRegression | Ridge, str]:
     """Train the safety probe (on train split) and DV probe (on dev split).
 
@@ -145,6 +147,7 @@ def train_probes(
         dataset_path=config.train_dataset_path,
         local=not use_modal,
         gpu=modal_gpu,
+        local_only=local_only,
     )
     train_dataset = train_dataset.assign(**{f"activations_{reduction}": train_acts})
     safety_probe = SequenceProbe(reduction_strategy=reduction)
@@ -157,6 +160,7 @@ def train_probes(
         config,
         activation_config,
         safety_probe,
+        local_only=local_only,
     )
     dv_target = config.dv_target
     logger.info(f"DV target mode: {dv_target}")
@@ -187,6 +191,8 @@ def _load_split(
     config,
     activation_config: ActivationConfig,
     safety_probe: SequenceProbe,
+    *,
+    local_only: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
     """Load a data split, returning (probe_scores, baseline_scores, labels, activations, groups).
 
@@ -205,7 +211,12 @@ def _load_split(
 
         logger.info(f"Fetching cached baselines for {split}...")
         per_source_bl = fetch_per_source_baselines(
-            sources, split, config.baseline_model_name, local=not use_modal, gpu=modal_gpu
+            sources,
+            split,
+            config.baseline_model_name,
+            local=not use_modal,
+            gpu=modal_gpu,
+            local_only=local_only,
         )
 
         logger.info(f"Fetching cached activations for {split}...")
@@ -217,6 +228,7 @@ def _load_split(
             reduction,
             local=not use_modal,
             gpu=modal_gpu,
+            local_only=local_only,
         )
 
         logger.info(f"Loading {split} datasets with cached activations and baselines...")
@@ -244,6 +256,7 @@ def _load_split(
             dataset_path=str(path),
             local=not use_modal,
             gpu=modal_gpu,
+            local_only=local_only,
         )
 
         acts = compute_or_fetch_activations(
@@ -254,6 +267,7 @@ def _load_split(
             dataset_path=str(path),
             local=not use_modal,
             gpu=modal_gpu,
+            local_only=local_only,
         )
         dataset = dataset.assign(**{activation_field: acts})
         groups = None
@@ -406,13 +420,21 @@ class DVCascadeData:
     dv_tau_grid: np.ndarray  # threshold grid adapted to score range
 
 
-def prepare_dv_cascade_data(config, *, tau_steps: int | None = None) -> DVCascadeData:
+def prepare_dv_cascade_data(
+    config,
+    *,
+    tau_steps: int | None = None,
+    local_only: bool = False,
+) -> DVCascadeData:
     """Train probes, load test data, compute DV scores and tau grid.
 
     Args:
         config: Experiment configuration (from ``load_config``).
         tau_steps: Number of candidate DV thresholds.  Defaults to
             ``config.tau_steps`` (with fallback 30).
+        local_only: If True, use only local caches (no ClearML sync or
+            fallback).  Speeds up read-only analysis when all data is
+            already cached locally.
 
     Returns:
         A :class:`DVCascadeData` with all pre-computed arrays.
@@ -423,11 +445,13 @@ def prepare_dv_cascade_data(config, *, tau_steps: int | None = None) -> DVCascad
     )
 
     # --- Train probes ---
-    safety_probe, dv_clf, dv_target = train_probes(config, activation_config)
+    safety_probe, dv_clf, dv_target = train_probes(config, activation_config, local_only=local_only)
 
     # --- Load test split and compute scores ---
     logger.info("Loading test split...")
-    test_ps, test_bs, test_labels, X_test, test_groups = _load_split("test", config, activation_config, safety_probe)
+    test_ps, test_bs, test_labels, X_test, test_groups = _load_split(
+        "test", config, activation_config, safety_probe, local_only=local_only
+    )
 
     # --- Delegation value ---
     if dv_target == "continuous":

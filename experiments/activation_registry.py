@@ -296,6 +296,7 @@ def compute_or_fetch_activations(
     project_name: str = DEFAULT_PROJECT,
     local_cache_dir: Path = DEFAULT_LOCAL_CACHE_DIR,
     skip_cache: bool = False,
+    local_only: bool = False,
 ) -> np.ndarray:
     """Fetch cached reduced activations or compute and upload them.
 
@@ -314,6 +315,8 @@ def compute_or_fetch_activations(
         project_name: ClearML project for cache storage.
         local_cache_dir: Directory for local pickle cache.
         skip_cache: If True, always compute (skip all cache lookups).
+        local_only: If True, use only the local cache (no ClearML sync or
+            fallback).  Avoids network calls when all data is cached locally.
 
     Returns:
         Reduced activation array of shape ``(len(dataset), hidden_dim)``.
@@ -328,10 +331,16 @@ def compute_or_fetch_activations(
             if len(local_hit) != n_expected:
                 logger.warning(f"Local cache size mismatch: {len(local_hit)} != {n_expected}. Skipping.")
             else:
-                _ensure_clearml_cache(model_name, layer, reduction, dataset_key, local_hit, project_name)
+                if not local_only:
+                    _ensure_clearml_cache(model_name, layer, reduction, dataset_key, local_hit, project_name)
                 return local_hit
 
         # 2. Try ClearML cache
+        if local_only:
+            raise RuntimeError(
+                f"local_only=True but no local cache found for model={model_name}, layer={layer}, "
+                f"reduction={reduction}, dataset={dataset_key}"
+            )
         clearml_hit = _fetch_clearml_cache(model_name, layer, reduction, dataset_key, project_name)
         if clearml_hit is not None:
             if len(clearml_hit) != n_expected:
@@ -357,6 +366,7 @@ def compute_or_fetch_activations(
     # Save to both caches
     if not skip_cache:
         _save_local_cache(model_name, layer, reduction, dataset_key, data, local_cache_dir)
-        _upload_to_clearml(model_name, layer, reduction, dataset_key, data, project_name)
+        if not local_only:
+            _upload_to_clearml(model_name, layer, reduction, dataset_key, data, project_name)
 
     return data
