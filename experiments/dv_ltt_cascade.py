@@ -162,6 +162,7 @@ def train_probes(
         safety_probe,
         local_only=local_only,
     )
+    assert dev_ps is not None
     dv_target = config.dv_target
     logger.info(f"DV target mode: {dv_target}")
 
@@ -175,8 +176,23 @@ def train_probes(
         v_dev = compute_delegation_value(dev_ps, dev_bs, dev_labels).astype(float)
         logger.info(f"Dev delegation value: v=1 rate={v_dev.mean():.1%} (n={len(v_dev)})")
 
+    # DV probe always uses mean-reduced activations for stability across
+    # reduction strategy sweeps (only the safety probe varies).
+    if reduction != "mean":
+        logger.info("Fetching mean activations for DV probe training...")
+        _, _, _, X_dev_dv, _ = _load_split(
+            "dev",
+            config,
+            activation_config,
+            None,
+            local_only=local_only,
+            reduction_override="mean",
+        )
+    else:
+        X_dev_dv = X_dev
+
     logger.info("Training DV probe on dev split...")
-    dv_clf: LogisticRegression | Ridge = train_dv_probe(X_dev, v_dev, mode=dv_target)
+    dv_clf: LogisticRegression | Ridge = train_dv_probe(X_dev_dv, v_dev, mode=dv_target)
 
     return safety_probe, dv_clf, dv_target
 
@@ -190,18 +206,24 @@ def _load_split(
     split: str,
     config,
     activation_config: ActivationConfig,
-    safety_probe: SequenceProbe,
+    safety_probe: SequenceProbe | None,
     *,
     local_only: bool = False,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
+    reduction_override: str | None = None,
+) -> tuple[np.ndarray | None, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
     """Load a data split, returning (probe_scores, baseline_scores, labels, activations, groups).
 
     Handles both mixed-dataset and single-dataset configs.  Uses the
     activation and baseline caches to avoid recomputation.
+
+    When ``reduction_override`` is set, uses that reduction instead of
+    ``config.reduction_strategy`` and skips probe prediction (returns
+    ``None`` for probe_scores).  This is useful for fetching activations
+    for the DV probe which always uses mean reduction.
     """
     use_modal = getattr(config, "use_modal", False)
     modal_gpu = getattr(config, "modal_gpu", None)
-    reduction = config.reduction_strategy
+    reduction = reduction_override or config.reduction_strategy
     activation_field = f"activations_{reduction}"
 
     if has_mixed_config(config):
@@ -272,8 +294,11 @@ def _load_split(
         dataset = dataset.assign(**{activation_field: acts})
         groups = None
 
-    logger.info(f"Computing safety probe scores on {split}...")
-    probe_scores = safety_probe.predict(dataset)
+    if safety_probe is not None and reduction_override is None:
+        logger.info(f"Computing safety probe scores on {split}...")
+        probe_scores = safety_probe.predict(dataset)
+    else:
+        probe_scores = None
     labels = dataset.labels_numpy()
 
     X = dataset.other_fields[activation_field]
@@ -452,6 +477,7 @@ def prepare_dv_cascade_data(
     test_ps, test_bs, test_labels, X_test, test_groups = _load_split(
         "test", config, activation_config, safety_probe, local_only=local_only
     )
+    assert test_ps is not None
 
     # --- Delegation value ---
     if dv_target == "continuous":
@@ -464,9 +490,22 @@ def prepare_dv_cascade_data(
         v_test = compute_delegation_value(test_ps, test_bs, test_labels).astype(float)
         logger.info(f"Test delegation value: v=1 rate={v_test.mean():.1%} (n={len(v_test)})")
 
-    # --- DV scores ---
-    dv_scores = predict_dv_scores(dv_clf, X_test, mode=dv_target)
-    del X_test
+    # --- DV scores (always use mean activations, matching DV probe training) ---
+    reduction = config.reduction_strategy
+    if reduction != "mean":
+        logger.info("Fetching mean activations for DV score prediction...")
+        _, _, _, X_test_dv, _ = _load_split(
+            "test",
+            config,
+            activation_config,
+            None,
+            local_only=local_only,
+            reduction_override="mean",
+        )
+    else:
+        X_test_dv = X_test
+    dv_scores = predict_dv_scores(dv_clf, X_test_dv, mode=dv_target)
+    del X_test, X_test_dv
 
     v_test_binary = (v_test > 0).astype(int) if dv_target == "continuous" else v_test.astype(int)
     dv_auc = float(roc_auc_score(v_test_binary, dv_scores))

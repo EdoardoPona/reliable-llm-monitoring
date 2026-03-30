@@ -95,6 +95,97 @@ def batched_topk_sweep(
     return aucs, accs
 
 
+def global_oracle_sweep(
+    probe_scores: np.ndarray,
+    baseline_scores: np.ndarray,
+    labels: np.ndarray,
+    delegation_values: np.ndarray,
+    alpha_budgets: np.ndarray,
+    merge_strategy: str = "replace",
+) -> list[dict]:
+    """Compute the global (non-batched) oracle cascade at each budget level.
+
+    Ranks all examples by ground-truth delegation value v(x, y) and delegates
+    the top fraction, capping at v > 0 (never delegates when harmful).
+
+    Returns a list of per-alpha result dicts with keys:
+    alpha, k, realized_budget, auc, accuracy.
+    """
+    n = len(probe_scores)
+    max_beneficial = int((delegation_values > 0).sum())
+    order = np.argsort(-delegation_values)  # descending by v
+
+    results: list[dict] = []
+    for alpha in alpha_budgets:
+        k = min(int(np.ceil(alpha * n)), max_beneficial)
+        delegated = np.zeros(n, dtype=bool)
+        delegated[order[:k]] = True
+
+        if merge_strategy == "replace":
+            final = np.where(delegated, baseline_scores, probe_scores)
+        elif merge_strategy == "avg":
+            final = np.where(delegated, (probe_scores + baseline_scores) / 2, probe_scores)
+        else:
+            raise ValueError(f"Unknown merge strategy: {merge_strategy}")
+
+        results.append(
+            {
+                "alpha": float(alpha),
+                "k": k,
+                "realized_budget": float(delegated.mean()),
+                "auc": float(roc_auc_score(labels, final)),
+                "accuracy": float(accuracy_score(labels, (final >= 0.5).astype(int))),
+            }
+        )
+    return results
+
+
+def compute_faic(
+    ctd_results: list[dict],
+    oracle_results: list[dict],
+    probe_value: float,
+    metric: str = "auc",
+) -> float:
+    """Compute Fraction of Achievable Improvement Captured.
+
+    Integrates CTD and oracle curves (relative to probe-only baseline)
+    over the budget range up to the oracle's effective delegation capacity,
+    then returns the ratio.
+
+    Args:
+        ctd_results: Per-alpha dicts from ``pareto_ltt_sweep`` (keys: alpha, auc, accuracy).
+        oracle_results: Per-alpha dicts from ``global_oracle_sweep``.
+        probe_value: Probe-only metric (AUC or accuracy, matching *metric*).
+        metric: Which metric to integrate ("auc" or "accuracy").
+
+    Returns:
+        FAIC in [0, 1], or 0.0 if the oracle achieves no improvement.
+    """
+    # Find the effective delegation capacity: last alpha where oracle still improves
+    capacity_alpha = 0.0
+    for r in oracle_results:
+        if r["realized_budget"] > 0 and r[metric] > probe_value:
+            capacity_alpha = r["alpha"]
+    if capacity_alpha == 0.0:
+        return 0.0
+
+    # Filter both curves to [0, capacity_alpha]
+    oracle_alphas = np.array([r["alpha"] for r in oracle_results if r["alpha"] <= capacity_alpha])
+    oracle_vals = np.array([r[metric] for r in oracle_results if r["alpha"] <= capacity_alpha])
+    ctd_alphas = np.array([r["alpha"] for r in ctd_results if r["alpha"] <= capacity_alpha])
+    ctd_vals = np.array([r[metric] for r in ctd_results if r["alpha"] <= capacity_alpha])
+
+    if len(oracle_alphas) < 2 or len(ctd_alphas) < 2:
+        return 0.0
+
+    oracle_area = float(np.trapz(oracle_vals - probe_value, oracle_alphas))
+    ctd_area = float(np.trapz(ctd_vals - probe_value, ctd_alphas))
+
+    if oracle_area <= 0:
+        return 0.0
+    return max(0.0, ctd_area / oracle_area)
+
+
 @dataclass
 class LTTSignalConfig:
     """Per-signal inputs for Pareto LTT construction and evaluation."""
@@ -531,6 +622,8 @@ def save_results_json(
     dv_auc: float,
     topk_results: dict[int, tuple[np.ndarray, dict[str, tuple[np.ndarray, np.ndarray]]]],
     ltt_sweep_results: dict[str, list[dict]],
+    oracle_results: list[dict],
+    faic: dict[str, dict[str, float]],
 ) -> Path:
     """Serialize experiment results to JSON."""
     results_json: dict = {
@@ -548,6 +641,8 @@ def save_results_json(
             "baseline_acc": baseline_acc,
             "dv_probe_auc": dv_auc,
         },
+        "faic": faic,
+        "oracle": oracle_results,
         "topk": {},
         "ltt": {
             name: [{k: float(v) if isinstance(v, (float, np.floating)) else v for k, v in r.items()} for r in rows]
@@ -568,55 +663,48 @@ def save_results_json(
 
 
 # ---------------------------------------------------------------------------
-# CLI & main
+# Core experiment runner (importable by sweep scripts)
 # ---------------------------------------------------------------------------
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="DV cascade comparison experiment")
-    parser.add_argument("--config", type=str, default="configs/dv_cascade_comparison.yaml")
-    default_output = os.path.join(os.environ.get("RESULTS_DIR", "results"), "dv_cascade_comparison")
-    parser.add_argument("--output-dir", type=str, default=default_output)
-    parser.add_argument("--file-prefix", type=str, default="", help="Prefix for output filenames (e.g. 'llama1b_')")
-    parser.add_argument("--use-clearml", action="store_true")
-    return parser.parse_args()
+@dataclass
+class DVCascadeExperimentResults:
+    """Collected outputs from a single DV cascade comparison run."""
+
+    probe_auc: float
+    probe_acc: float
+    baseline_auc: float
+    baseline_acc: float
+    dv_auc: float
+    dv_target: str
+    merge_strategy: str
+    topk_results: dict[int, tuple[np.ndarray, dict[str, tuple[np.ndarray, np.ndarray]]]]
+    ltt_sweep_results: dict[str, list[dict]]
+    oracle_results: list[dict]
+    faic: dict[str, dict[str, float]]  # method_name -> {"auc": ..., "acc": ...}
+    figs: dict[str, plt.Figure]
 
 
-def main():
-    args = parse_args()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(args.output_dir) / timestamp
-    output_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(args.config, output_dir / Path(args.config).name)
-    file_prefix = args.file_prefix
+def run_dv_cascade_experiment(
+    config,
+    output_dir: Path,
+    file_prefix: str = "",
+) -> DVCascadeExperimentResults:
+    """Run the full DV cascade comparison experiment.
 
-    config = load_config(args.config)
+    This is the core experiment logic, separated from CLI parsing and
+    ClearML logging so that sweep scripts can call it directly.
+
+    Args:
+        config: Experiment configuration (``SimpleNamespace`` from ``load_config``
+            or constructed programmatically).
+        output_dir: Directory for plots and results.json.
+        file_prefix: Optional prefix for output filenames.
+
+    Returns:
+        Experiment results for downstream aggregation or ClearML logging.
+    """
     merge_strategy = config.merge_strategy
-
-    # --- ClearML init ---
-    clearml_logger = None
-    if args.use_clearml:
-        import os
-
-        from clearml_logger import ClearMLLogger
-
-        clearml_logger = ClearMLLogger(
-            project_name=os.environ.get("CLEARML_PROJECT_NAME", "reliable-llm-monitoring"),
-            task_name="dv_cascade_comparison",
-            enabled=True,
-        )
-        clearml_logger.add_tags(
-            [
-                "dv-cascade-comparison",
-                f"baseline:{config.baseline_model_name}",
-                f"activations:{config.activations_model_name}",
-                f"layer:{config.activations_layer}",
-                f"reduction:{config.reduction_strategy}",
-                f"batches:{','.join(str(b) for b in config.batch_sizes)}",
-                f"pareto:{config.pareto_testing}",
-                f"opt_risk:{config.opt_risk}",
-            ]
-        )
 
     # --- Train probes & load test data ---
     data = prepare_dv_cascade_data(config)
@@ -683,6 +771,17 @@ def main():
         merge_strategy,
     )
 
+    # --- Global oracle ---
+    alpha_budgets_oracle = np.linspace(0.05, 1, config.n_alpha_steps)
+    oracle_results = global_oracle_sweep(
+        eval_ps,
+        eval_bs,
+        eval_labels,
+        eval_v.astype(float),
+        alpha_budgets_oracle,
+        merge_strategy=merge_strategy,
+    )
+
     # --- Batched top-k sweeps ---
     batch_sizes = config.batch_sizes
     n_k_steps = config.n_k_steps
@@ -712,6 +811,36 @@ def main():
                 )
 
         topk_results[bs] = (budget_fractions, signal_results)
+
+    # --- FAIC for all methods ---
+    def _curve_to_rows(alphas, aucs, accs):
+        return [
+            {"alpha": float(a), "auc": float(u), "accuracy": float(c)}
+            for a, u, c in zip(alphas, aucs, accs, strict=True)
+        ]
+
+    faic: dict[str, dict[str, float]] = {}
+
+    # LTT methods (CTD, Unc. calibrated)
+    for name, rows in ltt_sweep_results.items():
+        faic[name] = {
+            "auc": compute_faic(rows, oracle_results, probe_auc, metric="auc"),
+            "acc": compute_faic(rows, oracle_results, probe_acc, metric="accuracy"),
+        }
+
+    # Top-k methods (use largest batch size)
+    largest_bs = max(batch_sizes)
+    topk_fracs, topk_signals = topk_results[largest_bs]
+    for name, (aucs, accs) in topk_signals.items():
+        rows = _curve_to_rows(topk_fracs, aucs, accs)
+        faic[name] = {
+            "auc": compute_faic(rows, oracle_results, probe_auc, metric="auc"),
+            "acc": compute_faic(rows, oracle_results, probe_acc, metric="accuracy"),
+        }
+
+    logger.info("FAIC scores:")
+    for name, scores in faic.items():
+        logger.info(f"  {name:>18s}: AUC={scores['auc']:.4f}, Acc={scores['acc']:.4f}")
 
     # --- Generate plots ---
     logger.info("\nGenerating plots...")
@@ -777,24 +906,94 @@ def main():
         dv_auc,
         topk_results,
         ltt_sweep_results,
+        oracle_results,
+        faic,
     )
+
+    return DVCascadeExperimentResults(
+        probe_auc=probe_auc,
+        probe_acc=probe_acc,
+        baseline_auc=baseline_auc,
+        baseline_acc=baseline_acc,
+        dv_auc=dv_auc,
+        dv_target=dv_target,
+        merge_strategy=merge_strategy,
+        topk_results=topk_results,
+        ltt_sweep_results=ltt_sweep_results,
+        oracle_results=oracle_results,
+        faic=faic,
+        figs=figs,
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLI & main
+# ---------------------------------------------------------------------------
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="DV cascade comparison experiment")
+    parser.add_argument("--config", type=str, default="configs/dv_cascade_comparison.yaml")
+    default_output = os.path.join(os.environ.get("RESULTS_DIR", "results"), "dv_cascade_comparison")
+    parser.add_argument("--output-dir", type=str, default=default_output)
+    parser.add_argument("--file-prefix", type=str, default="", help="Prefix for output filenames (e.g. 'llama1b_')")
+    parser.add_argument("--use-clearml", action="store_true")
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = Path(args.output_dir) / timestamp
+    output_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(args.config, output_dir / Path(args.config).name)
+
+    config = load_config(args.config)
+
+    # --- ClearML init ---
+    clearml_logger = None
+    if args.use_clearml:
+        import os
+
+        from clearml_logger import ClearMLLogger
+
+        clearml_logger = ClearMLLogger(
+            project_name=os.environ.get("CLEARML_PROJECT_NAME", "reliable-llm-monitoring"),
+            task_name="dv_cascade_comparison",
+            enabled=True,
+        )
+        clearml_logger.add_tags(
+            [
+                "dv-cascade-comparison",
+                f"baseline:{config.baseline_model_name}",
+                f"activations:{config.activations_model_name}",
+                f"layer:{config.activations_layer}",
+                f"reduction:{config.reduction_strategy}",
+                f"batches:{','.join(str(b) for b in config.batch_sizes)}",
+                f"pareto:{config.pareto_testing}",
+                f"opt_risk:{config.opt_risk}",
+            ]
+        )
+
+    # --- Run experiment ---
+    results = run_dv_cascade_experiment(config, output_dir, file_prefix=args.file_prefix)
 
     # --- ClearML logging ---
     if clearml_logger is not None:
         scalars = {
-            "dv_probe_auc": dv_auc,
-            "probe_only_auc": probe_auc,
-            "baseline_only_auc": baseline_auc,
+            "dv_probe_auc": results.dv_auc,
+            "probe_only_auc": results.probe_auc,
+            "baseline_only_auc": results.baseline_auc,
         }
-        for bs in batch_sizes:
-            budget_fractions, signal_results = topk_results[bs]
+        for bs in config.batch_sizes:
+            budget_fractions, signal_results = results.topk_results[bs]
             idx_20 = np.argmin(np.abs(budget_fractions - 0.2))
             dv_auc_20 = signal_results["DV top-k"][0][idx_20]
             unc_auc_20 = signal_results["Unc. top-k"][0][idx_20]
             scalars[f"dv_advantage_auc_B{bs}_at_20pct"] = dv_auc_20 - unc_auc_20
 
         clearml_logger.log_scalars(scalars)
-        for name, fig in figs.items():
+        for name, fig in results.figs.items():
             clearml_logger.log_figure("DV Cascade Comparison", name, fig)
         clearml_logger.finalize()
         logger.info("Results logged to ClearML.")
