@@ -1,0 +1,13 @@
+# Per-group analysis of the DV cascade
+# --------------------------------------
+# References the same two run directories as probe_analysis.yaml.
+# The script reconstructs eval splits deterministically from saved configs.
+
+strong_run_dir: results/dv_cascade_comparison/20260329_194052
+weak_run_dir:   results/dv_cascade_comparison/20260329_194233
+
+output_dir: results/group_analysis
+
+# Budget level used for Figures 6a/6b delegation rate bars.
+# Reads the closest available tau from results.json["ltt"].
+target_alpha: 0.20
