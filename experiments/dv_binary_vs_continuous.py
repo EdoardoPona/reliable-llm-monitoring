@@ -50,7 +50,7 @@ def make_table(
     bs_key = str(batch_size)
     lines: list[str] = []
 
-    signals = ["Probe uncertainty (top-k)", "DV probe (top-k)", "Oracle (top-k)"]
+    signals = ["Unc. top-k", "DV top-k", "Oracle top-k"]
 
     lines.append(r"\begin{tabular}{l cc cc cc}")
     lines.append(r"\toprule")
@@ -89,7 +89,7 @@ def plot_delta_auc(
     binary: dict,
     continuous: dict,
     output_path: Path,
-    signal: str = "DV probe (top-k)",
+    signal: str = "DV top-k",  # key in results JSON
 ) -> plt.Figure:
     """Plot Δ AUC (continuous − binary) vs budget, one line per batch size."""
     batch_sizes = binary["config"]["batch_sizes"]

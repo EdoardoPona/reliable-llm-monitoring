@@ -236,7 +236,6 @@ def plot_mean_v_at_k(runs: list[dict], labels: list[str], random_seed: int = 0):
         ax.grid(alpha=0.3)
         ax.set_xlim(0, 1)
 
-    fig.suptitle("Mean delegation value of selected set vs budget", fontweight="bold", fontsize=12)
     plt.tight_layout()
     return fig
 
