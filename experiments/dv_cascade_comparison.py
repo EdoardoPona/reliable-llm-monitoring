@@ -8,7 +8,7 @@ Compares delegation strategies for the probe-baseline safety cascade:
    - Oracle:            v(x) = 1[probe wrong AND baseline correct]
 
 2. **LTT threshold** (global, with PAC budget guarantee):
-   - DV calibrated threshold: delegate where d(x) > tau, with tau calibrated
+   - CTD (calibrated threshold): delegate where d(x) > tau, with tau calibrated
      via Pareto-filtered Learn-then-Test for each target budget alpha.
 
 Outputs:
@@ -145,25 +145,25 @@ def pareto_ltt_sweep(
 # ---------------------------------------------------------------------------
 
 COLORS = {
-    "Uncertainty top-k": "C0",  # blue
+    "Unc. top-k": "C0",  # blue
     "DV top-k": "C1",  # orange
     "Oracle top-k": "C2",  # green
-    "DV calibrated threshold": "C1",  # orange
-    "Uncertainty calibrated threshold": "C0",  # blue
+    "CTD": "C1",  # orange
+    "Unc. calibrated": "C0",  # blue
 }
 MARKERS = {
-    "Uncertainty top-k": "D",
+    "Unc. top-k": "D",
     "DV top-k": "D",
     "Oracle top-k": "D",
-    "DV calibrated threshold": "s",
-    "Uncertainty calibrated threshold": "s",
+    "CTD": "s",
+    "Unc. calibrated": "s",
 }
 STYLES = {
-    "Uncertainty top-k": "--",
+    "Unc. top-k": "--",
     "DV top-k": "--",
     "Oracle top-k": "--",
-    "DV calibrated threshold": "-",
-    "Uncertainty calibrated threshold": "-",
+    "CTD": "-",
+    "Unc. calibrated": "-",
 }
 
 
@@ -243,10 +243,10 @@ def _plot_single_batch_size(
             # Order legend by novelty
             handles, labels = ax.get_legend_handles_labels()
             legend_order = [
-                "DV calibrated threshold",
+                "CTD",
                 "DV top-k",
-                "Uncertainty calibrated threshold",
-                "Uncertainty top-k",
+                "Unc. calibrated",
+                "Unc. top-k",
                 "Oracle top-k",
             ]
             # Add reference lines (Probe only, Expert only) at the end
@@ -463,13 +463,13 @@ def run_ltt_calibration(
     unc_tau_grid = np.linspace(unc_tau_min, unc_tau_max, tau_steps)
 
     signal_configs: dict[str, LTTSignalConfig] = {
-        "DV calibrated threshold": LTTSignalConfig(
+        "CTD": LTTSignalConfig(
             ht_scores=calib_dv[ht_idx],
             opt_scores=calib_dv[opt_idx],
             tau_grid=dv_tau_grid,
             eval_scores=eval_dv,
         ),
-        "Uncertainty calibrated threshold": LTTSignalConfig(
+        "Unc. calibrated": LTTSignalConfig(
             ht_scores=calib_uncertainty[ht_idx],
             opt_scores=calib_uncertainty[opt_idx],
             tau_grid=unc_tau_grid,
@@ -655,7 +655,7 @@ def main():
     # during calibration transfer directly and requires no pool at test time.
     eval_uncertainty_ltt = probe_uncertainty(eval_ps, reference=calib_ps)
     signals = {
-        "Uncertainty top-k": None,  # default: within-batch median ranking (McKenzie)
+        "Unc. top-k": None,  # default: within-batch median ranking (McKenzie)
         "DV top-k": eval_dv,
         "Oracle top-k": eval_v.astype(float),
     }
@@ -743,7 +743,7 @@ def main():
         file_prefix=file_prefix,
     )
 
-    dv_ltt_rows = ltt_sweep_results.get("DV calibrated threshold", [])
+    dv_ltt_rows = ltt_sweep_results.get("CTD", [])
     representative = dv_ltt_rows[len(dv_ltt_rows) // 2] if dv_ltt_rows else None
     if representative is not None:
         figs["adaptivity"] = plot_adaptivity(
@@ -790,7 +790,7 @@ def main():
             budget_fractions, signal_results = topk_results[bs]
             idx_20 = np.argmin(np.abs(budget_fractions - 0.2))
             dv_auc_20 = signal_results["DV top-k"][0][idx_20]
-            unc_auc_20 = signal_results["Uncertainty top-k"][0][idx_20]
+            unc_auc_20 = signal_results["Unc. top-k"][0][idx_20]
             scalars[f"dv_advantage_auc_B{bs}_at_20pct"] = dv_auc_20 - unc_auc_20
 
         clearml_logger.log_scalars(scalars)
