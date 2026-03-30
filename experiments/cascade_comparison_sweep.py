@@ -10,14 +10,11 @@ import argparse
 import logging
 import os
 from collections.abc import Iterable
-from copy import deepcopy
-from dataclasses import dataclass
-from itertools import product
 from types import SimpleNamespace
 
 import cascade_comparison as cascade_module
 from cascade_comparison import make_figures, run_cascade_comparison_experiment
-from config import expand_env_vars
+from config import SweepRun, build_sweep_configs
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -57,54 +54,6 @@ SWEEP_CONFIG = {
         # "meta-llama/Llama-3.1-8B-Instruct",
     ],
 }
-
-
-@dataclass(frozen=True)
-class SweepRun:
-    index: int
-    config: SimpleNamespace
-    label: str
-
-
-def _normalize_sweep_values(values: object) -> list[object]:
-    if isinstance(values, (list, tuple)):
-        return list(values)
-    return [values]
-
-
-def build_sweep_configs(base_config: dict, sweep_config: dict) -> list[SweepRun]:
-    overlap = set(base_config).intersection(sweep_config)
-    if overlap:
-        overlap_list = ", ".join(sorted(overlap))
-        raise ValueError(
-            "Overlapping keys in BASE_CONFIG and SWEEP_CONFIG are not allowed. "
-            f"Remove from BASE_CONFIG or SWEEP_CONFIG: {overlap_list}"
-        )
-
-    keys = list(sweep_config.keys())
-    values_list = [_normalize_sweep_values(sweep_config[key]) for key in keys]
-
-    if not keys:
-        configs = [deepcopy(base_config)]
-        labels = ["base"]
-    else:
-        configs = []
-        labels = []
-        for values in product(*values_list):
-            cfg = deepcopy(base_config)
-            label_parts = []
-            for key, value in zip(keys, values, strict=True):
-                cfg[key] = value
-                label_parts.append(f"{key}={value}")
-            configs.append(cfg)
-            labels.append(",".join(label_parts))
-
-    sweep_runs: list[SweepRun] = []
-    for i, (cfg, label) in enumerate(zip(configs, labels, strict=True), start=1):
-        expanded = expand_env_vars(cfg)
-        sweep_runs.append(SweepRun(index=i, config=SimpleNamespace(**expanded), label=label))
-
-    return sweep_runs
 
 
 def _make_task_name(label: str) -> str:
