@@ -241,7 +241,7 @@ def _compute_activations(
     *,
     local: bool = True,
     gpu: str | None = None,
-    batch_size: int = 32,
+    batch_size: int = 8,
 ) -> np.ndarray:
     """Compute reduced activations locally or on Modal."""
     if not local:
@@ -292,7 +292,7 @@ def compute_or_fetch_activations(
     *,
     local: bool = True,
     gpu: str | None = None,
-    batch_size: int = 32,
+    batch_size: int = 8,
     project_name: str = DEFAULT_PROJECT,
     local_cache_dir: Path = DEFAULT_LOCAL_CACHE_DIR,
     skip_cache: bool = False,
