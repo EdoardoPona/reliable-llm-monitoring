@@ -30,7 +30,7 @@ def _compute_activations_impl(
     dataset,
     layer: int,
     reduction_strategy: str,
-    batch_size: int = 32,
+    batch_size: int = 8,
     chunk_size: int = 500,
 ) -> list[list[float]]:
     """Compute reduced activations on a remote GPU.
@@ -89,22 +89,22 @@ def _compute_activations_impl(
 
 
 @app.function(image=image, gpu="T4", volumes=_volumes, secrets=[_hf_secret], timeout=_timeout)
-def _compute_activations_t4(model_name, dataset, layer, reduction_strategy, batch_size=32):
+def _compute_activations_t4(model_name, dataset, layer, reduction_strategy, batch_size=16):
     return _compute_activations_impl(model_name, dataset, layer, reduction_strategy, batch_size)
 
 
 @app.function(image=image, gpu="A10G", volumes=_volumes, secrets=[_hf_secret], timeout=_timeout)
-def _compute_activations_a10g(model_name, dataset, layer, reduction_strategy, batch_size=32):
+def _compute_activations_a10g(model_name, dataset, layer, reduction_strategy, batch_size=16):
     return _compute_activations_impl(model_name, dataset, layer, reduction_strategy, batch_size)
 
 
 @app.function(image=image, gpu="A100-80GB", volumes=_volumes, secrets=[_hf_secret], timeout=_timeout)
-def _compute_activations_a100(model_name, dataset, layer, reduction_strategy, batch_size=32):
+def _compute_activations_a100(model_name, dataset, layer, reduction_strategy, batch_size=16):
     return _compute_activations_impl(model_name, dataset, layer, reduction_strategy, batch_size)
 
 
 @app.function(image=image, gpu="A100-80GB:2", volumes=_volumes, secrets=[_hf_secret], timeout=_timeout)
-def _compute_activations_a100x2(model_name, dataset, layer, reduction_strategy, batch_size=32):
+def _compute_activations_a100x2(model_name, dataset, layer, reduction_strategy, batch_size=16):
     return _compute_activations_impl(model_name, dataset, layer, reduction_strategy, batch_size)
 
 
@@ -122,7 +122,7 @@ def compute_activations_modal(
     layer: int,
     reduction_strategy: str,
     *,
-    batch_size: int = 32,
+    batch_size: int = 8,
     gpu: str | None = None,
 ) -> np.ndarray:
     """Compute reduced activations on a Modal cloud GPU.
