@@ -80,6 +80,9 @@ GPU_MAP = {
 _QUANTIZE_4BIT = {"llama-70b", "gemma-27b"}
 
 
+_cached_baseline_model: dict = {}
+
+
 def _run_baseline_impl(
     baseline_model_name: str,
     dataset,
@@ -101,18 +104,28 @@ def _run_baseline_impl(
     prompt_key = get_model_baseline_prompt(abbreviated)
     prompt_config = likelihood_continuation_prompts[prompt_key]
 
-    model_kwargs = {}
-    if abbreviated in _QUANTIZE_4BIT:
-        import torch
-        from transformers import BitsAndBytesConfig
+    # Reuse model across calls in the same container
+    if _cached_baseline_model.get("name") == abbreviated:
+        model = _cached_baseline_model["model"]
+    else:
+        model_kwargs = {}
+        if abbreviated in _QUANTIZE_4BIT:
+            import torch
+            from transformers import BitsAndBytesConfig
 
-        model_kwargs["quantization_config"] = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_quant_type="nf4",
-        )
+            model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_quant_type="nf4",
+            )
+            n_gpus = torch.cuda.device_count()
+            if n_gpus > 1:
+                model_kwargs["max_memory"] = {i: "40GiB" for i in range(n_gpus)}
 
-    model = LLMModel.load(LOCAL_MODELS[abbreviated], model_kwargs=model_kwargs)
+        model = LLMModel.load(LOCAL_MODELS[abbreviated], model_kwargs=model_kwargs)
+        _cached_baseline_model["name"] = abbreviated
+        _cached_baseline_model["model"] = model
+
     baseline_model = LikelihoodContinuationBaseline(model, prompt_config=prompt_config)
 
     results = baseline_model.likelihood_classify_dataset(

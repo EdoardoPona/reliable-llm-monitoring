@@ -41,11 +41,28 @@ def _compute_activations_impl(
     to the next chunk.
     """
     import torch
+    from models_under_pressure.experiments.monitoring_cascade import get_abbreviated_model_name
     from models_under_pressure.model import LLMModel
+    from transformers import BitsAndBytesConfig
 
     from reliable_monitoring.reductions import get_reduction_function
 
-    model = LLMModel.load(model_name, batch_size=batch_size)
+    # Large models need 4-bit quantization to fit in VRAM
+    _QUANTIZE_4BIT = {"llama-70b", "gemma-27b"}
+    abbreviated = get_abbreviated_model_name(model_name)
+    model_kwargs = {}
+    if abbreviated in _QUANTIZE_4BIT:
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_type="nf4",
+        )
+        # Distribute across all available GPUs
+        n_gpus = torch.cuda.device_count()
+        if n_gpus > 1:
+            model_kwargs["max_memory"] = {i: "75GiB" for i in range(n_gpus)}
+
+    model = LLMModel.load(model_name, batch_size=batch_size, model_kwargs=model_kwargs)
     reduction_fn = get_reduction_function(reduction_strategy)
 
     n = len(dataset)
@@ -104,7 +121,7 @@ def _compute_activations_a100(model_name, dataset, layer, reduction_strategy, ba
 
 
 @app.function(image=image, gpu="A100-80GB:2", volumes=_volumes, secrets=[_hf_secret], timeout=_timeout)
-def _compute_activations_a100x2(model_name, dataset, layer, reduction_strategy, batch_size=16):
+def _compute_activations_a100x2(model_name, dataset, layer, reduction_strategy, batch_size=2):
     return _compute_activations_impl(model_name, dataset, layer, reduction_strategy, batch_size)
 
 

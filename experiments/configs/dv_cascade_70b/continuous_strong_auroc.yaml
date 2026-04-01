@@ -1,0 +1,45 @@
+# DV Cascade Comparison: Llama-3.3-70B activations + 70B strong expert
+# Continuous DV target, AUROC risk. Mirrors continuous_strong_auroc with 70B models.
+
+dv_target: continuous
+
+batch_sizes: [32, 64, 128]
+n_k_steps: 20
+
+calib_fraction: 0.5
+guarantee_probability: 0.9
+tau_steps: 100
+n_alpha_steps: 20
+pareto_testing: true
+pareto_split_proportion: 0.3
+opt_risk: roc_auc_error
+merge_strategy: replace
+
+activations_model_name: meta-llama/Llama-3.3-70B-Instruct
+activations_layer: 31
+baseline_model_name: meta-llama/Llama-3.3-70B-Instruct
+reduction_strategy: mean
+
+use_modal: true
+seed: 42
+
+train_dataset_path: ${DATA_DIR}/training/prompts_4x/train.jsonl
+
+dev_dataset_path: ${DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl
+test_dataset_path: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
+
+mixed_datasets:
+  balance_strategy: 500
+  sources:
+    - group: anthropic
+      dev: ${DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl
+      test: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
+    - group: mt
+      dev: ${DATA_DIR}/evals/dev/mt_balanced_apr_30.jsonl
+      test: ${DATA_DIR}/evals/test/mt_test_balanced_apr_30.jsonl
+    - group: mts
+      dev: ${DATA_DIR}/evals/dev/mts_balanced_apr_22.jsonl
+      test: ${DATA_DIR}/evals/test/mts_test_balanced_apr_22.jsonl
+    - group: toolace
+      dev: ${DATA_DIR}/evals/dev/toolace_balanced_apr_22.jsonl
+      test: ${DATA_DIR}/evals/test/toolace_test_balanced_apr_22.jsonl

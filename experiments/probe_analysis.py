@@ -208,7 +208,7 @@ def plot_mean_v_at_k(runs: list[dict], labels: list[str], random_seed: int = 0):
     A good signal selects high-v examples early; a bad signal may select negative-v
     examples, meaning the cascade is worse than the probe alone at that budget.
     """
-    fig, axes = plt.subplots(1, len(runs), figsize=(6 * len(runs), 5), sharey=False)
+    fig, axes = plt.subplots(1, len(runs), figsize=(6 * len(runs), 4), sharey=False)
     if len(runs) == 1:
         axes = [axes]
 
@@ -232,11 +232,13 @@ def plot_mean_v_at_k(runs: list[dict], labels: list[str], random_seed: int = 0):
         ax.set_xlabel("Selection fraction $k/N$", fontsize=11)
         ax.set_ylabel("Mean $v(x,y)$ of selected set", fontsize=11)
         ax.set_title(label, fontsize=11)
-        ax.legend(fontsize=9)
         ax.grid(alpha=0.3)
         ax.set_xlim(0, 1)
 
-    plt.tight_layout()
+    # Single legend below the figure
+    handles, leg_labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, leg_labels, fontsize=9, loc="lower center", ncol=len(handles), bbox_to_anchor=(0.5, -0.02))
+    fig.subplots_adjust(bottom=0.18)
     return fig
 
 

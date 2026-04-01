@@ -351,6 +351,29 @@ def _plot_single_batch_size(
             )
 
 
+def _add_figure_legend(fig: plt.Figure, ax: plt.Axes) -> None:
+    """Add a single ordered legend below the figure, extracted from *ax*."""
+    handles, labels = ax.get_legend_handles_labels()
+    legend_order = [
+        "CTD",
+        "DV top-k",
+        "Unc. calibrated",
+        "Unc. top-k",
+        "Oracle top-k",
+    ]
+    legend_order += [lab for lab in labels if lab not in legend_order]
+    order = [labels.index(name) for name in legend_order if name in labels]
+    fig.legend(
+        [handles[i] for i in order],
+        [labels[i] for i in order],
+        fontsize=8,
+        loc="lower center",
+        ncol=len(order),
+        bbox_to_anchor=(0.5, -0.02),
+    )
+    fig.subplots_adjust(bottom=0.18)
+
+
 def plot_single_batch_size(
     budget_fractions: np.ndarray,
     signal_results: dict[str, tuple[np.ndarray, np.ndarray]],
@@ -375,10 +398,10 @@ def plot_single_batch_size(
         baseline_auc,
         baseline_acc,
         batch_size,
-        show_legend=True,
+        show_legend=False,
         ltt_results=ltt_results,
     )
-    fig.tight_layout()
+    _add_figure_legend(fig, ax_auc)
     fig.savefig(output_dir / f"{file_prefix}ranking_comparison_B{batch_size}.pdf", bbox_inches="tight")
     return fig
 
@@ -410,7 +433,7 @@ def plot_grid(
             baseline_auc,
             baseline_acc,
             bs,
-            show_legend=(j == n_cols - 1),
+            show_legend=False,
             ltt_results=ltt_results,
         )
         # Only put y-label on leftmost column
@@ -418,7 +441,7 @@ def plot_grid(
             axes[0, j].set_ylabel("")
             axes[1, j].set_ylabel("")
 
-    fig.tight_layout()
+    _add_figure_legend(fig, axes[0, 0])
     fig.savefig(output_dir / f"{file_prefix}ranking_comparison_grid.pdf", bbox_inches="tight")
     return fig
 
