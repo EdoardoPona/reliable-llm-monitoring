@@ -302,6 +302,94 @@ def plot_dv_probe_roc(
     return fig
 
 
+def _bin_outcome(
+    x: np.ndarray,
+    outcome: np.ndarray,
+    n_bins: int,
+    binning: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[int]]:
+    """Bin ``x`` and return (bin_center, mean_outcome, sem, count) per non-empty bin.
+
+    Bin centres are the mean of ``x`` within the bin, so markers sit at the
+    actual delegation-value mass rather than nominal edge midpoints.
+    """
+    if binning == "quantile":
+        edges = np.unique(np.quantile(x, np.linspace(0, 1, n_bins + 1)))
+    else:
+        edges = np.linspace(float(x.min()), float(x.max()), n_bins + 1)
+    # digitize on interior edges so every point lands in [0, len(edges)-2]
+    idx = np.clip(np.digitize(x, edges[1:-1], right=False), 0, len(edges) - 2)
+
+    centers, means, sems, counts = [], [], [], []
+    for b in range(len(edges) - 1):
+        mask = idx == b
+        n = int(mask.sum())
+        if n == 0:
+            continue
+        centers.append(float(x[mask].mean()))
+        means.append(float(outcome[mask].mean()))
+        sems.append(float(outcome[mask].std(ddof=1) / np.sqrt(n)) if n > 1 else 0.0)
+        counts.append(n)
+    return np.array(centers), np.array(means), np.array(sems), counts
+
+
+def plot_dv_outcome_calibration(
+    probe_scores: np.ndarray,
+    baseline_scores: np.ndarray,
+    labels: np.ndarray,
+    dv_scores: np.ndarray,
+    output_dir: Path,
+    n_bins: int = 10,
+    binning: str = "quantile",
+) -> plt.Figure:
+    """Delegation outcome vs delegation value, binned by true and predicted DV.
+
+    The delegation outcome is the realised, signed effect of delegating an example:
+        +1  delegation helps    (probe wrong, expert right)
+         0  delegation neutral  (both right, or both wrong)
+        -1  delegation harms    (probe right, expert wrong)
+
+    The left panel bins by the true continuous DV v(x,y) = P_expert - P_probe;
+    the right panel bins by the DV probe's predicted score. A well-behaved DV
+    signal should be monotonically increasing: higher DV -> better mean outcome.
+    """
+    probe_correct = ((probe_scores >= 0.5).astype(int) == labels).astype(int)
+    baseline_correct = ((baseline_scores >= 0.5).astype(int) == labels).astype(int)
+    outcome = (baseline_correct - probe_correct).astype(float)
+
+    true_dv = compute_continuous_delegation_value(probe_scores, baseline_scores, labels)
+
+    panels = [
+        (true_dv, "True delegation value  $v(x,y)=P_{E}-P_{P}$", "Binned by true DV"),
+        (dv_scores, "Predicted delegation value (DV probe)", "Binned by predicted DV"),
+    ]
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+    for ax, (x, xlabel, title) in zip(axes, panels, strict=True):
+        centers, means, sems, counts = _bin_outcome(x, outcome, n_bins, binning)
+        ax.errorbar(centers, means, yerr=sems, marker="o", capsize=3, color="C0", zorder=3)
+        ax.axhline(0.0, color="gray", linestyle=":", linewidth=0.9, alpha=0.7)
+        med_count = int(np.median(counts)) if counts else 0
+        ax.text(
+            0.04,
+            0.95,
+            f"{binning} bins, $n\\approx${med_count}/bin",
+            transform=ax.transAxes,
+            va="top",
+            fontsize=9,
+            bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.7, "edgecolor": "0.7"},
+        )
+        ax.set_xlabel(xlabel)
+        ax.set_title(title)
+        ax.grid(alpha=0.3)
+
+    axes[0].set_ylabel("Mean delegation outcome\n($+1$ helps, $0$ neutral, $-1$ harms)")
+    fig.suptitle("Delegation outcome vs delegation value")
+    fig.tight_layout()
+    fig.savefig(output_dir / "dv_outcome_calibration.pdf", bbox_inches="tight")
+    return fig
+
+
 def plot_cascade_budget_sweep(
     probe_scores: np.ndarray,
     baseline_scores: np.ndarray,
@@ -720,6 +808,7 @@ def main():
         v_binary, groups, probe_scores, baseline_scores, labels, output_dir
     )
     figs["dv_roc"] = plot_dv_probe_roc(v_binary, dv_scores, groups, output_dir)
+    figs["dv_outcome"] = plot_dv_outcome_calibration(probe_scores, baseline_scores, labels, dv_scores, output_dir)
     figs["budget_sweep"] = plot_cascade_budget_sweep(
         probe_scores, baseline_scores, labels, dv_scores, v, (dt_budget, dt_auc, dt_acc), output_dir
     )
