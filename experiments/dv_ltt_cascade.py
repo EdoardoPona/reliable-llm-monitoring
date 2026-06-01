@@ -34,10 +34,11 @@ from reliable_monitoring.dataset import ActivationConfig, load_dataset
 from reliable_monitoring.learn_then_test import (
     ParetoFilterResult,
     fixed_sequence_testing,
+    joint_p_value,
     pareto_filter_thresholds,
 )
 from reliable_monitoring.probes import SequenceProbe
-from reliable_monitoring.risks import BudgetCostRisk
+from reliable_monitoring.risks import BudgetCostRisk, Risk, evaluate_threshold_risks
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,199 @@ def ltt_budget_threshold(
         return None
     # Last rejected index = most aggressive valid tau
     return float(ordered_taus[rejected[-1]])
+
+
+def ltt_joint_threshold(
+    probe_scores: np.ndarray,
+    baseline_scores: np.ndarray,
+    delegation_scores: np.ndarray,
+    labels: np.ndarray,
+    tau_grid: np.ndarray,
+    *,
+    risks: list[Risk],
+    alphas: dict[str, float],
+    delta: float,
+    merge_strategy: str = "replace",
+) -> float | None:
+    """Find the smallest tau jointly controlling all ``risks`` via fixed-sequence LTT.
+
+    Multi-risk extension of :func:`ltt_budget_threshold`.  Hypotheses are
+    ordered from safest (largest tau, lowest delegation rate) to most
+    aggressive (smallest tau).  For each tau the per-risk empirical risks
+    are computed via :func:`evaluate_threshold_risks`, combined into a
+    single union-bound (``max-p``) p-value via :func:`joint_p_value`, and
+    tested by :func:`fixed_sequence_testing` at level ``delta``.  Returns
+    the smallest tau in the rejection chain (most aggressive certified
+    threshold), or ``None`` if no tau passes the joint test.
+
+    Args:
+        probe_scores: Probe scores on the calibration split.
+        baseline_scores: Baseline scores on the calibration split.
+        delegation_scores: Delegation signal on the calibration split.
+            Cascade delegates where ``delegation_scores > tau``.
+        labels: Ground-truth labels on the calibration split.
+        tau_grid: Candidate thresholds (any order; sorted descending here).
+        risks: Risk objects to jointly control.  Every ``risk.name`` must
+            have an entry in ``alphas``.
+        alphas: Mapping from risk name to target level for that risk.
+        delta: Overall FWER level for the joint fixed-sequence test.
+        merge_strategy: Cascade merge strategy (``"replace"`` or ``"avg"``).
+
+    Returns:
+        The smallest tau certified to jointly satisfy all risk constraints
+        at level ``delta``, or ``None`` if no tau passes.
+    """
+    # Safest first: largest tau (lowest delegation rate) to smallest
+    ordered_taus = np.sort(tau_grid)[::-1]
+
+    eval_result = evaluate_threshold_risks(
+        probe_scores,
+        baseline_scores,
+        ordered_taus,
+        risks=risks,
+        labels=labels,
+        merge_strategy=merge_strategy,
+        delegation_scores=delegation_scores,
+    )
+
+    p_values = joint_p_value(
+        empirical_risks=eval_result.empirical_risks,
+        risks=risks,
+        alphas=alphas,
+        n=eval_result.n_samples,
+    )
+
+    rejected = fixed_sequence_testing(p_values, delta)
+    alpha_str = ", ".join(f"{name}={alphas[name]:.2f}" for name in sorted(alphas))
+    logger.info(f"  Joint LTT: {alpha_str}, delta={delta:.2f}, rejected {len(rejected)}/{len(tau_grid)} taus")
+    if not rejected:
+        return None
+    # Last rejected index = most aggressive certified tau
+    return float(ordered_taus[rejected[-1]])
+
+
+def _default_risk_ordering(risk: Risk) -> str:
+    """Default FST ordering for a risk: ``"descending"`` for budget, ``"ascending"`` otherwise.
+
+    "Descending" = largest tau first (safest for budget: less delegation).
+    "Ascending"  = smallest tau first (safest for accuracy-style risks:
+                    more delegation typically reduces error against a
+                    stronger expert).
+    """
+    return "descending" if risk.name == BudgetCostRisk.name else "ascending"
+
+
+def ltt_joint_threshold_split_chains(
+    probe_scores: np.ndarray,
+    baseline_scores: np.ndarray,
+    delegation_scores: np.ndarray,
+    labels: np.ndarray,
+    tau_grid: np.ndarray,
+    *,
+    risks: list[Risk],
+    alphas: dict[str, float],
+    delta: float,
+    risk_orderings: dict[str, str] | None = None,
+    merge_strategy: str = "replace",
+) -> float | None:
+    """Split-chain joint LTT: one FST per risk at delta/k, intersected.
+
+    Alternative to :func:`ltt_joint_threshold` (which uses a single FST on the
+    union-bound ``max-p`` combination).  When the per-risk "safest" orderings
+    of ``tau_grid`` disagree --- e.g. budget is safest at the largest tau
+    while accuracy_error is safest at the smallest tau --- the ``max-p`` chain
+    stops at step 0 because one risk's p-value is large at any single
+    starting point.  This driver sidesteps that by running **one FST per
+    risk**, each at level ``delta / k`` where ``k = len(risks)``, in that
+    risk's own safest-first ordering, and intersecting the per-risk certified
+    sets.  By a union bound across risk families, the joint FWER is bounded
+    by ``sum_r (delta / k) = delta``.
+
+    This is **not** classical Bonferroni (which would test each of the
+    ``k * |tau_grid|`` hypotheses at level ``delta / (k * |tau_grid|)``);
+    FST is applied within each risk so the per-risk multiplicity over taus is
+    absorbed by the FST ordering, and only the split across the two risk
+    families costs a factor of ``k``.  Equivalently, this is graphical
+    testing (Bretz et al., 2009) on a degenerate two-chain graph: one chain
+    per risk with initial weight ``1/k`` and no edges between chains.
+
+    Per-risk ordering of the tau grid is determined by ``risk_orderings``;
+    when not provided, falls back to :func:`_default_risk_ordering` (descending
+    for budget, ascending for all other risks).
+
+    Args:
+        probe_scores: Probe scores on the calibration split.
+        baseline_scores: Baseline scores on the calibration split.
+        delegation_scores: Delegation signal on the calibration split.
+        labels: Ground-truth labels on the calibration split.
+        tau_grid: Candidate thresholds.
+        risks: Risk objects to jointly control.
+        alphas: Per-risk target levels.
+        delta: Overall FWER level for the joint test.
+        risk_orderings: Optional mapping from ``risk.name`` to
+            ``"ascending"`` or ``"descending"``.  Determines each risk's
+            FST chain direction.
+        merge_strategy: Cascade merge strategy.
+
+    Returns:
+        The most aggressive tau (smallest) jointly certified by all per-risk
+        chains, or ``None`` if the intersection is empty.
+    """
+    if not risks:
+        raise ValueError("ltt_joint_threshold_split_chains: risks list is empty")
+
+    if risk_orderings is None:
+        risk_orderings = {r.name: _default_risk_ordering(r) for r in risks}
+
+    # Evaluate all risks once on the whole tau_grid (ordered ascending to give
+    # a stable reference frame; per-risk we reorder before FST).
+    sorted_taus = np.sort(tau_grid)  # ascending
+    eval_result = evaluate_threshold_risks(
+        probe_scores,
+        baseline_scores,
+        sorted_taus,
+        risks=risks,
+        labels=labels,
+        merge_strategy=merge_strategy,
+        delegation_scores=delegation_scores,
+    )
+    n = eval_result.n_samples
+    delta_per_risk = delta / len(risks)
+
+    # Per-risk certified indices into ``sorted_taus`` (joint set = intersection).
+    certified: set[int] | None = None
+    for r in risks:
+        ordering = risk_orderings.get(r.name, _default_risk_ordering(r))
+        if ordering not in ("ascending", "descending"):
+            raise ValueError(f"Invalid ordering for risk '{r.name}': {ordering!r} (use 'ascending' or 'descending')")
+        empirical = eval_result.empirical_risks[r.name]
+        # Per-risk p-values evaluated on each tau in ``sorted_taus``
+        p_per_tau = np.asarray(r.p_value_bound_fn(empirical, n, alphas[r.name]), dtype=float)
+
+        # Order taus safest-first for this risk
+        if ordering == "descending":
+            order_idx = np.arange(len(sorted_taus))[::-1]
+        else:
+            order_idx = np.arange(len(sorted_taus))
+        p_ordered = p_per_tau[order_idx]
+        rejected_in_order = fixed_sequence_testing(p_ordered, delta_per_risk)
+        # Map back to indices in sorted_taus
+        rejected_indices = {int(order_idx[i]) for i in rejected_in_order}
+
+        logger.info(
+            f"  Split-chain LTT [{r.name}]: alpha={alphas[r.name]:.2f}, delta/{len(risks)}={delta_per_risk:.3f}, "
+            f"ordering={ordering}, certified {len(rejected_indices)}/{len(sorted_taus)} taus"
+        )
+
+        certified = rejected_indices if certified is None else certified & rejected_indices
+
+    if not certified:
+        logger.info("  Split-chain LTT: intersection of per-risk certified sets is empty")
+        return None
+
+    # Most aggressive certified tau = smallest tau in the joint certified set
+    best_idx = min(certified)
+    return float(sorted_taus[best_idx])
 
 
 def threshold_cascade(

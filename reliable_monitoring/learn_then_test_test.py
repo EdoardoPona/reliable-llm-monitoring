@@ -3,13 +3,16 @@
 import numpy as np
 import pytest
 
+from reliable_monitoring.bounds import binomial, hb_p_value
 from reliable_monitoring.graphical_test_graphs import chain_graph, lattice_graph
 from reliable_monitoring.learn_then_test import (
     Hypothesis,
     compute_p_values,
     fixed_sequence_testing,
     graphical_testing,
+    joint_p_value,
 )
+from reliable_monitoring.risks import Risk
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -224,3 +227,106 @@ class TestHypothesis:
         w, g = chain_graph(len(hypotheses))
         result = graphical_testing(pv, w, g, delta=0.1)
         assert result.rejected == [0, 1]
+
+
+# ---------------------------------------------------------------------------
+# joint_p_value (union-bound multi-risk p-value)
+# ---------------------------------------------------------------------------
+
+
+def _make_risk(name: str, bound_fn) -> Risk:
+    """Build a Risk object whose empirical computation is unused in these tests."""
+    return Risk(
+        name=name,
+        description=f"test risk {name}",
+        empirical_computation=lambda ctx: 0.0,
+        p_value_bound_fn=bound_fn,
+    )
+
+
+class TestJointPValue:
+    @pytest.fixture
+    def two_binomial_risks(self):
+        return [_make_risk("budget", binomial), _make_risk("safety", binomial)]
+
+    def test_array_input_takes_pointwise_max(self, two_binomial_risks):
+        """Joint p-value is the per-threshold max over each risk's p-value."""
+        risks = two_binomial_risks
+        n = 1000
+        empirical = {
+            "budget": np.array([0.10, 0.20, 0.30]),
+            "safety": np.array([0.05, 0.40, 0.10]),
+        }
+        alphas = {"budget": 0.3, "safety": 0.3}
+
+        joint = joint_p_value(empirical, risks, alphas, n)
+        per_budget = binomial(empirical["budget"], n, alphas["budget"])
+        per_safety = binomial(empirical["safety"], n, alphas["safety"])
+        expected = np.maximum(per_budget, per_safety)
+
+        np.testing.assert_array_equal(joint, expected)
+        assert joint.shape == (3,)
+
+    def test_scalar_input_returns_length_one_array(self, two_binomial_risks):
+        risks = two_binomial_risks
+        n = 200
+        joint = joint_p_value(
+            empirical_risks={"budget": 0.20, "safety": 0.05},
+            risks=risks,
+            alphas={"budget": 0.3, "safety": 0.3},
+            n=n,
+        )
+        assert joint.shape == (1,)
+        expected = float(np.maximum(binomial(0.20, n, 0.3)[0], binomial(0.05, n, 0.3)[0]))
+        assert float(joint[0]) == pytest.approx(expected)
+
+    def test_dominant_risk_drives_joint(self, two_binomial_risks):
+        """When one risk's p-value is uniformly larger, joint == that risk's p-value."""
+        risks = two_binomial_risks
+        n = 500
+        # safety always closer to alpha => larger p-values than budget
+        empirical = {
+            "budget": np.array([0.05, 0.10, 0.15]),  # well below alpha=0.3
+            "safety": np.array([0.28, 0.29, 0.30]),  # near alpha=0.3 => large p
+        }
+        alphas = {"budget": 0.3, "safety": 0.3}
+        joint = joint_p_value(empirical, risks, alphas, n)
+        safety_only = binomial(empirical["safety"], n, alphas["safety"])
+        np.testing.assert_array_equal(joint, safety_only)
+
+    def test_single_risk_matches_underlying_bound(self):
+        """One-risk joint p-value reduces to that risk's bound function."""
+        risk = _make_risk("budget", binomial)
+        n = 1000
+        empirical = {"budget": np.array([0.1, 0.2, 0.3])}
+        alphas = {"budget": 0.3}
+        joint = joint_p_value(empirical, [risk], alphas, n)
+        np.testing.assert_array_equal(joint, binomial(empirical["budget"], n, 0.3))
+
+    def test_mixed_bound_functions(self):
+        """Mixed binomial / HB bound functions both feed into the max."""
+        budget = _make_risk("budget", binomial)
+        accuracy = _make_risk("accuracy", hb_p_value)
+        n = 800
+        empirical = {
+            "budget": np.array([0.20, 0.21]),
+            "accuracy": np.array([0.10, 0.40]),
+        }
+        alphas = {"budget": 0.3, "accuracy": 0.3}
+        joint = joint_p_value(empirical, [budget, accuracy], alphas, n)
+        b = binomial(empirical["budget"], n, 0.3)
+        a = hb_p_value(empirical["accuracy"], n, 0.3)
+        np.testing.assert_array_equal(joint, np.maximum(b, a))
+
+    def test_empty_risks_raises(self):
+        with pytest.raises(ValueError, match="empty"):
+            joint_p_value({}, [], {}, n=100)
+
+    def test_missing_alpha_raises(self, two_binomial_risks):
+        with pytest.raises(KeyError):
+            joint_p_value(
+                empirical_risks={"budget": 0.2, "safety": 0.1},
+                risks=two_binomial_risks,
+                alphas={"budget": 0.3},  # missing "safety"
+                n=100,
+            )

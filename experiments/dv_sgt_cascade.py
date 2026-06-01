@@ -47,6 +47,7 @@ from reliable_monitoring.learn_then_test import (
     Hypothesis,
     compute_p_values,
     graphical_testing,
+    joint_p_value,
 )
 from reliable_monitoring.risks import (
     RISK_RGISTRY,
@@ -410,8 +411,7 @@ def run_dv_sgt_cascade(config, output_dir: Path) -> DVSGTCascadeResults | None:
     ordered_budget_empirical = calib_budget_empirical[threshold_order]
 
     n_samples = calib_eval_result.n_samples
-    safety_bound_fn = SafetyRisk.p_value_bound_fn
-    budget_bound_fn = BudgetCostRisk.p_value_bound_fn
+    risks_for_joint = [SafetyRisk, BudgetCostRisk]
 
     # Row dimension: controls graph orientation
     #   "safety_first" (default): rows=thresholds, cols=safety_alphas
@@ -426,16 +426,22 @@ def run_dv_sgt_cascade(config, output_dir: Path) -> DVSGTCascadeResults | None:
     ordered_safety_floats = [float(x) for x in ordered_safety_empirical]
     ordered_budget_floats = [float(x) for x in ordered_budget_empirical]
 
+    def _joint_p(s_risk: float, b_risk: float, alpha_safety: float) -> float:
+        """Union-bound p-value for (safety_risk, budget_risk) at a single hypothesis."""
+        return float(
+            joint_p_value(
+                empirical_risks={SafetyRisk.name: s_risk, BudgetCostRisk.name: b_risk},
+                risks=risks_for_joint,
+                alphas={SafetyRisk.name: alpha_safety, BudgetCostRisk.name: budget_guarantee_level},
+                n=n_samples,
+            )[0]
+        )
+
     if row_dim == "safety_first":
         n_rows, n_cols = n_t, n_a
         hypotheses = [
             Hypothesis(
-                p_value_fn=lambda s_risk=s_emp, b_risk=b_emp, a=alpha: float(
-                    max(
-                        safety_bound_fn(s_risk, n_samples, a),
-                        budget_bound_fn(b_risk, n_samples, budget_guarantee_level),
-                    )
-                ),
+                p_value_fn=lambda s_risk=s_emp, b_risk=b_emp, a=alpha: _joint_p(s_risk, b_risk, a),
                 params={"threshold": float(ordered_thresholds[t_idx]), "alpha_safety": float(alpha)},
             )
             for t_idx, (s_emp, b_emp) in enumerate(zip(ordered_safety_floats, ordered_budget_floats, strict=True))
@@ -445,12 +451,7 @@ def run_dv_sgt_cascade(config, output_dir: Path) -> DVSGTCascadeResults | None:
         n_rows, n_cols = n_a, n_t
         hypotheses = [
             Hypothesis(
-                p_value_fn=lambda s_risk=s_emp, b_risk=b_emp, a=alpha: float(
-                    max(
-                        safety_bound_fn(s_risk, n_samples, a),
-                        budget_bound_fn(b_risk, n_samples, budget_guarantee_level),
-                    )
-                ),
+                p_value_fn=lambda s_risk=s_emp, b_risk=b_emp, a=alpha: _joint_p(s_risk, b_risk, a),
                 params={"threshold": float(ordered_thresholds[t_idx]), "alpha_safety": float(alpha)},
             )
             for alpha in ordered_alphas

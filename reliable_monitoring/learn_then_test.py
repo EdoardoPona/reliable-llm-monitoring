@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -173,6 +173,56 @@ def is_pareto(costs, *, maximize: bool = False) -> np.ndarray:
             is_efficient[i] = False
 
     return is_efficient
+
+
+def joint_p_value(
+    empirical_risks: Mapping[str, np.ndarray | float],
+    risks: list[Risk],
+    alphas: Mapping[str, float],
+    n: int,
+) -> np.ndarray:
+    """Union-bound joint p-value for multi-risk hypothesis testing.
+
+    For each risk ``r``, computes per-risk p-values via
+    ``r.p_value_bound_fn(empirical_risks[r.name], n, alphas[r.name])`` and
+    returns the element-wise **maximum** across risks.  This is the
+    union-bound (``max-p``) construction used in the multi-risk LTT
+    framework (Angelopoulos et al., 2022, Proposition 6): testing the
+    joint hypothesis "all risks meet their targets" by taking the worst
+    per-risk p-value.
+
+    Inputs may be scalars (single threshold) or arrays (a grid of
+    thresholds); the output broadcasts accordingly.
+
+    Args:
+        empirical_risks: Mapping from risk name to empirical risk(s).
+            Each entry may be a scalar or a 1-D array.  All array entries
+            must share the same length.
+        risks: List of Risk objects whose ``p_value_bound_fn`` will be
+            invoked.  Each must have an entry in both ``empirical_risks``
+            and ``alphas`` keyed by ``risk.name``.
+        alphas: Mapping from risk name to that risk's target level.
+        n: Sample size used by every bound function.
+
+    Returns:
+        Array of joint p-values, one per threshold.  For scalar inputs
+        the result is a length-1 array; use ``float(...)`` to unpack.
+
+    Raises:
+        KeyError: if ``empirical_risks`` or ``alphas`` is missing an entry
+            for a risk in ``risks``.
+        ValueError: if ``risks`` is empty.
+    """
+    if not risks:
+        raise ValueError("joint_p_value: risks list is empty")
+    per_risk = [
+        np.asarray(
+            r.p_value_bound_fn(empirical_risks[r.name], n, alphas[r.name]),
+            dtype=float,
+        )
+        for r in risks
+    ]
+    return np.stack(per_risk).max(axis=0)
 
 
 def fixed_sequence_testing(p_values: np.ndarray, delta: float) -> list[int]:
