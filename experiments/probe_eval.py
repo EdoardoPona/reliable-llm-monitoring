@@ -22,7 +22,7 @@ from matplotlib.figure import Figure
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 
 from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset, split_dataset
-from reliable_monitoring.probes import DegradedProbe, SequenceProbe
+from reliable_monitoring.probes import DegradedProbe, build_probe
 
 load_dotenv()
 
@@ -204,7 +204,8 @@ def run_probe_eval(config) -> ProbeEvalResults:
     if degrade_enabled:
         logger.warning("Probe degradation enabled (fixed settings).")
 
-    base_probe = SequenceProbe(reduction_strategy=config.reduction_strategy)
+    legacy_spec = {"type": "mean_logreg", "hyperparams": {"reduction_strategy": config.reduction_strategy}}
+    base_probe = build_probe(getattr(config, "probe", legacy_spec), seed=config.seed)
     probe = DegradedProbe(base_probe, enabled=degrade_enabled, seed=seed)
     probe.fit(train_dataset)
 

@@ -273,6 +273,7 @@ def compute_or_fetch_baseline(
     local_cache_dir: Path = DEFAULT_LOCAL_CACHE_DIR,
     skip_cache: bool = False,
     local_only: bool = False,
+    sync_clearml_on_local_hit: bool = True,
 ) -> np.ndarray:
     """Fetch cached baseline scores or compute and upload them.
 
@@ -291,6 +292,8 @@ def compute_or_fetch_baseline(
         skip_cache: If True, always compute (skip all cache lookups).
         local_only: If True, use only the local cache (no ClearML sync or
             fallback).  Avoids network calls when all data is cached locally.
+        sync_clearml_on_local_hit: If False, return a valid local hit without
+            checking that a duplicate exists on ClearML.
 
     Returns:
         Baseline score array of shape ``(len(dataset),)``.
@@ -305,7 +308,7 @@ def compute_or_fetch_baseline(
             if len(local_hit) != n_expected:
                 logger.warning(f"Local cache size mismatch: {len(local_hit)} != {n_expected}. Skipping.")
             else:
-                if not local_only:
+                if not local_only and sync_clearml_on_local_hit:
                     # Sync to ClearML if missing there
                     _ensure_clearml_cache(model_name, dataset_key, local_hit, project_name)
                 return local_hit

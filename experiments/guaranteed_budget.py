@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 from reliable_monitoring.cascade import run_llm_baseline, run_offline_cascade
 from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset
 from reliable_monitoring.learn_then_test import fixed_sequence_testing
-from reliable_monitoring.probes import SequenceProbe
+from reliable_monitoring.probes import build_probe
 from reliable_monitoring.risks import BudgetCostRisk, RiskEvaluationContext, evaluate_threshold_risks
 
 load_dotenv()
@@ -144,7 +144,8 @@ def run_guaranteed_budget_experiment(args: argparse.Namespace | None = None) -> 
     logger.info(f"Test dataset size: {len(test_dataset)}")
 
     logger.info("Fitting probe...")
-    probe = SequenceProbe(reduction_strategy=config.reduction_strategy)
+    legacy_spec = {"type": "mean_logreg", "hyperparams": {"reduction_strategy": config.reduction_strategy}}
+    probe = build_probe(getattr(config, "probe", legacy_spec), seed=config.seed)
     probe.fit(train_dataset)
 
     # Computing offline scores on calibration dataset

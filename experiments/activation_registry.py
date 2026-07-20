@@ -1,4 +1,4 @@
-"""ClearML-backed registry for cached reduced activations.
+"""ClearML-backed registry for cached reduced or raw activations.
 
 Caches reduced activations per ``(model_name, layer, reduction, dataset_file)``
 tuple both locally (pickle files) and on ClearML.  Lookup order:
@@ -25,6 +25,7 @@ import warnings
 from pathlib import Path
 
 import numpy as np
+import torch
 from baseline_registry import normalize_dataset_key
 from models_under_pressure.interfaces.dataset import LabelledDataset
 
@@ -243,7 +244,7 @@ def _compute_activations(
     gpu: str | None = None,
     batch_size: int = 8,
 ) -> np.ndarray:
-    """Compute reduced activations locally or on Modal."""
+    """Compute reduced or raw activations locally or on Modal."""
     if not local:
         from reliable_monitoring.modal_activations import compute_activations_modal
 
@@ -269,10 +270,13 @@ def _compute_activations(
     activations, inputs = _compute_raw_activations(dataset, model, layer)
     dataset = enrich_with_activations(dataset, activations[0], inputs["input_ids"], inputs["attention_mask"])
     dataset = _apply_attention_mask_to_activations(dataset)
+    if reduction == "raw":
+        result = dataset.other_fields["activations"]
+        if isinstance(result, torch.Tensor):
+            result = result.cpu().numpy()
+        return np.asarray(result, dtype=np.float16)
     reduced = reduce_activations(dataset, reduction)
     result = reduced.other_fields[f"activations_{reduction}"]
-    import torch
-
     if isinstance(result, torch.Tensor):
         result = result.numpy()
     return np.asarray(result)
@@ -297,6 +301,7 @@ def compute_or_fetch_activations(
     local_cache_dir: Path = DEFAULT_LOCAL_CACHE_DIR,
     skip_cache: bool = False,
     local_only: bool = False,
+    sync_clearml_on_local_hit: bool = True,
 ) -> np.ndarray:
     """Fetch cached reduced activations or compute and upload them.
 
@@ -317,9 +322,12 @@ def compute_or_fetch_activations(
         skip_cache: If True, always compute (skip all cache lookups).
         local_only: If True, use only the local cache (no ClearML sync or
             fallback).  Avoids network calls when all data is cached locally.
+        sync_clearml_on_local_hit: If False, return a valid local hit without
+            checking that a duplicate exists on ClearML.
 
     Returns:
-        Reduced activation array of shape ``(len(dataset), hidden_dim)``.
+        Reduced activation array of shape ``(len(dataset), hidden_dim)``, or
+        ``(len(dataset), sequence_length, hidden_dim)`` for ``reduction='raw'``.
     """
     dataset_key = normalize_dataset_key(dataset_path)
     n_expected = len(dataset)
@@ -331,7 +339,7 @@ def compute_or_fetch_activations(
             if len(local_hit) != n_expected:
                 logger.warning(f"Local cache size mismatch: {len(local_hit)} != {n_expected}. Skipping.")
             else:
-                if not local_only:
+                if not local_only and sync_clearml_on_local_hit:
                     _ensure_clearml_cache(model_name, layer, reduction, dataset_key, local_hit, project_name)
                 return local_hit
 

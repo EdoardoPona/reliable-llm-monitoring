@@ -30,7 +30,7 @@ from matplotlib.figure import Figure
 from reliable_monitoring.cascade import offline_batch_cascade, run_llm_baseline
 from reliable_monitoring.dataset import ActivationConfig, load_dataset, sample_from_dataset, split_dataset
 from reliable_monitoring.learn_then_test import fixed_sequence_testing, is_pareto
-from reliable_monitoring.probes import DegradedProbe, SequenceProbe
+from reliable_monitoring.probes import DegradedProbe, build_probe
 from reliable_monitoring.risks import (
     RISK_RGISTRY,
     BudgetCostRisk,
@@ -212,7 +212,8 @@ def run_guaranteed_risk_cascade_experiment(config) -> GuaranteedRiskCascadeResul
 
     # --- Probe ---
     logger.info("Fitting probe...")
-    base_probe = SequenceProbe(reduction_strategy=config.reduction_strategy)
+    legacy_spec = {"type": "mean_logreg", "hyperparams": {"reduction_strategy": config.reduction_strategy}}
+    base_probe = build_probe(getattr(config, "probe", legacy_spec), seed=config.seed)
     probe = DegradedProbe(base_probe, enabled=degrade_enabled, seed=seed)
     probe.fit(train_dataset)
 

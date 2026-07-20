@@ -1,0 +1,168 @@
+# Phase 1 probe architecture ablation.
+#
+# Run scores:
+#   uv run experiments/probe_ablation_sweep.py --config experiments/configs/probe_ablation.yaml
+# Rebuild metrics and figures:
+#   uv run experiments/probe_ablation_analysis.py results/probe_ablation/<run>
+
+shared:
+  activations_model_name: meta-llama/Llama-3.2-1B-Instruct
+  activations_layer: 11
+  use_modal: true
+  local_only: false
+  activation_batch_size: 8
+  baseline_batch_size: 8
+
+  train_dataset_path: ${DATA_DIR}/training/prompts_4x/train.jsonl
+  mixed_datasets:
+    balance_strategy: 500
+    sources:
+      - group: anthropic
+        dev: ${DATA_DIR}/evals/dev/anthropic_balanced_apr_23.jsonl
+        test: ${DATA_DIR}/evals/test/anthropic_test_balanced_apr_23.jsonl
+      - group: mt
+        dev: ${DATA_DIR}/evals/dev/mt_balanced_apr_30.jsonl
+        test: ${DATA_DIR}/evals/test/mt_test_balanced_apr_30.jsonl
+      - group: mts
+        dev: ${DATA_DIR}/evals/dev/mts_balanced_apr_22.jsonl
+        test: ${DATA_DIR}/evals/test/mts_test_balanced_apr_22.jsonl
+      - group: toolace
+        dev: ${DATA_DIR}/evals/dev/toolace_balanced_apr_22.jsonl
+        test: ${DATA_DIR}/evals/test/toolace_test_balanced_apr_22.jsonl
+
+  calib_fraction: 0.5
+  guarantee_probability: 0.9
+  tau_steps: 100
+  n_alpha_steps: 20
+  pareto_testing: true
+  pareto_split_proportion: 0.3
+  opt_risk: accuracy_error
+  merge_strategy: replace
+  batch_size: 128
+  n_k_steps: 20
+
+seeds: [42, 43, 44]
+
+experts:
+  - name: strong
+    model_name: google/gemma-3-27b-it
+  - name: weak
+    model_name: meta-llama/Llama-3.2-1B-Instruct
+
+cells:
+  - name: mean_ridge
+    probe:
+      type: mean_logreg
+    dv_probe:
+      type: ridge
+
+  - name: attention_attention
+    probe:
+      type: attention
+      hyperparams:
+        batch_size: 128
+        epochs: 200
+        learning_rate: 5.0e-3
+        final_learning_rate: 5.0e-4
+        patience: 50
+        weight_decay: 1.0e-3
+    dv_probe:
+      type: attention
+      hyperparams:
+        batch_size: 128
+        epochs: 50
+        learning_rate: 5.0e-3
+        final_learning_rate: 1.0e-4
+        patience: 10
+        weight_decay: 1.0e-3
+
+  - name: attention_ridge
+    probe:
+      type: attention
+      hyperparams:
+        batch_size: 128
+        epochs: 200
+        learning_rate: 5.0e-3
+        final_learning_rate: 5.0e-4
+        patience: 50
+        weight_decay: 1.0e-3
+    dv_probe:
+      type: ridge
+
+  - name: softmax_softmax
+    probe:
+      type: softmax
+      hyperparams:
+        temperature: 5.0
+        batch_size: 16
+        epochs: 200
+        learning_rate: 5.0e-3
+        final_learning_rate: 1.0e-4
+        patience: 10
+        weight_decay: 1.0e-3
+        gradient_accumulation_steps: 4
+    dv_probe:
+      type: softmax
+      hyperparams:
+        temperature: 5.0
+        batch_size: 16
+        epochs: 50
+        learning_rate: 5.0e-3
+        final_learning_rate: 1.0e-4
+        patience: 10
+        weight_decay: 1.0e-3
+        gradient_accumulation_steps: 4
+
+  - name: softmax_ridge
+    probe:
+      type: softmax
+      hyperparams:
+        temperature: 5.0
+        batch_size: 16
+        epochs: 200
+        learning_rate: 5.0e-3
+        final_learning_rate: 1.0e-4
+        patience: 10
+        weight_decay: 1.0e-3
+        gradient_accumulation_steps: 4
+    dv_probe:
+      type: ridge
+
+  - name: mlp_mlp
+    probe:
+      type: mlp
+      hyperparams:
+        hidden_dim: 128
+        dropout: 0.1
+        batch_size: 128
+        epochs: 50
+        learning_rate: 5.0e-3
+        final_learning_rate: 1.0e-4
+        patience: 10
+        weight_decay: 1.0e-3
+    dv_probe:
+      type: mlp
+      hyperparams:
+        hidden_dim: 128
+        dropout: 0.1
+        batch_size: 128
+        epochs: 50
+        learning_rate: 5.0e-3
+        final_learning_rate: 1.0e-4
+        patience: 10
+        weight_decay: 1.0e-3
+
+  - name: mlp_ridge
+    probe:
+      type: mlp
+      hyperparams:
+        hidden_dim: 128
+        dropout: 0.1
+        batch_size: 128
+        epochs: 50
+        learning_rate: 5.0e-3
+        final_learning_rate: 1.0e-4
+        patience: 10
+        weight_decay: 1.0e-3
+    dv_probe:
+      type: ridge

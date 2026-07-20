@@ -63,7 +63,7 @@ def _compute_activations_impl(
             model_kwargs["max_memory"] = {i: "75GiB" for i in range(n_gpus)}
 
     model = LLMModel.load(model_name, batch_size=batch_size, model_kwargs=model_kwargs)
-    reduction_fn = get_reduction_function(reduction_strategy)
+    reduction_fn = None if reduction_strategy == "raw" else get_reduction_function(reduction_strategy)
 
     n = len(dataset)
     reduced_chunks: list[torch.Tensor] = []
@@ -89,8 +89,8 @@ def _compute_activations_impl(
         # Apply attention mask (zero out padding positions)
         acts = acts * attention_mask.unsqueeze(-1)
 
-        # Reduce immediately → (chunk_size, hidden_dim)
-        reduced = reduction_fn(acts, attention_mask).cpu()
+        # Sequence probes retain masked token activations; other probes reduce here.
+        reduced = acts.to(torch.float16).cpu() if reduction_fn is None else reduction_fn(acts, attention_mask).cpu()
         reduced_chunks.append(reduced)
 
         # Free GPU memory
@@ -98,8 +98,13 @@ def _compute_activations_impl(
 
     model_cache.commit()
 
+    if reduction_strategy == "raw":
+        max_length = max(chunk.shape[1] for chunk in reduced_chunks)
+        reduced_chunks = [
+            torch.nn.functional.pad(chunk, (0, 0, 0, max_length - chunk.shape[1])) for chunk in reduced_chunks
+        ]
     result = torch.cat(reduced_chunks, dim=0)
-    return result.numpy().tolist()
+    return result.numpy()
 
 
 # One Modal function per GPU tier — GPU is fixed at definition time in Modal.
@@ -148,7 +153,8 @@ def compute_activations_modal(
         model_name: Full HuggingFace model name (e.g. "meta-llama/Llama-3.2-1B-Instruct").
         dataset: LabelledDataset instance (without activation fields).
         layer: Layer number to extract activations from.
-        reduction_strategy: Reduction strategy name (e.g. "mean").
+        reduction_strategy: Reduction strategy name (e.g. "mean"), or
+            ``"raw"`` for masked token-level activations.
         batch_size: Batch size for model forward pass.
         gpu: Override GPU type. If None, auto-selects based on model.
 

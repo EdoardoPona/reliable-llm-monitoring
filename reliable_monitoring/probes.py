@@ -5,14 +5,21 @@ This module provides a Protocol-based interface for probes and two implementatio
 - SequenceProbe: Handles raw sequence activations on-the-fly (flexible)
 """
 
+import copy
+import logging
+import random
 from collections.abc import Callable
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import torch
 from models_under_pressure.interfaces.dataset import LabelledDataset
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
+from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
+
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -395,3 +402,263 @@ class DegradedProbe:
 
     def calibrate(self, dataset: LabelledDataset, method: str = "platt-scaling") -> None:
         self.probe.calibrate(dataset, method=method)
+
+
+PROBE_REGISTRY: dict[str, Callable[..., Probe]] = {}
+
+
+def register_probe(name: str):
+    """Register a probe constructor for configuration-driven experiments."""
+
+    def decorator(constructor: Callable[..., Probe]) -> Callable[..., Probe]:
+        if name in PROBE_REGISTRY:
+            raise ValueError(f"Probe {name!r} is already registered")
+        PROBE_REGISTRY[name] = constructor
+        return constructor
+
+    return decorator
+
+
+def build_probe(spec: str | dict[str, Any] | None = None, **overrides: Any) -> Probe:
+    """Build a probe from a name or ``{type, hyperparams}`` configuration."""
+    if spec is None:
+        name, hyperparams = "mean_logreg", {}
+    elif isinstance(spec, str):
+        name, hyperparams = spec, {}
+    else:
+        name = spec.get("type", "mean_logreg")
+        hyperparams = dict(spec.get("hyperparams", {}))
+    hyperparams.update(overrides)
+    try:
+        return PROBE_REGISTRY[name](**hyperparams)
+    except KeyError as exc:
+        raise ValueError(f"Unknown probe {name!r}; available: {sorted(PROBE_REGISTRY)}") from exc
+
+
+def probe_requires_raw_activations(spec: str | dict[str, Any] | None) -> bool:
+    """Return whether a configured probe consumes token-level activations."""
+    name = spec if isinstance(spec, str) else (spec or {}).get("type", "mean_logreg")
+    return name in {"attention", "softmax"}
+
+
+@register_probe("mean_logreg")
+def _build_mean_logreg(reduction_strategy: str = "mean", **kwargs: Any) -> Probe:
+    if "seed" in kwargs:
+        kwargs["random_state"] = kwargs.pop("seed")
+    return SequenceProbe(reduction_strategy=reduction_strategy, **kwargs)
+
+
+class AttentionProbeModule(nn.Module):
+    """McKenzie's lightweight learned attention pooling probe."""
+
+    def __init__(self, embed_dim: int):
+        super().__init__()
+        self.context_query = nn.Linear(embed_dim, 1)
+        self.output = nn.Linear(embed_dim, 1)
+        self.scale = embed_dim**0.5
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        scores = self.context_query(x).squeeze(-1) / self.scale
+        weights = torch.softmax(scores.masked_fill(~mask, float("-inf")), dim=1)
+        context = torch.einsum("bs,bse->be", weights, x)
+        return self.output(context).squeeze(-1)
+
+
+class SoftmaxProbeModule(nn.Module):
+    """Linear token scoring followed by softmax aggregation."""
+
+    def __init__(self, embed_dim: int, temperature: float = 5.0):
+        super().__init__()
+        self.linear = nn.Linear(embed_dim, 1)
+        self.temperature = temperature
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        logits = self.linear(x).squeeze(-1)
+        weights = torch.softmax(logits.masked_fill(~mask, float("-inf")) / self.temperature, dim=1)
+        return (logits.masked_fill(~mask, 0.0) * weights).sum(dim=1)
+
+
+class MeanMLPProbeModule(nn.Module):
+    """Two-layer MLP applied after masked mean pooling."""
+
+    def __init__(self, embed_dim: int, hidden_dim: int = 128, dropout: float = 0.1):
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        pooled = (x * mask.unsqueeze(-1)).sum(dim=1) / mask.sum(dim=1, keepdim=True).clamp(min=1)
+        return self.network(pooled).squeeze(-1)
+
+
+_TORCH_MODULES: dict[str, type[nn.Module]] = {
+    "attention": AttentionProbeModule,
+    "softmax": SoftmaxProbeModule,
+    "mlp": MeanMLPProbeModule,
+}
+
+
+def default_torch_device() -> torch.device:
+    """Select CUDA, Apple MPS, or CPU in that order."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+class TorchSequenceProbe:
+    """Small torch probe with deterministic training and internal early stopping."""
+
+    def __init__(
+        self,
+        architecture: str,
+        *,
+        seed: int = 42,
+        batch_size: int = 16,
+        epochs: int = 200,
+        learning_rate: float = 5e-3,
+        final_learning_rate: float = 1e-4,
+        patience: int = 50,
+        validation_fraction: float = 0.1,
+        weight_decay: float = 0.0,
+        gradient_accumulation_steps: int = 1,
+        device: str | None = None,
+        **module_kwargs: Any,
+    ):
+        if architecture not in _TORCH_MODULES:
+            raise ValueError(f"Unknown torch architecture: {architecture}")
+        self.architecture = architecture
+        self.seed = seed
+        self.batch_size = batch_size
+        self.epochs = epochs
+        self.learning_rate = learning_rate
+        self.final_learning_rate = final_learning_rate
+        self.patience = patience
+        self.validation_fraction = validation_fraction
+        self.weight_decay = weight_decay
+        if gradient_accumulation_steps < 1:
+            raise ValueError("gradient_accumulation_steps must be at least 1")
+        self.gradient_accumulation_steps = gradient_accumulation_steps
+        self.device = torch.device(device) if device else default_torch_device()
+        self.module_kwargs = module_kwargs
+        self.model: nn.Module | None = None
+        self.calibration_clf: LogisticRegression | IsotonicRegression | None = None
+
+    @staticmethod
+    def _arrays(dataset: LabelledDataset) -> tuple[torch.Tensor, torch.Tensor]:
+        if "activations" in dataset.other_fields:
+            x = torch.as_tensor(dataset.other_fields["activations"], dtype=torch.float32)
+            mask_value = dataset.other_fields.get("attention_mask")
+            mask = torch.as_tensor(mask_value).bool() if mask_value is not None else x.abs().sum(dim=-1).ne(0)
+        elif "activations_mean" in dataset.other_fields:
+            x = torch.as_tensor(dataset.other_fields["activations_mean"], dtype=torch.float32).unsqueeze(1)
+            mask = torch.ones(x.shape[:2], dtype=torch.bool)
+        else:
+            raise ValueError("Dataset requires 'activations' or 'activations_mean'")
+        return x, mask
+
+    def fit(self, dataset: LabelledDataset) -> None:
+        random.seed(self.seed)
+        np.random.seed(self.seed)
+        torch.manual_seed(self.seed)
+        x, mask = self._arrays(dataset)
+        y = torch.as_tensor(dataset.labels_numpy(), dtype=torch.float32)
+        rng = np.random.default_rng(self.seed)
+        indices = rng.permutation(len(y))
+        n_val = max(1, int(len(y) * self.validation_fraction))
+        val_idx, train_idx = indices[:n_val], indices[n_val:]
+        self.model = _TORCH_MODULES[self.architecture](x.shape[-1], **self.module_kwargs).to(self.device)
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=self.epochs, eta_min=self.final_learning_rate
+        )
+        loader = DataLoader(
+            TensorDataset(x[train_idx], mask[train_idx], y[train_idx]),
+            batch_size=self.batch_size,
+            shuffle=True,
+        )
+        criterion = nn.BCEWithLogitsLoss()
+        best_loss, stale, best_state = float("inf"), 0, None
+        logger.info(
+            "Training %s safety probe on %s for at most %d epochs (batch=%d, accumulation=%d)",
+            self.architecture,
+            self.device,
+            self.epochs,
+            self.batch_size,
+            self.gradient_accumulation_steps,
+        )
+        for epoch in range(self.epochs):
+            self.model.train()
+            optimizer.zero_grad()
+            for batch_index, (xb, mb, yb) in enumerate(loader):
+                loss = criterion(self.model(xb.to(self.device), mb.to(self.device)), yb.to(self.device))
+                (loss / self.gradient_accumulation_steps).backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                is_accumulation_boundary = (batch_index + 1) % self.gradient_accumulation_steps == 0
+                is_last_batch = batch_index + 1 == len(loader)
+                if is_accumulation_boundary or is_last_batch:
+                    optimizer.step()
+                    optimizer.zero_grad()
+            scheduler.step()
+            self.model.eval()
+            with torch.no_grad():
+                val_logits = self.model(x[val_idx].to(self.device), mask[val_idx].to(self.device))
+                val_loss = float(criterion(val_logits, y[val_idx].to(self.device)))
+            if val_loss < best_loss - 1e-6:
+                best_loss, stale = val_loss, 0
+                best_state = copy.deepcopy(self.model.state_dict())
+            else:
+                stale += 1
+                if stale >= self.patience:
+                    logger.info("Early stopping %s safety probe after epoch %d", self.architecture, epoch + 1)
+                    break
+            if epoch == 0 or (epoch + 1) % 10 == 0:
+                logger.info(
+                    "%s safety probe epoch %d/%d: validation loss %.5f",
+                    self.architecture,
+                    epoch + 1,
+                    self.epochs,
+                    val_loss,
+                )
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
+
+    def raw_predict(self, dataset: LabelledDataset) -> np.ndarray:
+        if self.model is None:
+            raise ValueError("Probe has not been fitted")
+        x, mask = self._arrays(dataset)
+        loader = DataLoader(TensorDataset(x, mask), batch_size=max(self.batch_size, 64))
+        outputs = []
+        self.model.eval()
+        with torch.no_grad():
+            for xb, mb in loader:
+                outputs.append(self.model(xb.to(self.device), mb.to(self.device)).cpu())
+        return torch.cat(outputs).numpy()
+
+    def predict(self, dataset: LabelledDataset) -> np.ndarray:
+        scores = 1.0 / (1.0 + np.exp(-self.raw_predict(dataset)))
+        if self.calibration_clf is None:
+            return scores
+        if isinstance(self.calibration_clf, IsotonicRegression):
+            return self.calibration_clf.predict(scores)
+        return self.calibration_clf.predict_proba(scores.reshape(-1, 1))[:, 1]
+
+    def calibrate(self, dataset: LabelledDataset, method: str = "platt-scaling") -> None:
+        scores, labels = self.predict(dataset), dataset.labels_numpy()
+        if method == "platt-scaling":
+            self.calibration_clf = LogisticRegression(max_iter=1000).fit(scores.reshape(-1, 1), labels)
+        elif method == "isotonic-regression":
+            self.calibration_clf = IsotonicRegression(out_of_bounds="clip").fit(scores, labels)
+        else:
+            raise ValueError(f"Unknown calibration method: {method}")
+
+
+for _architecture in _TORCH_MODULES:
+    register_probe(_architecture)(
+        lambda architecture=_architecture, **kwargs: TorchSequenceProbe(architecture=architecture, **kwargs)
+    )

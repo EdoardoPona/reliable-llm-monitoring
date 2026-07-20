@@ -6,7 +6,13 @@ import torch
 from models_under_pressure.interfaces.dataset import LabelledDataset
 
 from reliable_monitoring.dataset import reduce_activations
-from reliable_monitoring.probes import LinearProbe, SequenceProbe
+from reliable_monitoring.probes import (
+    LinearProbe,
+    SequenceProbe,
+    build_probe,
+    default_torch_device,
+    probe_requires_raw_activations,
+)
 
 
 class TestLinearProbe:
@@ -180,3 +186,40 @@ class TestProbeEquivalence:
         # Results should be very similar (sklearn might have minor numerical differences)
         correlation = np.corrcoef(sequence_scores, linear_scores)[0, 1]
         assert correlation > 0.95  # Should be highly correlated
+
+
+@pytest.mark.parametrize("architecture", ["attention", "softmax", "mlp"])
+def test_torch_probe_architectures(architecture):
+    generator = torch.Generator().manual_seed(4)
+    activations = torch.randn(40, 6, 12, generator=generator)
+    mask = torch.ones(40, 6, dtype=torch.bool)
+    mask[:10, -2:] = False
+    activations[~mask] = 0
+    labels = (activations[:, :, 0].sum(dim=1) > 0).int().tolist()
+    dataset = LabelledDataset(
+        inputs=[f"sample_{i}" for i in range(40)],
+        ids=[str(i) for i in range(40)],
+        other_fields={"labels": labels, "activations": activations, "attention_mask": mask},
+    )
+    hyperparams = {"epochs": 3, "patience": 2, "batch_size": 8, "seed": 3}
+    if architecture == "softmax":
+        hyperparams["temperature"] = 5.0
+        hyperparams["gradient_accumulation_steps"] = 4
+    probe = build_probe({"type": architecture, "hyperparams": hyperparams})
+    probe.fit(dataset)
+    scores = probe.predict(dataset)
+    assert scores.shape == (40,)
+    assert np.all((scores >= 0) & (scores <= 1))
+
+
+def test_probe_factory_and_raw_requirement():
+    assert isinstance(build_probe("mean_logreg"), SequenceProbe)
+    assert probe_requires_raw_activations("attention")
+    assert probe_requires_raw_activations("softmax")
+    assert not probe_requires_raw_activations("mlp")
+
+
+def test_default_device_uses_mps_before_cpu(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    assert default_torch_device().type == "mps"
