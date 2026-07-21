@@ -24,9 +24,9 @@ def build_runs(config_path: Path) -> list[SimpleNamespace]:
     runs = []
     for cell in raw["cells"]:
         for expert in raw["experts"]:
-            stochastic = cell["probe"]["type"] != "mean_logreg" or cell["dv_probe"]["type"] != "ridge"
-            seeds = raw["seeds"] if stochastic else [raw["seeds"][0]]
-            for seed in seeds:
+            # The seed also controls dataset subsampling and the calibration/evaluation
+            # split, so deterministic probes still need every seed for paired comparisons.
+            for seed in raw["seeds"]:
                 config = deepcopy(shared)
                 config.update(
                     {

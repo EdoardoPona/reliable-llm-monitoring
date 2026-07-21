@@ -59,14 +59,25 @@ def test_sweep_uses_mckenzie_safety_hyperparameters():
     mlp = next(run for run in runs if run.cell_name == "mlp_mlp")
 
     assert attention.probe["hyperparams"] == {
-        "batch_size": 128,
+        "batch_size": 256,
+        "validation_batch_size": 128,
         "epochs": 200,
         "learning_rate": 5e-3,
         "final_learning_rate": 5e-4,
         "patience": 50,
         "weight_decay": 1e-3,
     }
-    assert softmax.probe["hyperparams"]["gradient_accumulation_steps"] == 4
+    assert softmax.probe["hyperparams"]["gradient_accumulation_steps"] == 1
     assert softmax.probe["hyperparams"]["patience"] == 10
     assert mlp.probe["hyperparams"]["epochs"] == 50
     assert mlp.dv_probe["hyperparams"]["patience"] == 10
+
+
+def test_sweep_runs_all_seeds_for_deterministic_baseline():
+    runs = build_runs(Path("experiments/configs/probe_ablation.yaml"))
+    mean_runs = [run for run in runs if run.cell_name == "mean_ridge"]
+
+    assert len(runs) == 42
+    assert {(run.expert_name, run.seed) for run in mean_runs} == {
+        (expert, seed) for expert in ("strong", "weak") for seed in (42, 43, 44)
+    }
