@@ -584,7 +584,8 @@ def _try_gpu_resident_tensors(
     """Move a complete activation dataset to CUDA when it fits safely."""
     if not enabled or device.type != "cuda":
         return None
-    free_bytes, _ = torch.cuda.mem_get_info(device)
+    device_index = device.index if device.index is not None else torch.cuda.current_device()
+    free_bytes, _ = torch.cuda.mem_get_info(device_index)
     required_bytes = _tensor_bytes(x, mask, targets)
     reserve_bytes = int(reserve_gb * 1024**3)
     if required_bytes + reserve_bytes > free_bytes:

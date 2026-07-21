@@ -13,6 +13,7 @@ from reliable_monitoring.probes import (
     _device_sequence_batches,
     _prepare_sequence_batch,
     _tensor_bytes,
+    _try_gpu_resident_tensors,
     build_probe,
     default_torch_device,
     probe_requires_raw_activations,
@@ -252,6 +253,25 @@ def test_device_sequence_batches_preserve_requested_order():
     assert _tensor_bytes(x, mask, targets) == sum(
         tensor.numel() * tensor.element_size() for tensor in (x, mask, targets)
     )
+
+
+def test_gpu_resident_memory_query_resolves_default_cuda_index(monkeypatch):
+    x = torch.zeros(2, 3)
+    mask = torch.ones(2, 1, dtype=torch.bool)
+    targets = torch.zeros(2)
+    queried = []
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 7)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device: (queried.append(device) or (0, 0)))
+    result = _try_gpu_resident_tensors(
+        x,
+        mask,
+        targets,
+        device=torch.device("cuda"),
+        enabled=True,
+        reserve_gb=1.0,
+    )
+    assert result is None
+    assert queried == [7]
 
 
 def test_probe_factory_and_raw_requirement():
