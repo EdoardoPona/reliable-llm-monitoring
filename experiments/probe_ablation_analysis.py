@@ -52,6 +52,8 @@ MATCHED_LABELS = {
     "softmax_softmax": "Softmax",
     "mlp_mlp": "MLP",
 }
+ARCHITECTURE_COLORS = dict(zip(MATCHED_CELLS, ("C0", "C1", "C2", "C3"), strict=True))
+ARCHITECTURE_MARKERS = dict(zip(MATCHED_CELLS, ("o", "s", "D", "^"), strict=True))
 
 
 def _nearest(rows: list[dict], alpha: float) -> dict | None:
@@ -179,6 +181,7 @@ def evaluate_artifact(artifact_path: Path) -> dict:
         "cell": config.cell_name,
         "expert": config.expert_name,
         "seed": config.seed,
+        "batch_size": batch_size,
         "probe": config.probe,
         "dv_probe": config.dv_probe,
         "probe_auc": probe_auc,
@@ -316,6 +319,140 @@ def write_aggregate_summary(results: list[dict], output_dir: Path) -> None:
         writer.writerows(rows)
 
 
+def _mean_topk_results(runs: list[dict]) -> tuple[np.ndarray, dict[str, tuple[np.ndarray, np.ndarray]]]:
+    fractions = np.asarray(runs[0]["topk"]["budget_fractions"])
+    signals = {}
+    for name in runs[0]["topk"]["signals"]:
+        auc = np.asarray([run["topk"]["signals"][name]["auc"] for run in runs], dtype=float)
+        accuracy = np.asarray([run["topk"]["signals"][name]["accuracy"] for run in runs], dtype=float)
+        signals[name] = (auc.mean(axis=0), accuracy.mean(axis=0))
+    return fractions, signals
+
+
+def _mean_ltt_results(runs: list[dict]) -> dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    curves = {}
+    for name in ("CTD", "Unc. calibrated"):
+        alpha = np.asarray([row["alpha"] for row in runs[0]["ltt"][name]], dtype=float)
+        auc = np.asarray([[row["auc"] for row in run["ltt"][name]] for run in runs], dtype=float)
+        accuracy = np.asarray([[row["accuracy"] for row in run["ltt"][name]] for run in runs], dtype=float)
+        curves[name] = (alpha, auc.mean(axis=0), accuracy.mean(axis=0))
+    return curves
+
+
+def plot_paper_cell_figures(results: list[dict], output_dir: Path) -> None:
+    """Reproduce the paper's two-panel cascade figure for each main architecture."""
+    for expert in ("strong", "weak"):
+        for cell in MATCHED_CELLS:
+            runs = [result for result in results if result["expert"] == expert and result["cell"] == cell]
+            if not runs:
+                continue
+            fractions, signals = _mean_topk_results(runs)
+            batch_size = int(runs[0].get("batch_size", 128))
+            fig = plot_single_batch_size(
+                fractions,
+                signals,
+                float(np.mean([run["probe_auc"] for run in runs])),
+                float(np.mean([run["probe_accuracy"] for run in runs])),
+                float(np.mean([run["expert_auc"] for run in runs])),
+                float(np.mean([run["expert_accuracy"] for run in runs])),
+                batch_size,
+                output_dir,
+                ltt_results=_mean_ltt_results(runs),
+                file_prefix=f"{expert}_{cell}_",
+            )
+            fig.savefig(
+                output_dir / f"{expert}_{cell}_ranking_comparison_B{batch_size}.png",
+                dpi=200,
+                bbox_inches="tight",
+            )
+            plt.close(fig)
+
+
+def _plot_architecture_panel(
+    ax: plt.Axes,
+    results: list[dict],
+    expert: str,
+    metric: str,
+    *,
+    show_expert_value: bool = True,
+) -> None:
+    probe_key = "probe_auc" if metric == "auc" else "probe_accuracy"
+    expert_key = "expert_auc" if metric == "auc" else "expert_accuracy"
+    for cell in MATCHED_CELLS:
+        runs = [result for result in results if result["expert"] == expert and result["cell"] == cell]
+        if not runs:
+            continue
+        alpha = np.asarray([0.0, *[row["alpha"] for row in runs[0]["ltt"]["CTD"]]])
+        values = np.asarray(
+            [[run[probe_key], *[row[metric] for row in run["ltt"]["CTD"]]] for run in runs],
+            dtype=float,
+        )
+        mean = values.mean(axis=0)
+        std = values.std(axis=0)
+        ax.plot(
+            alpha,
+            mean,
+            label=MATCHED_LABELS[cell],
+            color=ARCHITECTURE_COLORS[cell],
+            marker=ARCHITECTURE_MARKERS[cell],
+            markersize=3,
+        )
+        ax.fill_between(
+            alpha,
+            mean - std,
+            mean + std,
+            color=ARCHITECTURE_COLORS[cell],
+            alpha=0.12,
+            linewidth=0,
+        )
+    expert_value = float(np.mean([result[expert_key] for result in results if result["expert"] == expert]))
+    expert_label = f"Expert only ({expert_value:.3f})" if show_expert_value else "Expert only"
+    ax.axhline(expert_value, color="gray", ls="--", alpha=0.5, label=expert_label)
+    ax.set_xlabel("Budget fraction")
+    ax.set_ylabel("Cascade ROC AUC" if metric == "auc" else "Cascade Accuracy")
+    ax.set_title(r"Batch size $B = 128$")
+    ax.grid(alpha=0.3)
+
+
+def _add_architecture_legend(fig: plt.Figure, ax: plt.Axes) -> None:
+    handles, labels = ax.get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        fontsize=8,
+        loc="lower center",
+        ncol=len(labels),
+        bbox_to_anchor=(0.5, -0.02),
+    )
+    fig.subplots_adjust(bottom=0.18)
+
+
+def plot_paper_architecture_comparisons(results: list[dict], output_dir: Path) -> None:
+    """Compare all main architecture families using the paper's metric panels."""
+    for expert in ("strong", "weak"):
+        fig, (ax_auc, ax_acc) = plt.subplots(1, 2, figsize=(10, 4))
+        _plot_architecture_panel(ax_auc, results, expert, "auc")
+        _plot_architecture_panel(ax_acc, results, expert, "accuracy")
+        _add_architecture_legend(fig, ax_auc)
+        stem = output_dir / f"{expert}_architecture_comparison_B128"
+        fig.savefig(stem.with_suffix(".pdf"), bbox_inches="tight")
+        fig.savefig(stem.with_suffix(".png"), dpi=200, bbox_inches="tight")
+        plt.close(fig)
+
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8), squeeze=False)
+    for row, expert in enumerate(("strong", "weak")):
+        _plot_architecture_panel(axes[row, 0], results, expert, "auc", show_expert_value=False)
+        _plot_architecture_panel(axes[row, 1], results, expert, "accuracy", show_expert_value=False)
+        axes[row, 0].set_title(f"{expert.title()} expert")
+        axes[row, 1].set_title(f"{expert.title()} expert")
+    _add_architecture_legend(fig, axes[0, 0])
+    fig.subplots_adjust(bottom=0.12, hspace=0.48, wspace=0.22)
+    stem = output_dir / "architecture_comparison_grid_B128"
+    fig.savefig(stem.with_suffix(".pdf"), bbox_inches="tight")
+    fig.savefig(stem.with_suffix(".png"), dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
 def analyse_root(root: Path) -> list[dict]:
     artifacts = sorted(root.rglob("scores.npz"))
     if not artifacts:
@@ -331,6 +468,10 @@ def analyse_root(root: Path) -> list[dict]:
     for budget in SUMMARY_BUDGETS:
         plot_summary(results, root, budget)
     plot_architecture_curves(results, root)
+    paper_output = root / "paper_figures"
+    paper_output.mkdir(exist_ok=True)
+    plot_paper_cell_figures(results, paper_output)
+    plot_paper_architecture_comparisons(results, paper_output)
     return results
 
 
