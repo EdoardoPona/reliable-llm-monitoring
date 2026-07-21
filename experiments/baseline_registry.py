@@ -31,7 +31,8 @@ from reliable_monitoring.cascade import run_llm_baseline
 logger = logging.getLogger(__name__)
 
 DEFAULT_PROJECT = "reliable-llm-monitoring/baseline-cache"
-DEFAULT_LOCAL_CACHE_DIR = Path("results") / "baseline_cache"
+_CACHE_ROOT = Path(os.environ.get("RELIABLE_MONITORING_CACHE_DIR", "results"))
+DEFAULT_LOCAL_CACHE_DIR = Path(os.environ.get("BASELINE_CACHE_DIR", _CACHE_ROOT / "baseline_cache"))
 
 
 def normalize_dataset_key(resolved_path: str) -> str:

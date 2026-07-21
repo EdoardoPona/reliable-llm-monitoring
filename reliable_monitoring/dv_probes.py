@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import time
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -12,13 +13,19 @@ import torch
 from models_under_pressure.interfaces.dataset import LabelledDataset
 from sklearn.linear_model import Ridge
 from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
 
 from reliable_monitoring.probes import (
     AttentionProbeModule,
     MeanMLPProbeModule,
     SoftmaxProbeModule,
     TorchSequenceProbe,
+    _autocast,
+    _batched_sequence_loss,
+    _batched_sequence_outputs,
+    _device_sequence_batches,
+    _prepare_sequence_batch,
+    _sequence_loader,
+    _try_gpu_resident_tensors,
     default_torch_device,
 )
 
@@ -110,6 +117,10 @@ class TorchDVProbe:
         validation_fraction: float = 0.1,
         weight_decay: float = 0.0,
         gradient_accumulation_steps: int = 1,
+        validation_batch_size: int | None = None,
+        mixed_precision: bool = True,
+        resident_on_device: bool = True,
+        device_reserve_gb: float = 3.5,
         device: str | None = None,
         **module_kwargs: Any,
     ):
@@ -127,6 +138,10 @@ class TorchDVProbe:
         if gradient_accumulation_steps < 1:
             raise ValueError("gradient_accumulation_steps must be at least 1")
         self.gradient_accumulation_steps = gradient_accumulation_steps
+        self.validation_batch_size = validation_batch_size or batch_size
+        self.mixed_precision = mixed_precision
+        self.resident_on_device = resident_on_device
+        self.device_reserve_gb = device_reserve_gb
         self.device = torch.device(device) if device else default_torch_device()
         self.module_kwargs = module_kwargs
         self.model: nn.Module | None = None
@@ -155,12 +170,26 @@ class TorchDVProbe:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=self.epochs, eta_min=self.final_learning_rate
         )
-        loader = DataLoader(
-            TensorDataset(x[train_idx], mask[train_idx], y[train_idx]),
+        loader = _sequence_loader(
+            x,
+            mask,
+            y,
             batch_size=self.batch_size,
+            device=self.device,
+            indices=train_idx,
             shuffle=True,
         )
         criterion = nn.MSELoss()
+        scaler = torch.cuda.amp.GradScaler(enabled=self.mixed_precision and self.device.type == "cuda")
+        resident_tensors = _try_gpu_resident_tensors(
+            x,
+            mask,
+            y,
+            device=self.device,
+            enabled=self.resident_on_device,
+            reserve_gb=self.device_reserve_gb,
+        )
+        train_x, train_mask, train_y = resident_tensors or (x, mask, y)
         best_loss, stale, best_state = float("inf"), 0, None
         logger.info(
             "Training %s DV probe on %s for at most %d epochs (batch=%d, accumulation=%d)",
@@ -171,26 +200,48 @@ class TorchDVProbe:
             self.gradient_accumulation_steps,
         )
         for epoch in range(self.epochs):
+            epoch_started = time.perf_counter()
             self.model.train()
             optimizer.zero_grad()
-            for batch_index, (xb, mb, yb) in enumerate(loader):
-                loss = criterion(self.model(xb.to(self.device), mb.to(self.device)), yb.to(self.device))
-                (loss / self.gradient_accumulation_steps).backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            if resident_tensors is None:
+                batches = loader
+            else:
+                batches = _device_sequence_batches(
+                    train_x,
+                    train_mask,
+                    train_y,
+                    train_idx,
+                    batch_size=self.batch_size,
+                    shuffle=True,
+                    seed=self.seed + epoch,
+                )
+            for batch_index, (xb, mb, yb) in enumerate(batches):
+                xb, mb = _prepare_sequence_batch(xb, mb, self.device)
+                yb = yb.to(self.device, non_blocking=self.device.type == "cuda")
+                with _autocast(self.device, self.mixed_precision):
+                    loss = criterion(self.model(xb, mb), yb)
+                scaler.scale(loss / self.gradient_accumulation_steps).backward()
                 is_accumulation_boundary = (batch_index + 1) % self.gradient_accumulation_steps == 0
-                is_last_batch = batch_index + 1 == len(loader)
+                n_train_batches = (len(train_idx) + self.batch_size - 1) // self.batch_size
+                is_last_batch = batch_index + 1 == n_train_batches
                 if is_accumulation_boundary or is_last_batch:
-                    optimizer.step()
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
                     optimizer.zero_grad()
             scheduler.step()
-            self.model.eval()
-            with torch.no_grad():
-                val_loss = float(
-                    criterion(
-                        self.model(x[val_idx].to(self.device), mask[val_idx].to(self.device)),
-                        y[val_idx].to(self.device),
-                    )
-                )
+            val_loss = _batched_sequence_loss(
+                self.model,
+                criterion,
+                train_x,
+                train_mask,
+                train_y,
+                val_idx,
+                batch_size=self.validation_batch_size,
+                device=self.device,
+                mixed_precision=self.mixed_precision,
+            )
             if val_loss < best_loss - 1e-6:
                 best_loss, stale = val_loss, 0
                 best_state = copy.deepcopy(self.model.state_dict())
@@ -207,20 +258,25 @@ class TorchDVProbe:
                     self.epochs,
                     val_loss,
                 )
+                logger.info("%s DV probe epoch time: %.2fs", self.architecture, time.perf_counter() - epoch_started)
         if best_state is not None:
             self.model.load_state_dict(best_state)
+        if resident_tensors is not None:
+            del batches, xb, mb, yb, resident_tensors, train_x, train_mask, train_y
+            torch.cuda.empty_cache()
 
     def predict(self, dataset: LabelledDataset) -> np.ndarray:
         if self.model is None:
             raise ValueError("DV probe has not been fitted")
         x, mask = TorchSequenceProbe._arrays(dataset)
-        loader = DataLoader(TensorDataset(x, mask), batch_size=max(self.batch_size, 64))
-        outputs = []
-        self.model.eval()
-        with torch.no_grad():
-            for xb, mb in loader:
-                outputs.append(self.model(xb.to(self.device), mb.to(self.device)).cpu())
-        return torch.cat(outputs).numpy()
+        return _batched_sequence_outputs(
+            self.model,
+            x,
+            mask,
+            batch_size=max(self.batch_size, 64),
+            device=self.device,
+            mixed_precision=self.mixed_precision,
+        )
 
 
 for _architecture in _DV_MODULES:

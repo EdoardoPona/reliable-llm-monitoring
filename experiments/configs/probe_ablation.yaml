@@ -60,7 +60,8 @@ cells:
     probe:
       type: attention
       hyperparams:
-        batch_size: 128
+        batch_size: 256
+        validation_batch_size: 128
         epochs: 200
         learning_rate: 5.0e-3
         final_learning_rate: 5.0e-4
@@ -69,7 +70,8 @@ cells:
     dv_probe:
       type: attention
       hyperparams:
-        batch_size: 128
+        batch_size: 256
+        validation_batch_size: 128
         epochs: 50
         learning_rate: 5.0e-3
         final_learning_rate: 1.0e-4
@@ -80,7 +82,8 @@ cells:
     probe:
       type: attention
       hyperparams:
-        batch_size: 128
+        batch_size: 256
+        validation_batch_size: 128
         epochs: 200
         learning_rate: 5.0e-3
         final_learning_rate: 5.0e-4
@@ -94,37 +97,37 @@ cells:
       type: softmax
       hyperparams:
         temperature: 5.0
-        batch_size: 16
+        batch_size: 64
         epochs: 200
         learning_rate: 5.0e-3
         final_learning_rate: 1.0e-4
         patience: 10
         weight_decay: 1.0e-3
-        gradient_accumulation_steps: 4
+        gradient_accumulation_steps: 1
     dv_probe:
       type: softmax
       hyperparams:
         temperature: 5.0
-        batch_size: 16
+        batch_size: 64
         epochs: 50
         learning_rate: 5.0e-3
         final_learning_rate: 1.0e-4
         patience: 10
         weight_decay: 1.0e-3
-        gradient_accumulation_steps: 4
+        gradient_accumulation_steps: 1
 
   - name: softmax_ridge
     probe:
       type: softmax
       hyperparams:
         temperature: 5.0
-        batch_size: 16
+        batch_size: 64
         epochs: 200
         learning_rate: 5.0e-3
         final_learning_rate: 1.0e-4
         patience: 10
         weight_decay: 1.0e-3
-        gradient_accumulation_steps: 4
+        gradient_accumulation_steps: 1
     dv_probe:
       type: ridge
 

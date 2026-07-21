@@ -9,6 +9,10 @@ from reliable_monitoring.dataset import reduce_activations
 from reliable_monitoring.probes import (
     LinearProbe,
     SequenceProbe,
+    TorchSequenceProbe,
+    _device_sequence_batches,
+    _prepare_sequence_batch,
+    _tensor_bytes,
     build_probe,
     default_torch_device,
     probe_requires_raw_activations,
@@ -201,7 +205,7 @@ def test_torch_probe_architectures(architecture):
         ids=[str(i) for i in range(40)],
         other_fields={"labels": labels, "activations": activations, "attention_mask": mask},
     )
-    hyperparams = {"epochs": 3, "patience": 2, "batch_size": 8, "seed": 3}
+    hyperparams = {"epochs": 3, "patience": 2, "batch_size": 8, "validation_batch_size": 2, "seed": 3}
     if architecture == "softmax":
         hyperparams["temperature"] = 5.0
         hyperparams["gradient_accumulation_steps"] = 4
@@ -210,6 +214,44 @@ def test_torch_probe_architectures(architecture):
     scores = probe.predict(dataset)
     assert scores.shape == (40,)
     assert np.all((scores >= 0) & (scores <= 1))
+
+
+def test_sequence_probe_preserves_float16_activations():
+    activations = np.zeros((3, 4, 5), dtype=np.float16)
+    dataset = LabelledDataset(
+        inputs=["a", "b", "c"],
+        ids=["0", "1", "2"],
+        other_fields={"labels": [0, 1, 0], "activations": activations},
+    )
+    x, _ = TorchSequenceProbe._arrays(dataset)
+    assert x.dtype == torch.float16
+    assert x.untyped_storage().data_ptr() == torch.as_tensor(activations).untyped_storage().data_ptr()
+
+
+def test_prepare_sequence_batch_removes_batch_wide_padding():
+    x = torch.randn(2, 7, 3)
+    mask = torch.tensor(
+        [
+            [False, True, True, True, False, False, False],
+            [False, True, True, True, True, False, False],
+        ]
+    )
+    trimmed_x, trimmed_mask = _prepare_sequence_batch(x, mask, torch.device("cpu"))
+    assert trimmed_x.shape == (2, 4, 3)
+    assert trimmed_mask.shape == (2, 4)
+
+
+def test_device_sequence_batches_preserve_requested_order():
+    x = torch.arange(30).reshape(5, 3, 2).float()
+    mask = torch.ones(5, 3, dtype=torch.bool)
+    targets = torch.arange(5).float()
+    indices = np.array([4, 1, 3])
+    batches = list(_device_sequence_batches(x, mask, targets, indices, batch_size=2, shuffle=False, seed=0))
+    assert torch.equal(torch.cat([batch[0] for batch in batches]), x[indices])
+    assert torch.equal(torch.cat([batch[2] for batch in batches]), targets[indices])
+    assert _tensor_bytes(x, mask, targets) == sum(
+        tensor.numel() * tensor.element_size() for tensor in (x, mask, targets)
+    )
 
 
 def test_probe_factory_and_raw_requirement():

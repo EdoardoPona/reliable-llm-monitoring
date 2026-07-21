@@ -15,7 +15,9 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+from activation_registry import DEFAULT_LOCAL_CACHE_DIR as DEFAULT_ACTIVATION_CACHE_DIR
 from activation_registry import compute_or_fetch_activations
+from baseline_registry import DEFAULT_LOCAL_CACHE_DIR as DEFAULT_BASELINE_CACHE_DIR
 from baseline_registry import compute_or_fetch_baseline
 from config import load_config
 from dotenv import load_dotenv
@@ -54,6 +56,11 @@ def _activation_kinds(safety_spec: dict, dv_spec: dict) -> set[str]:
 
 
 def _fetch_activations(dataset, path: str, config, kinds: set[str]) -> dict[str, np.ndarray]:
+    cache_root = getattr(config, "cache_root", None)
+    cache_dir = getattr(config, "activation_cache_dir", None) or (
+        Path(cache_root) / "activation_cache" if cache_root else None
+    )
+    local_cache_dir = Path(cache_dir) if cache_dir else DEFAULT_ACTIVATION_CACHE_DIR
     return {
         kind: compute_or_fetch_activations(
             model_name=config.activations_model_name,
@@ -66,6 +73,8 @@ def _fetch_activations(dataset, path: str, config, kinds: set[str]) -> dict[str,
             batch_size=getattr(config, "activation_batch_size", 8),
             local_only=getattr(config, "local_only", False),
             sync_clearml_on_local_hit=False,
+            use_clearml_cache=kind != "raw",
+            local_cache_dir=local_cache_dir,
         )
         for kind in kinds
     }
@@ -94,6 +103,9 @@ def _load_mixed_split(config, split: str, kinds: set[str]):
         path = source[split]
         dataset = LabelledDataset.load_from(Path(path))
         activations = _fetch_activations(dataset, path, config, kinds)
+        baseline_cache_dir = (
+            Path(config.cache_root) / "baseline_cache" if hasattr(config, "cache_root") else DEFAULT_BASELINE_CACHE_DIR
+        )
         baseline = compute_or_fetch_baseline(
             model_name=config.baseline_model_name,
             dataset=dataset,
@@ -103,6 +115,7 @@ def _load_mixed_split(config, split: str, kinds: set[str]):
             local_only=getattr(config, "local_only", False),
             sync_clearml_on_local_hit=False,
             baseline_batch_size=getattr(config, "baseline_batch_size", 8),
+            local_cache_dir=baseline_cache_dir,
         )
         datasets.append(dataset)
         baselines.append(baseline)

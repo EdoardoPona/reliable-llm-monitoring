@@ -20,6 +20,7 @@ Usage::
 from __future__ import annotations
 
 import logging
+import os
 import pickle
 import warnings
 from pathlib import Path
@@ -32,7 +33,8 @@ from models_under_pressure.interfaces.dataset import LabelledDataset
 logger = logging.getLogger(__name__)
 
 DEFAULT_PROJECT = "reliable-llm-monitoring/activation-cache"
-DEFAULT_LOCAL_CACHE_DIR = Path("results") / "activation_cache"
+_CACHE_ROOT = Path(os.environ.get("RELIABLE_MONITORING_CACHE_DIR", "results"))
+DEFAULT_LOCAL_CACHE_DIR = Path(os.environ.get("ACTIVATION_CACHE_DIR", _CACHE_ROOT / "activation_cache"))
 
 
 def _make_tags(model_name: str, layer: int, reduction: str, dataset_key: str) -> list[str]:
@@ -84,14 +86,17 @@ def _save_local_cache(
     data: np.ndarray,
     cache_dir: Path,
 ) -> None:
-    """Save reduced activations to local pickle cache."""
+    """Save activations atomically so interrupted writes are never cache hits."""
     path = _local_cache_path(model_name, layer, reduction, dataset_key, cache_dir)
+    temporary_path = path.with_suffix(f"{path.suffix}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "wb") as f:
+        with open(temporary_path, "wb") as f:
             pickle.dump(data, f)
+        temporary_path.replace(path)
         logger.info(f"Saved activations {data.shape} to local cache: {path}")
     except Exception as e:
+        temporary_path.unlink(missing_ok=True)
         logger.warning(f"Failed to save local cache {path}: {e}")
 
 
@@ -302,6 +307,7 @@ def compute_or_fetch_activations(
     skip_cache: bool = False,
     local_only: bool = False,
     sync_clearml_on_local_hit: bool = True,
+    use_clearml_cache: bool = True,
 ) -> np.ndarray:
     """Fetch cached reduced activations or compute and upload them.
 
@@ -324,6 +330,8 @@ def compute_or_fetch_activations(
             fallback).  Avoids network calls when all data is cached locally.
         sync_clearml_on_local_hit: If False, return a valid local hit without
             checking that a duplicate exists on ClearML.
+        use_clearml_cache: If False, do not fetch from or upload to ClearML.
+            Raw activation tensors should normally set this to False.
 
     Returns:
         Reduced activation array of shape ``(len(dataset), hidden_dim)``, or
@@ -339,7 +347,7 @@ def compute_or_fetch_activations(
             if len(local_hit) != n_expected:
                 logger.warning(f"Local cache size mismatch: {len(local_hit)} != {n_expected}. Skipping.")
             else:
-                if not local_only and sync_clearml_on_local_hit:
+                if not local_only and use_clearml_cache and sync_clearml_on_local_hit:
                     _ensure_clearml_cache(model_name, layer, reduction, dataset_key, local_hit, project_name)
                 return local_hit
 
@@ -349,13 +357,14 @@ def compute_or_fetch_activations(
                 f"local_only=True but no local cache found for model={model_name}, layer={layer}, "
                 f"reduction={reduction}, dataset={dataset_key}"
             )
-        clearml_hit = _fetch_clearml_cache(model_name, layer, reduction, dataset_key, project_name)
-        if clearml_hit is not None:
-            if len(clearml_hit) != n_expected:
-                logger.warning(f"ClearML cache size mismatch: {len(clearml_hit)} != {n_expected}. Recomputing.")
-            else:
-                _save_local_cache(model_name, layer, reduction, dataset_key, clearml_hit, local_cache_dir)
-                return clearml_hit
+        if use_clearml_cache:
+            clearml_hit = _fetch_clearml_cache(model_name, layer, reduction, dataset_key, project_name)
+            if clearml_hit is not None:
+                if len(clearml_hit) != n_expected:
+                    logger.warning(f"ClearML cache size mismatch: {len(clearml_hit)} != {n_expected}. Recomputing.")
+                else:
+                    _save_local_cache(model_name, layer, reduction, dataset_key, clearml_hit, local_cache_dir)
+                    return clearml_hit
 
     # 3. Compute
     logger.info(
@@ -374,7 +383,7 @@ def compute_or_fetch_activations(
     # Save to both caches
     if not skip_cache:
         _save_local_cache(model_name, layer, reduction, dataset_key, data, local_cache_dir)
-        if not local_only:
+        if not local_only and use_clearml_cache:
             _upload_to_clearml(model_name, layer, reduction, dataset_key, data, project_name)
 
     return data

@@ -38,7 +38,7 @@ def test_ridge_dv_probe(activation_dataset):
 @pytest.mark.parametrize("architecture", ["attention", "softmax", "mlp"])
 def test_torch_dv_probes(architecture, activation_dataset):
     dataset, targets = activation_dataset
-    hyperparams = {"epochs": 3, "patience": 2, "batch_size": 8, "seed": 5}
+    hyperparams = {"epochs": 3, "patience": 2, "batch_size": 8, "validation_batch_size": 2, "seed": 5}
     if architecture == "softmax":
         hyperparams["temperature"] = 5.0
         hyperparams["gradient_accumulation_steps"] = 4

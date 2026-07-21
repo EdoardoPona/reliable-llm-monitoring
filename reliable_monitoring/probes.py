@@ -8,6 +8,7 @@ This module provides a Protocol-based interface for probes and two implementatio
 import copy
 import logging
 import random
+import time
 from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
@@ -17,7 +18,7 @@ from models_under_pressure.interfaces.dataset import LabelledDataset
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, Subset, TensorDataset
 
 logger = logging.getLogger(__name__)
 
@@ -511,6 +512,187 @@ def default_torch_device() -> torch.device:
     return torch.device("cpu")
 
 
+def _activation_tensor(value: Any) -> torch.Tensor:
+    """Wrap activation storage without expanding float16 caches to float32."""
+    tensor = torch.as_tensor(value)
+    if not tensor.is_floating_point() or tensor.dtype not in {torch.float16, torch.float32, torch.bfloat16}:
+        tensor = tensor.float()
+    return tensor
+
+
+def _sequence_loader(
+    x: torch.Tensor,
+    mask: torch.Tensor,
+    targets: torch.Tensor | None,
+    *,
+    batch_size: int,
+    device: torch.device,
+    indices: np.ndarray | None = None,
+    shuffle: bool = False,
+) -> DataLoader:
+    tensors = (x, mask) if targets is None else (x, mask, targets)
+    dataset = TensorDataset(*tensors)
+    if indices is not None:
+        dataset = Subset(dataset, indices.tolist())
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        pin_memory=device.type == "cuda",
+    )
+
+
+def _prepare_sequence_batch(
+    x: torch.Tensor,
+    mask: torch.Tensor,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Drop batch-wide padding, then transfer inputs to the accelerator."""
+    active_columns = mask.any(dim=0).nonzero(as_tuple=False).flatten()
+    if len(active_columns):
+        start, stop = int(active_columns[0]), int(active_columns[-1]) + 1
+        x, mask = x[:, start:stop], mask[:, start:stop]
+    non_blocking = device.type == "cuda"
+    x = x.to(device, non_blocking=non_blocking)
+    mask = mask.to(device, non_blocking=non_blocking)
+    if device.type != "cuda" and x.dtype != torch.float32:
+        x = x.float()
+    return x, mask
+
+
+def _autocast(device: torch.device, enabled: bool):
+    return torch.autocast(
+        device_type=device.type,
+        dtype=torch.float16,
+        enabled=enabled and device.type == "cuda",
+    )
+
+
+def _tensor_bytes(*tensors: torch.Tensor) -> int:
+    return sum(tensor.numel() * tensor.element_size() for tensor in tensors)
+
+
+def _try_gpu_resident_tensors(
+    x: torch.Tensor,
+    mask: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    device: torch.device,
+    enabled: bool,
+    reserve_gb: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
+    """Move a complete activation dataset to CUDA when it fits safely."""
+    if not enabled or device.type != "cuda":
+        return None
+    free_bytes, _ = torch.cuda.mem_get_info(device)
+    required_bytes = _tensor_bytes(x, mask, targets)
+    reserve_bytes = int(reserve_gb * 1024**3)
+    if required_bytes + reserve_bytes > free_bytes:
+        logger.info(
+            "Activation dataset needs %.1f GiB; keeping it on CPU (%.1f GiB free, %.1f GiB reserved)",
+            required_bytes / 1024**3,
+            free_bytes / 1024**3,
+            reserve_gb,
+        )
+        return None
+    logger.info(
+        "Loading %.1f GiB activation dataset onto %s (%.1f GiB reserve)",
+        required_bytes / 1024**3,
+        device,
+        reserve_gb,
+    )
+    try:
+        return x.to(device), mask.to(device), targets.to(device)
+    except torch.cuda.OutOfMemoryError:
+        logger.warning("Full activation dataset did not fit on %s; falling back to streamed CPU batches", device)
+        torch.cuda.empty_cache()
+        return None
+
+
+def _device_sequence_batches(
+    x: torch.Tensor,
+    mask: torch.Tensor,
+    targets: torch.Tensor,
+    indices: np.ndarray,
+    *,
+    batch_size: int,
+    shuffle: bool,
+    seed: int,
+):
+    index = torch.as_tensor(indices, dtype=torch.long, device=x.device)
+    if shuffle:
+        generator = torch.Generator(device=x.device).manual_seed(seed)
+        index = index[torch.randperm(len(index), generator=generator, device=x.device)]
+    for start in range(0, len(index), batch_size):
+        batch_index = index[start : start + batch_size]
+        yield x[batch_index], mask[batch_index], targets[batch_index]
+
+
+def _batched_sequence_loss(
+    model: nn.Module,
+    criterion: nn.Module,
+    x: torch.Tensor,
+    mask: torch.Tensor,
+    targets: torch.Tensor,
+    indices: np.ndarray,
+    *,
+    batch_size: int,
+    device: torch.device,
+    mixed_precision: bool,
+) -> float:
+    if x.device == device:
+        batches = _device_sequence_batches(
+            x,
+            mask,
+            targets,
+            indices,
+            batch_size=batch_size,
+            shuffle=False,
+            seed=0,
+        )
+    else:
+        batches = _sequence_loader(
+            x,
+            mask,
+            targets,
+            batch_size=batch_size,
+            device=device,
+            indices=indices,
+        )
+    total_loss = 0.0
+    n_samples = 0
+    model.eval()
+    with torch.inference_mode():
+        for xb, mb, yb in batches:
+            xb, mb = _prepare_sequence_batch(xb, mb, device)
+            yb = yb.to(device, non_blocking=device.type == "cuda")
+            with _autocast(device, mixed_precision):
+                loss = criterion(model(xb, mb), yb)
+            total_loss += float(loss) * len(yb)
+            n_samples += len(yb)
+    return total_loss / n_samples
+
+
+def _batched_sequence_outputs(
+    model: nn.Module,
+    x: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    batch_size: int,
+    device: torch.device,
+    mixed_precision: bool,
+) -> np.ndarray:
+    loader = _sequence_loader(x, mask, None, batch_size=batch_size, device=device)
+    outputs = []
+    model.eval()
+    with torch.inference_mode():
+        for xb, mb in loader:
+            xb, mb = _prepare_sequence_batch(xb, mb, device)
+            with _autocast(device, mixed_precision):
+                outputs.append(model(xb, mb).float().cpu())
+    return torch.cat(outputs).numpy()
+
+
 class TorchSequenceProbe:
     """Small torch probe with deterministic training and internal early stopping."""
 
@@ -527,6 +709,10 @@ class TorchSequenceProbe:
         validation_fraction: float = 0.1,
         weight_decay: float = 0.0,
         gradient_accumulation_steps: int = 1,
+        validation_batch_size: int | None = None,
+        mixed_precision: bool = True,
+        resident_on_device: bool = True,
+        device_reserve_gb: float = 3.5,
         device: str | None = None,
         **module_kwargs: Any,
     ):
@@ -544,6 +730,10 @@ class TorchSequenceProbe:
         if gradient_accumulation_steps < 1:
             raise ValueError("gradient_accumulation_steps must be at least 1")
         self.gradient_accumulation_steps = gradient_accumulation_steps
+        self.validation_batch_size = validation_batch_size or batch_size
+        self.mixed_precision = mixed_precision
+        self.resident_on_device = resident_on_device
+        self.device_reserve_gb = device_reserve_gb
         self.device = torch.device(device) if device else default_torch_device()
         self.module_kwargs = module_kwargs
         self.model: nn.Module | None = None
@@ -552,11 +742,11 @@ class TorchSequenceProbe:
     @staticmethod
     def _arrays(dataset: LabelledDataset) -> tuple[torch.Tensor, torch.Tensor]:
         if "activations" in dataset.other_fields:
-            x = torch.as_tensor(dataset.other_fields["activations"], dtype=torch.float32)
+            x = _activation_tensor(dataset.other_fields["activations"])
             mask_value = dataset.other_fields.get("attention_mask")
             mask = torch.as_tensor(mask_value).bool() if mask_value is not None else x.abs().sum(dim=-1).ne(0)
         elif "activations_mean" in dataset.other_fields:
-            x = torch.as_tensor(dataset.other_fields["activations_mean"], dtype=torch.float32).unsqueeze(1)
+            x = _activation_tensor(dataset.other_fields["activations_mean"]).unsqueeze(1)
             mask = torch.ones(x.shape[:2], dtype=torch.bool)
         else:
             raise ValueError("Dataset requires 'activations' or 'activations_mean'")
@@ -577,12 +767,26 @@ class TorchSequenceProbe:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=self.epochs, eta_min=self.final_learning_rate
         )
-        loader = DataLoader(
-            TensorDataset(x[train_idx], mask[train_idx], y[train_idx]),
+        loader = _sequence_loader(
+            x,
+            mask,
+            y,
             batch_size=self.batch_size,
+            device=self.device,
+            indices=train_idx,
             shuffle=True,
         )
         criterion = nn.BCEWithLogitsLoss()
+        scaler = torch.cuda.amp.GradScaler(enabled=self.mixed_precision and self.device.type == "cuda")
+        resident_tensors = _try_gpu_resident_tensors(
+            x,
+            mask,
+            y,
+            device=self.device,
+            enabled=self.resident_on_device,
+            reserve_gb=self.device_reserve_gb,
+        )
+        train_x, train_mask, train_y = resident_tensors or (x, mask, y)
         best_loss, stale, best_state = float("inf"), 0, None
         logger.info(
             "Training %s safety probe on %s for at most %d epochs (batch=%d, accumulation=%d)",
@@ -593,22 +797,48 @@ class TorchSequenceProbe:
             self.gradient_accumulation_steps,
         )
         for epoch in range(self.epochs):
+            epoch_started = time.perf_counter()
             self.model.train()
             optimizer.zero_grad()
-            for batch_index, (xb, mb, yb) in enumerate(loader):
-                loss = criterion(self.model(xb.to(self.device), mb.to(self.device)), yb.to(self.device))
-                (loss / self.gradient_accumulation_steps).backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            if resident_tensors is None:
+                batches = loader
+            else:
+                batches = _device_sequence_batches(
+                    train_x,
+                    train_mask,
+                    train_y,
+                    train_idx,
+                    batch_size=self.batch_size,
+                    shuffle=True,
+                    seed=self.seed + epoch,
+                )
+            for batch_index, (xb, mb, yb) in enumerate(batches):
+                xb, mb = _prepare_sequence_batch(xb, mb, self.device)
+                yb = yb.to(self.device, non_blocking=self.device.type == "cuda")
+                with _autocast(self.device, self.mixed_precision):
+                    loss = criterion(self.model(xb, mb), yb)
+                scaler.scale(loss / self.gradient_accumulation_steps).backward()
                 is_accumulation_boundary = (batch_index + 1) % self.gradient_accumulation_steps == 0
-                is_last_batch = batch_index + 1 == len(loader)
+                n_train_batches = (len(train_idx) + self.batch_size - 1) // self.batch_size
+                is_last_batch = batch_index + 1 == n_train_batches
                 if is_accumulation_boundary or is_last_batch:
-                    optimizer.step()
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
                     optimizer.zero_grad()
             scheduler.step()
-            self.model.eval()
-            with torch.no_grad():
-                val_logits = self.model(x[val_idx].to(self.device), mask[val_idx].to(self.device))
-                val_loss = float(criterion(val_logits, y[val_idx].to(self.device)))
+            val_loss = _batched_sequence_loss(
+                self.model,
+                criterion,
+                train_x,
+                train_mask,
+                train_y,
+                val_idx,
+                batch_size=self.validation_batch_size,
+                device=self.device,
+                mixed_precision=self.mixed_precision,
+            )
             if val_loss < best_loss - 1e-6:
                 best_loss, stale = val_loss, 0
                 best_state = copy.deepcopy(self.model.state_dict())
@@ -625,20 +855,25 @@ class TorchSequenceProbe:
                     self.epochs,
                     val_loss,
                 )
+                logger.info("%s safety probe epoch time: %.2fs", self.architecture, time.perf_counter() - epoch_started)
         if best_state is not None:
             self.model.load_state_dict(best_state)
+        if resident_tensors is not None:
+            del batches, xb, mb, yb, resident_tensors, train_x, train_mask, train_y
+            torch.cuda.empty_cache()
 
     def raw_predict(self, dataset: LabelledDataset) -> np.ndarray:
         if self.model is None:
             raise ValueError("Probe has not been fitted")
         x, mask = self._arrays(dataset)
-        loader = DataLoader(TensorDataset(x, mask), batch_size=max(self.batch_size, 64))
-        outputs = []
-        self.model.eval()
-        with torch.no_grad():
-            for xb, mb in loader:
-                outputs.append(self.model(xb.to(self.device), mb.to(self.device)).cpu())
-        return torch.cat(outputs).numpy()
+        return _batched_sequence_outputs(
+            self.model,
+            x,
+            mask,
+            batch_size=max(self.batch_size, 64),
+            device=self.device,
+            mixed_precision=self.mixed_precision,
+        )
 
     def predict(self, dataset: LabelledDataset) -> np.ndarray:
         scores = 1.0 / (1.0 + np.exp(-self.raw_predict(dataset)))
