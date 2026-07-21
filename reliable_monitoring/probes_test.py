@@ -11,6 +11,7 @@ from reliable_monitoring.probes import (
     SequenceProbe,
     TorchSequenceProbe,
     _device_sequence_batches,
+    _devices_match,
     _prepare_sequence_batch,
     _tensor_bytes,
     _try_gpu_resident_tensors,
@@ -272,6 +273,12 @@ def test_gpu_resident_memory_query_resolves_default_cuda_index(monkeypatch):
     )
     assert result is None
     assert queried == [7]
+
+
+def test_default_cuda_device_matches_indexed_cuda_device():
+    assert _devices_match(torch.device("cuda:0"), torch.device("cuda"))
+    assert not _devices_match(torch.device("cuda:1"), torch.device("cuda:0"))
+    assert not _devices_match(torch.device("cpu"), torch.device("cuda"))
 
 
 def test_probe_factory_and_raw_requirement():

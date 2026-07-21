@@ -629,6 +629,12 @@ def _device_sequence_batches(
         yield x[batch_index], mask[batch_index], targets[batch_index]
 
 
+def _devices_match(actual: torch.device, requested: torch.device) -> bool:
+    if actual.type != requested.type:
+        return False
+    return requested.index is None or actual.index == requested.index
+
+
 def _batched_sequence_loss(
     model: nn.Module,
     criterion: nn.Module,
@@ -641,7 +647,7 @@ def _batched_sequence_loss(
     device: torch.device,
     mixed_precision: bool,
 ) -> float:
-    if x.device == device:
+    if _devices_match(x.device, device):
         batches = _device_sequence_batches(
             x,
             mask,
