@@ -27,6 +27,31 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 SUMMARY_BUDGETS = (0.1, 0.2, 0.3, 0.5)
+CELL_ORDER = (
+    "mean_ridge",
+    "attention_attention",
+    "attention_ridge",
+    "softmax_softmax",
+    "softmax_ridge",
+    "mlp_mlp",
+    "mlp_ridge",
+)
+CELL_LABELS = {
+    "mean_ridge": "Mean + ridge",
+    "attention_attention": "Attention + matched",
+    "attention_ridge": "Attention + ridge",
+    "softmax_softmax": "Softmax + matched",
+    "softmax_ridge": "Softmax + ridge",
+    "mlp_mlp": "MLP + matched",
+    "mlp_ridge": "MLP + ridge",
+}
+MATCHED_CELLS = ("mean_ridge", "attention_attention", "softmax_softmax", "mlp_mlp")
+MATCHED_LABELS = {
+    "mean_ridge": "Mean",
+    "attention_attention": "Attention",
+    "softmax_softmax": "Softmax",
+    "mlp_mlp": "MLP",
+}
 
 
 def _nearest(rows: list[dict], alpha: float) -> dict | None:
@@ -204,8 +229,8 @@ def _summary_row(result: dict) -> dict:
 
 
 def plot_summary(results: list[dict], output_dir: Path, budget: float = 0.2) -> None:
-    cells = list(dict.fromkeys(result["cell"] for result in results))
-    experts = list(dict.fromkeys(result["expert"] for result in results))
+    cells = [cell for cell in CELL_ORDER if any(result["cell"] == cell for result in results)]
+    experts = [expert for expert in ("strong", "weak") if any(result["expert"] == expert for result in results)]
     fig, axes = plt.subplots(1, len(experts), figsize=(6 * len(experts), 4), squeeze=False)
     for ax, expert in zip(axes[0], experts, strict=True):
         means, errors = [], []
@@ -217,16 +242,78 @@ def plot_summary(results: list[dict], output_dir: Path, budget: float = 0.2) -> 
             ]
             means.append(float(np.mean(values)) if values else np.nan)
             errors.append(float(np.std(values)) if len(values) > 1 else 0.0)
-        ax.bar(np.arange(len(cells)), means, yerr=errors, capsize=3)
+        colors = ["tab:blue" if cell in MATCHED_CELLS else "0.65" for cell in cells]
+        ax.bar(np.arange(len(cells)), means, yerr=errors, capsize=3, color=colors)
         ax.axhline(0, color="black", linewidth=0.8)
-        ax.set_xticks(np.arange(len(cells)), cells, rotation=35, ha="right")
-        ax.set_title(expert)
-        ax.set_ylabel("CTD − uncertainty ROC AUC")
+        ax.set_xticks(np.arange(len(cells)), [CELL_LABELS[cell] for cell in cells], rotation=35, ha="right")
+        ax.set_title(f"{expert.title()} expert")
+        ax.set_ylabel("ROC AUC gain over uncertainty")
         ax.set_xlabel("Safety / DV architecture")
         ax.grid(axis="y", alpha=0.25)
     fig.tight_layout()
-    fig.savefig(output_dir / f"summary_gain_{round(budget * 100)}pct.pdf", bbox_inches="tight")
+    stem = output_dir / f"summary_gain_{round(budget * 100)}pct"
+    fig.savefig(stem.with_suffix(".pdf"), bbox_inches="tight")
+    fig.savefig(stem.with_suffix(".png"), dpi=200, bbox_inches="tight")
     plt.close(fig)
+
+
+def plot_architecture_curves(results: list[dict], output_dir: Path) -> None:
+    """Compare the four matched architecture families across target budgets."""
+    experts = [expert for expert in ("strong", "weak") if any(result["expert"] == expert for result in results)]
+    fig, axes = plt.subplots(1, len(experts), figsize=(6 * len(experts), 4), squeeze=False, sharex=True)
+    colors = dict(zip(MATCHED_CELLS, ("tab:gray", "tab:blue", "tab:orange", "tab:green"), strict=True))
+    for ax, expert in zip(axes[0], experts, strict=True):
+        for cell in MATCHED_CELLS:
+            runs = [result for result in results if result["expert"] == expert and result["cell"] == cell]
+            if not runs:
+                continue
+            alpha = np.asarray([row["alpha"] for row in runs[0]["ltt"]["CTD"]])
+            auc = np.asarray([[row["auc"] for row in run["ltt"]["CTD"]] for run in runs])
+            mean = auc.mean(axis=0)
+            std = auc.std(axis=0)
+            ax.plot(alpha, mean, label=MATCHED_LABELS[cell], color=colors[cell], linewidth=2)
+            ax.fill_between(alpha, mean - std, mean + std, color=colors[cell], alpha=0.15, linewidth=0)
+        ax.set_title(f"{expert.title()} expert")
+        ax.set_xlabel("Target delegation budget")
+        ax.set_ylabel("CTD ROC AUC")
+        ax.set_xlim(0.05, 0.95)
+        ax.grid(alpha=0.25)
+    axes[0, -1].legend(frameon=False)
+    fig.tight_layout()
+    stem = output_dir / "summary_matched_architectures"
+    fig.savefig(stem.with_suffix(".pdf"), bbox_inches="tight")
+    fig.savefig(stem.with_suffix(".png"), dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+def write_aggregate_summary(results: list[dict], output_dir: Path) -> None:
+    """Write mean and standard deviation across seeds for the paper table."""
+    rows = []
+    for expert in ("strong", "weak"):
+        for cell in CELL_ORDER:
+            runs = [result for result in results if result["expert"] == expert and result["cell"] == cell]
+            if not runs:
+                continue
+            row = {"expert": expert, "cell": cell, "n_seeds": len(runs)}
+            values = {
+                "probe_auc": [run["probe_auc"] for run in runs],
+                "probe_accuracy": [run["probe_accuracy"] for run in runs],
+                "dv_spearman": [run["dv_spearman"] for run in runs],
+                "delegation_capacity": [run["delegation_capacity"] for run in runs],
+            }
+            for budget in SUMMARY_BUDGETS:
+                suffix = f"{round(budget * 100)}pct"
+                values[f"ctd_auc_{suffix}"] = [run["gains"][str(budget)]["ctd_auc"] for run in runs]
+                values[f"auc_gain_{suffix}"] = [run["gains"][str(budget)]["auc_gain"] for run in runs]
+            for metric, metric_values in values.items():
+                array = np.asarray(metric_values, dtype=float)
+                row[f"{metric}_mean"] = float(array.mean())
+                row[f"{metric}_std"] = float(array.std())
+            rows.append(row)
+    with (output_dir / "summary_aggregate.csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def analyse_root(root: Path) -> list[dict]:
@@ -240,8 +327,10 @@ def analyse_root(root: Path) -> list[dict]:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
+    write_aggregate_summary(results, root)
     for budget in SUMMARY_BUDGETS:
         plot_summary(results, root, budget)
+    plot_architecture_curves(results, root)
     return results
 
 
