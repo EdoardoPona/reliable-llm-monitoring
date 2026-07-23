@@ -364,9 +364,14 @@ def plot_dv_outcome_calibration(
         (dv_scores, "Predicted delegation value (DV probe)", "Binned by predicted DV"),
     ]
 
+    csv_rows = ["panel,bin,dv_center,mean_outcome,sem,count"]
+    panel_keys = ["true_dv", "pred_dv"]
+
     fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
-    for ax, (x, xlabel, title) in zip(axes, panels, strict=True):
+    for key, ax, (x, xlabel, title) in zip(panel_keys, axes, panels, strict=True):
         centers, means, sems, counts = _bin_outcome(x, outcome, n_bins, binning)
+        for i, (cx, cy, cs, cn) in enumerate(zip(centers, means, sems, counts, strict=True)):
+            csv_rows.append(f"{key},{i},{cx:.4f},{cy:.4f},{cs:.4f},{cn}")
         ax.errorbar(centers, means, yerr=sems, marker="o", capsize=3, color="C0", zorder=3)
         ax.axhline(0.0, color="gray", linestyle=":", linewidth=0.9, alpha=0.7)
         med_count = int(np.median(counts)) if counts else 0
@@ -387,6 +392,7 @@ def plot_dv_outcome_calibration(
     fig.suptitle("Delegation outcome vs delegation value")
     fig.tight_layout()
     fig.savefig(output_dir / "dv_outcome_calibration.pdf", bbox_inches="tight")
+    (output_dir / "dv_outcome_calibration.csv").write_text("\n".join(csv_rows) + "\n")
     return fig
 
 
@@ -808,7 +814,9 @@ def main():
         v_binary, groups, probe_scores, baseline_scores, labels, output_dir
     )
     figs["dv_roc"] = plot_dv_probe_roc(v_binary, dv_scores, groups, output_dir)
-    figs["dv_outcome"] = plot_dv_outcome_calibration(probe_scores, baseline_scores, labels, dv_scores, output_dir)
+    figs["dv_outcome"] = plot_dv_outcome_calibration(
+        probe_scores, baseline_scores, labels, dv_scores, output_dir, n_bins=5
+    )
     figs["budget_sweep"] = plot_cascade_budget_sweep(
         probe_scores, baseline_scores, labels, dv_scores, v, (dt_budget, dt_auc, dt_acc), output_dir
     )
