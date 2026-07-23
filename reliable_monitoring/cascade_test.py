@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TypedDict
 
 import numpy as np
+import pytest
 from dotenv import load_dotenv
 
 from reliable_monitoring.cascade import run_llm_baseline, run_offline_cascade, run_online_cascade
@@ -22,10 +23,12 @@ from reliable_monitoring.probes import SequenceProbe
 # Load environment
 load_dotenv()
 
+pytestmark = pytest.mark.integration
+
 # Configuration
 MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
 LAYER = 11
-DATA_DIR = os.environ["DATA_DIR"]
+DATA_DIR = os.environ.get("DATA_DIR")
 TRAIN_SAMPLE_SIZE = 50  # Small sample for probe training
 TEST_SAMPLE_SIZE = 50  # Small sample for fast testing
 
@@ -36,6 +39,12 @@ class CascadeTestParams(TypedDict):
     threshold: float
     merge_strategy: str
     baseline_batch_size: int
+
+
+@pytest.fixture(autouse=True)
+def require_data_dir():
+    if DATA_DIR is None:
+        pytest.skip("DATA_DIR is required for cascade integration tests")
 
 
 def test_online_offline_equivalence():

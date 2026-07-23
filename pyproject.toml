@@ -84,4 +84,9 @@ dev = [
 "__init__.py" = ["F401"]
 "tests/**" = ["B"]
 
+[tool.pytest.ini_options]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: tests that may access external services, load models, or run inference",
+]
 
