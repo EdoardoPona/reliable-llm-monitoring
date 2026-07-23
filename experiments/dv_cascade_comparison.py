@@ -44,7 +44,11 @@ from dv_ltt_cascade import (
 from sklearn.metrics import accuracy_score, roc_auc_score
 
 from reliable_monitoring.cascade import offline_batch_cascade, probe_uncertainty
-from reliable_monitoring.learn_then_test import ParetoLTTResult, build_pareto_ltt
+from reliable_monitoring.learn_then_test import (
+    ParetoLTTResult,
+    RiskParetoLTTResult,
+    build_risk_pareto_ltt,
+)
 from reliable_monitoring.risks import RISK_RGISTRY, BudgetCostRisk
 
 load_dotenv()
@@ -197,7 +201,7 @@ class LTTSignalConfig:
 
 
 def pareto_ltt_sweep(
-    pareto_ltt: ParetoLTTResult,
+    pareto_ltt: ParetoLTTResult | RiskParetoLTTResult,
     alpha_budgets: np.ndarray,
     delta: float,
     eval_ps: np.ndarray,
@@ -224,6 +228,47 @@ def pareto_ltt_sweep(
                 "alpha": float(alpha_b),
                 "tau": tau,
                 "realized_budget": float(result.used_baseline.mean()),
+                "auc": met["auc"],
+                "accuracy": met["accuracy"],
+            }
+        )
+    return results
+
+
+def risk_pareto_ltt_sweep(
+    pareto_ltt: RiskParetoLTTResult,
+    guarantee_alphas: np.ndarray,
+    delta: float,
+    eval_ps: np.ndarray,
+    eval_bs: np.ndarray,
+    eval_labels: np.ndarray,
+    eval_delegation_scores: np.ndarray,
+    merge_strategy: str = "replace",
+) -> list[dict]:
+    """Sweep target levels for a generic Pareto-calibrated cascade."""
+    results: list[dict] = []
+    guaranteed_risk = pareto_ltt.guaranteed_risk
+    for alpha in guarantee_alphas:
+        tau = pareto_ltt.select_threshold(float(alpha), delta)
+        if tau is None:
+            logger.warning(f"  No valid threshold at {guaranteed_risk.name}={alpha:.3f} (delta={delta:.3f})")
+            continue
+        result = threshold_cascade(eval_ps, eval_bs, eval_delegation_scores, tau, merge_strategy=merge_strategy)
+        met = cascade_metrics(result, eval_labels)
+        realized_budget = float(result.used_baseline.mean())
+        if guaranteed_risk.name == "accuracy_error":
+            realized_guaranteed_risk = 1.0 - met["accuracy"]
+        elif guaranteed_risk.name == BudgetCostRisk.name:
+            realized_guaranteed_risk = realized_budget
+        else:
+            raise ValueError(f"Unsupported guaranteed risk: {guaranteed_risk.name!r}")
+        results.append(
+            {
+                "alpha": float(alpha),
+                "target_performance": float(1.0 - alpha),
+                "tau": tau,
+                "realized_guaranteed_risk": realized_guaranteed_risk,
+                "realized_budget": realized_budget,
                 "auc": met["auc"],
                 "accuracy": met["accuracy"],
             }
@@ -535,7 +580,7 @@ def run_ltt_calibration(
     config,
     merge_strategy: str,
 ) -> tuple[dict[str, list[dict]], dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] | None]:
-    """Build Pareto LTTs for each delegation signal, sweep budgets, and assemble plot data.
+    """Build Pareto LTTs for each delegation signal and sweep guarantee levels.
 
     Returns:
         (ltt_sweep_results, ltt_plot_data) where ltt_sweep_results maps signal name
@@ -545,8 +590,33 @@ def run_ltt_calibration(
     guarantee_probability = config.guarantee_probability
     delta = 1.0 - guarantee_probability
     tau_steps = config.tau_steps
-    n_alpha_steps = config.n_alpha_steps
-    alpha_budgets = np.linspace(0.05, 1, n_alpha_steps)
+    if not hasattr(config, "guaranteed_risk"):
+        raise ValueError(
+            "Invalid configuration: missing required 'guaranteed_risk'. "
+            "Set it explicitly, for example 'budget' or 'accuracy_error'."
+        )
+    guaranteed_risk_name = config.guaranteed_risk
+    GuaranteedRisk = RISK_RGISTRY.get(guaranteed_risk_name)
+    if GuaranteedRisk is None:
+        raise ValueError(f"Unknown guaranteed_risk: {guaranteed_risk_name!r}. Available: {list(RISK_RGISTRY.keys())}")
+    if guaranteed_risk_name == "roc_auc_error":
+        raise ValueError("Formal ROC-AUC guarantees are not supported; use accuracy_error")
+
+    if guaranteed_risk_name == BudgetCostRisk.name:
+        guarantee_alphas = np.linspace(0.05, 1, config.n_alpha_steps)
+    elif hasattr(config, "guarantee_alphas"):
+        guarantee_alphas = np.asarray(config.guarantee_alphas, dtype=float)
+    elif hasattr(config, "guarantee_performance_levels"):
+        guarantee_alphas = 1.0 - np.asarray(config.guarantee_performance_levels, dtype=float)
+    else:
+        raise ValueError(
+            "Non-budget guarantees require guarantee_alphas (maximum risks) or "
+            "guarantee_performance_levels (minimum performances)"
+        )
+    if guarantee_alphas.ndim != 1 or len(guarantee_alphas) == 0:
+        raise ValueError("Guarantee levels must be a non-empty one-dimensional sequence")
+    if GuaranteedRisk.name != BudgetCostRisk.name and np.any((guarantee_alphas <= 0) | (guarantee_alphas >= 1)):
+        raise ValueError("Guarantee risk levels must lie strictly between 0 and 1")
 
     pareto_testing = config.pareto_testing
     if not pareto_testing:
@@ -556,6 +626,8 @@ def run_ltt_calibration(
     OptRisk = RISK_RGISTRY.get(opt_risk_name)
     if OptRisk is None:
         raise ValueError(f"Unknown opt_risk: '{opt_risk_name}'. Available: {list(RISK_RGISTRY.keys())}")
+    if OptRisk.name == GuaranteedRisk.name:
+        raise ValueError("guaranteed_risk and opt_risk must be different")
 
     # Split calib into ht/opt (shared across both delegation signals)
     pareto_proportion = config.pareto_split_proportion
@@ -593,31 +665,43 @@ def run_ltt_calibration(
 
     ltt_sweep_results: dict[str, list[dict]] = {}
     for name, sig in signal_configs.items():
-        logger.info(f"Pareto testing: ht={len(sig.ht_scores)}, opt={len(sig.opt_scores)}, opt_risk={opt_risk_name}")
-        pltt = build_pareto_ltt(
+        logger.info(
+            f"Pareto testing: ht={len(sig.ht_scores)}, opt={len(sig.opt_scores)}, "
+            f"guaranteed_risk={guaranteed_risk_name}, opt_risk={opt_risk_name}"
+        )
+        pltt = build_risk_pareto_ltt(
+            ht_probe_scores=calib_ps[ht_idx],
+            ht_baseline_scores=calib_bs[ht_idx],
+            ht_labels=calib_labels[ht_idx],
             ht_delegation_scores=sig.ht_scores,
             opt_probe_scores=opt_ps,
             opt_baseline_scores=opt_bs,
             opt_labels=opt_labels,
             opt_delegation_scores=sig.opt_scores,
             tau_grid=sig.tau_grid,
+            guaranteed_risk=GuaranteedRisk,
             opt_risk=OptRisk,
-            budget_risk=BudgetCostRisk,
             merge_strategy=merge_strategy,
         )
         logger.info(f"Pareto frontier ({name}): {len(pltt.taus)}/{len(sig.tau_grid)} thresholds retained")
 
-        rows = pareto_ltt_sweep(
-            pltt, alpha_budgets, delta, eval_ps, eval_bs, eval_labels, sig.eval_scores, merge_strategy
-        )
+        if GuaranteedRisk.name == BudgetCostRisk.name:
+            rows = pareto_ltt_sweep(
+                pltt, guarantee_alphas, delta, eval_ps, eval_bs, eval_labels, sig.eval_scores, merge_strategy
+            )
+        else:
+            rows = risk_pareto_ltt_sweep(
+                pltt, guarantee_alphas, delta, eval_ps, eval_bs, eval_labels, sig.eval_scores, merge_strategy
+            )
         if rows:
             ltt_sweep_results[name] = rows
 
     # Assemble plot data
     ltt_plot_data: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     for name, rows in ltt_sweep_results.items():
+        x_key = "alpha" if GuaranteedRisk.name == BudgetCostRisk.name else "realized_budget"
         ltt_plot_data[name] = (
-            np.array([r["alpha"] for r in rows]),
+            np.array([r[x_key] for r in rows]),
             np.array([r["auc"] for r in rows]),
             np.array([r["accuracy"] for r in rows]),
         )
@@ -625,7 +709,7 @@ def run_ltt_calibration(
     for name, rows in ltt_sweep_results.items():
         for r in rows:
             logger.info(
-                f"  [{name}] alpha={r['alpha']:.2f}: tau={r['tau']:.4f}, "
+                f"  [{name}] {guaranteed_risk_name}={r['alpha']:.2f}: tau={r['tau']:.4f}, "
                 f"realized={r['realized_budget']:.1%}, AUC={r['auc']:.4f}, Acc={r['accuracy']:.4f}"
             )
 
@@ -712,6 +796,8 @@ def run_dv_cascade_experiment(
     config,
     output_dir: Path,
     file_prefix: str = "",
+    *,
+    local_only: bool = False,
 ) -> DVCascadeExperimentResults:
     """Run the full DV cascade comparison experiment.
 
@@ -723,6 +809,9 @@ def run_dv_cascade_experiment(
             or constructed programmatically).
         output_dir: Directory for plots and results.json.
         file_prefix: Optional prefix for output filenames.
+        local_only: Require all activations and expert scores to be present in
+            local caches. Missing entries raise instead of triggering compute
+            or an external cache lookup.
 
     Returns:
         Experiment results for downstream aggregation or ClearML logging.
@@ -730,7 +819,7 @@ def run_dv_cascade_experiment(
     merge_strategy = config.merge_strategy
 
     # --- Train probes & load test data ---
-    data = prepare_dv_cascade_data(config)
+    data = prepare_dv_cascade_data(config, local_only=local_only)
     dv_target = data.dv_target
     dv_scores_full = data.dv_scores
     dv_auc = data.dv_auc
@@ -961,6 +1050,11 @@ def parse_args():
     parser.add_argument("--output-dir", type=str, default=default_output)
     parser.add_argument("--file-prefix", type=str, default="", help="Prefix for output filenames (e.g. 'llama1b_')")
     parser.add_argument("--use-clearml", action="store_true")
+    parser.add_argument(
+        "--local-only",
+        action="store_true",
+        help="Require local activation and baseline caches; never compute or fetch missing entries.",
+    )
     return parser.parse_args()
 
 
@@ -999,7 +1093,12 @@ def main():
         )
 
     # --- Run experiment ---
-    results = run_dv_cascade_experiment(config, output_dir, file_prefix=args.file_prefix)
+    results = run_dv_cascade_experiment(
+        config,
+        output_dir,
+        file_prefix=args.file_prefix,
+        local_only=args.local_only,
+    )
 
     # --- ClearML logging ---
     if clearml_logger is not None:

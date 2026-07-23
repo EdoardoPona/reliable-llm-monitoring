@@ -26,6 +26,8 @@ n_alpha_steps: 20
 pareto_testing: true
 # Fraction of calibration data used for Pareto optimisation (rest for hypothesis testing)
 pareto_split_proportion: 0.3
+# Risk to guarantee with LTT.
+guaranteed_risk: budget
 # Risk to optimise (accuracy_error or roc_auc_error)
 opt_risk: accuracy_error
 

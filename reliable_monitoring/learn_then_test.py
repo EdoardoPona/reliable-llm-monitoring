@@ -440,3 +440,129 @@ def build_pareto_ltt(
         ht_delegation_scores=ht_delegation_scores,
         budget_bound_fn=budget_risk.p_value_bound_fn,
     )
+
+
+@dataclass
+class RiskParetoLTTResult:
+    """Pareto-filtered LTT selector for an arbitrary guaranteed risk.
+
+    Candidate ordering and optimisation-risk values are learned on an
+    optimisation split.  ``ht_guaranteed_risks`` is evaluated independently
+    on the hypothesis-testing split and is used only to compute p-values.
+    """
+
+    taus: np.ndarray
+    opt_risks: np.ndarray
+    ht_guaranteed_risks: np.ndarray
+    n_ht: int
+    guaranteed_risk: Risk
+
+    def select_threshold(self, alpha: float, delta: float) -> float | None:
+        """Return the certified threshold with the lowest optimisation risk."""
+        p_values = np.asarray(
+            self.guaranteed_risk.p_value_bound_fn(self.ht_guaranteed_risks, self.n_ht, alpha),
+            dtype=float,
+        )
+        rejected = fixed_sequence_testing(p_values, delta)
+        if not rejected:
+            return None
+        reliable_opt = self.opt_risks[rejected]
+        best_idx = int(np.argmin(reliable_opt))
+        return float(self.taus[rejected[best_idx]])
+
+    def select_threshold_empirical(self, alpha: float) -> float | None:
+        """Return the empirically feasible threshold with the lowest optimisation risk.
+
+        This plug-in selector uses the same candidates, optimisation split, and
+        hypothesis-testing split as :meth:`select_threshold`, but replaces the
+        statistical test with the naive check that empirical risk is at most
+        ``alpha``.
+        """
+        feasible = np.flatnonzero(self.ht_guaranteed_risks <= alpha)
+        if len(feasible) == 0:
+            return None
+        best_idx = feasible[int(np.argmin(self.opt_risks[feasible]))]
+        return float(self.taus[best_idx])
+
+
+def build_risk_pareto_ltt(
+    ht_probe_scores: np.ndarray,
+    ht_baseline_scores: np.ndarray,
+    ht_labels: np.ndarray,
+    ht_delegation_scores: np.ndarray,
+    opt_probe_scores: np.ndarray,
+    opt_baseline_scores: np.ndarray,
+    opt_labels: np.ndarray,
+    opt_delegation_scores: np.ndarray,
+    tau_grid: np.ndarray,
+    guaranteed_risk: Risk,
+    opt_risk: Risk,
+    merge_strategy: str = "replace",
+) -> RiskParetoLTTResult:
+    """Build a Pareto-LTT selector for any guaranteed/optimised risk pair.
+
+    The independent optimisation split is used to Pareto-filter candidates,
+    order them from easiest to hardest for the guaranteed risk, and record the
+    optimisation objective.  The hypothesis-testing split is used only for
+    the p-values queried by :meth:`RiskParetoLTTResult.select_threshold`.
+
+    Budget guarantees retain the original descending-threshold ordering.  As
+    a result, this generic selector makes exactly the same selections as
+    :func:`build_pareto_ltt` when configured with ``guaranteed_risk=budget``.
+    For non-monotone risks, candidates are ordered by their empirical
+    guaranteed risk on the independent optimisation split.
+    """
+    from reliable_monitoring.risks import BudgetCostRisk, evaluate_threshold_risks
+
+    if guaranteed_risk.name == opt_risk.name:
+        raise ValueError("guaranteed_risk and opt_risk must be different")
+
+    pf = pareto_filter_thresholds(
+        opt_probe_scores,
+        opt_baseline_scores,
+        opt_labels,
+        opt_delegation_scores,
+        tau_grid,
+        risks=[guaranteed_risk, opt_risk],
+        merge_strategy=merge_strategy,
+    )
+
+    opt_eval = evaluate_threshold_risks(
+        opt_probe_scores,
+        opt_baseline_scores,
+        pf.taus,
+        risks=[guaranteed_risk, opt_risk],
+        labels=opt_labels,
+        merge_strategy=merge_strategy,
+        delegation_scores=opt_delegation_scores,
+    )
+    guaranteed_values = opt_eval[guaranteed_risk.name]
+    opt_values = opt_eval[opt_risk.name]
+
+    if guaranteed_risk.name == BudgetCostRisk.name:
+        # ``pareto_filter_thresholds`` already returns descending taus.  Keep
+        # this exact order for compatibility with the submitted experiments.
+        order = np.arange(len(pf.taus))
+    else:
+        # Primary key: easiest empirical guaranteed risk.  Secondary key:
+        # optimisation risk.  Threshold only provides deterministic tie-breaking.
+        order = np.lexsort((-pf.taus, opt_values, guaranteed_values))
+
+    ordered_taus = pf.taus[order]
+    ht_eval = evaluate_threshold_risks(
+        ht_probe_scores,
+        ht_baseline_scores,
+        ordered_taus,
+        risks=guaranteed_risk,
+        labels=ht_labels,
+        merge_strategy=merge_strategy,
+        delegation_scores=ht_delegation_scores,
+    )
+
+    return RiskParetoLTTResult(
+        taus=ordered_taus,
+        opt_risks=opt_values[order],
+        ht_guaranteed_risks=ht_eval[guaranteed_risk.name],
+        n_ht=len(ht_labels),
+        guaranteed_risk=guaranteed_risk,
+    )

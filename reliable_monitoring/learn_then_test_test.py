@@ -7,12 +7,14 @@ from reliable_monitoring.bounds import binomial, hb_p_value
 from reliable_monitoring.graphical_test_graphs import chain_graph, lattice_graph
 from reliable_monitoring.learn_then_test import (
     Hypothesis,
+    build_pareto_ltt,
+    build_risk_pareto_ltt,
     compute_p_values,
     fixed_sequence_testing,
     graphical_testing,
     joint_p_value,
 )
-from reliable_monitoring.risks import Risk
+from reliable_monitoring.risks import AccuracyRisk, BudgetCostRisk, Risk
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -329,4 +331,131 @@ class TestJointPValue:
                 risks=two_binomial_risks,
                 alphas={"budget": 0.3},  # missing "safety"
                 n=100,
+            )
+
+
+class TestRiskParetoLTT:
+    @pytest.fixture
+    def cascade_splits(self):
+        rng = np.random.default_rng(91)
+
+        def make_split(n: int):
+            labels = rng.integers(0, 2, n)
+            probe = np.clip(0.2 + 0.6 * labels + rng.normal(0, 0.24, n), 0.001, 0.999)
+            baseline = np.clip(0.1 + 0.8 * labels + rng.normal(0, 0.12, n), 0.001, 0.999)
+            delegation = rng.normal(size=n)
+            return probe, baseline, labels, delegation
+
+        return make_split(500), make_split(250), np.linspace(-2.5, 2.5, 41)
+
+    def test_budget_mode_exactly_matches_original_selector(self, cascade_splits):
+        """The generic path must reproduce every submitted budget selection."""
+        (opt_ps, opt_bs, opt_y, opt_dv), (ht_ps, ht_bs, ht_y, ht_dv), taus = cascade_splits
+        original = build_pareto_ltt(
+            ht_delegation_scores=ht_dv,
+            opt_probe_scores=opt_ps,
+            opt_baseline_scores=opt_bs,
+            opt_labels=opt_y,
+            opt_delegation_scores=opt_dv,
+            tau_grid=taus,
+            opt_risk=AccuracyRisk,
+            budget_risk=BudgetCostRisk,
+        )
+        generic = build_risk_pareto_ltt(
+            ht_probe_scores=ht_ps,
+            ht_baseline_scores=ht_bs,
+            ht_labels=ht_y,
+            ht_delegation_scores=ht_dv,
+            opt_probe_scores=opt_ps,
+            opt_baseline_scores=opt_bs,
+            opt_labels=opt_y,
+            opt_delegation_scores=opt_dv,
+            tau_grid=taus,
+            guaranteed_risk=BudgetCostRisk,
+            opt_risk=AccuracyRisk,
+        )
+
+        np.testing.assert_array_equal(generic.taus, original.taus)
+        np.testing.assert_array_equal(generic.opt_risks, original.opt_risks)
+        for alpha in np.linspace(0.05, 1.0, 20):
+            assert generic.select_threshold(float(alpha), 0.1) == original.select_threshold(float(alpha), 0.1)
+
+    def test_accuracy_mode_minimises_budget_among_certified_thresholds(self, cascade_splits):
+        (opt_ps, opt_bs, opt_y, opt_dv), (ht_ps, ht_bs, ht_y, ht_dv), taus = cascade_splits
+        selector = build_risk_pareto_ltt(
+            ht_probe_scores=ht_ps,
+            ht_baseline_scores=ht_bs,
+            ht_labels=ht_y,
+            ht_delegation_scores=ht_dv,
+            opt_probe_scores=opt_ps,
+            opt_baseline_scores=opt_bs,
+            opt_labels=opt_y,
+            opt_delegation_scores=opt_dv,
+            tau_grid=taus,
+            guaranteed_risk=AccuracyRisk,
+            opt_risk=BudgetCostRisk,
+        )
+
+        alpha = 0.5
+        p_values = AccuracyRisk.p_value_bound_fn(selector.ht_guaranteed_risks, selector.n_ht, alpha)
+        certified = fixed_sequence_testing(p_values, 0.1)
+        assert certified
+        expected_idx = certified[int(np.argmin(selector.opt_risks[certified]))]
+        assert selector.select_threshold(alpha=alpha, delta=0.1) == selector.taus[expected_idx]
+
+    def test_empirical_mode_minimises_budget_among_empirically_feasible_thresholds(self, cascade_splits):
+        (opt_ps, opt_bs, opt_y, opt_dv), (ht_ps, ht_bs, ht_y, ht_dv), taus = cascade_splits
+        selector = build_risk_pareto_ltt(
+            ht_probe_scores=ht_ps,
+            ht_baseline_scores=ht_bs,
+            ht_labels=ht_y,
+            ht_delegation_scores=ht_dv,
+            opt_probe_scores=opt_ps,
+            opt_baseline_scores=opt_bs,
+            opt_labels=opt_y,
+            opt_delegation_scores=opt_dv,
+            tau_grid=taus,
+            guaranteed_risk=AccuracyRisk,
+            opt_risk=BudgetCostRisk,
+        )
+
+        alpha = 0.5
+        feasible = np.flatnonzero(selector.ht_guaranteed_risks <= alpha)
+        assert len(feasible)
+        expected_idx = feasible[int(np.argmin(selector.opt_risks[feasible]))]
+        assert selector.select_threshold_empirical(alpha) == selector.taus[expected_idx]
+
+    def test_empirical_mode_returns_none_without_feasible_threshold(self, cascade_splits):
+        (opt_ps, opt_bs, opt_y, opt_dv), (ht_ps, ht_bs, ht_y, ht_dv), taus = cascade_splits
+        selector = build_risk_pareto_ltt(
+            ht_probe_scores=ht_ps,
+            ht_baseline_scores=ht_bs,
+            ht_labels=ht_y,
+            ht_delegation_scores=ht_dv,
+            opt_probe_scores=opt_ps,
+            opt_baseline_scores=opt_bs,
+            opt_labels=opt_y,
+            opt_delegation_scores=opt_dv,
+            tau_grid=taus,
+            guaranteed_risk=AccuracyRisk,
+            opt_risk=BudgetCostRisk,
+        )
+
+        assert selector.select_threshold_empirical(alpha=-1.0) is None
+
+    def test_rejects_identical_guaranteed_and_optimisation_risks(self, cascade_splits):
+        (opt_ps, opt_bs, opt_y, opt_dv), (ht_ps, ht_bs, ht_y, ht_dv), taus = cascade_splits
+        with pytest.raises(ValueError, match="must be different"):
+            build_risk_pareto_ltt(
+                ht_probe_scores=ht_ps,
+                ht_baseline_scores=ht_bs,
+                ht_labels=ht_y,
+                ht_delegation_scores=ht_dv,
+                opt_probe_scores=opt_ps,
+                opt_baseline_scores=opt_bs,
+                opt_labels=opt_y,
+                opt_delegation_scores=opt_dv,
+                tau_grid=taus,
+                guaranteed_risk=AccuracyRisk,
+                opt_risk=AccuracyRisk,
             )

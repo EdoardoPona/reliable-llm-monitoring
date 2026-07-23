@@ -44,6 +44,7 @@ BASE_CONFIG: dict = {
     "n_alpha_steps": 20,
     "pareto_testing": True,
     "pareto_split_proportion": 0.3,
+    "guaranteed_risk": "budget",
     "opt_risk": "accuracy_error",
     "merge_strategy": "replace",
     "reduction_strategy": "mean",

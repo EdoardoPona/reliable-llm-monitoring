@@ -12,6 +12,7 @@ tau_steps: 100
 n_alpha_steps: 20
 pareto_testing: true
 pareto_split_proportion: 0.3
+guaranteed_risk: budget
 opt_risk: roc_auc_error
 merge_strategy: replace
 

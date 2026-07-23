@@ -36,6 +36,7 @@ shared:
   n_alpha_steps: 20
   pareto_testing: true
   pareto_split_proportion: 0.3
+  guaranteed_risk: budget
   opt_risk: accuracy_error
   merge_strategy: replace
   batch_size: 128
