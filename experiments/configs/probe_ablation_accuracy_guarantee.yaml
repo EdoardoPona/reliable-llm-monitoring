@@ -1,0 +1,35 @@
+# Certify minimum cascade accuracy and minimise delegation using saved scores.
+# No probes or language models are run by this analysis.
+#
+# Accuracy curves:
+#   uv run experiments/probe_ablation_analysis.py \
+#     --config experiments/configs/probe_ablation_accuracy_guarantee.yaml
+# Repeated-split validation:
+#   uv run experiments/ltt_coverage_validation.py \
+#     --config experiments/configs/probe_ablation_accuracy_guarantee.yaml
+
+artifact_root: results/probe_ablation/cuda_run
+
+experts: [strong, weak]
+cells: [mean_ridge, attention_attention, softmax_softmax, mlp_mlp]
+seeds: [42, 43, 44]
+
+shared:
+  calib_fraction: 0.5
+  guarantee_probability: 0.9
+  tau_steps: 100
+  pareto_testing: true
+  pareto_split_proportion: 0.3
+  merge_strategy: replace
+
+guarantee_performance_levels:
+  strong: [0.74, 0.76, 0.78, 0.80, 0.82]
+  weak: [0.72, 0.74, 0.76, 0.78, 0.80]
+
+coverage:
+  n_trials: 500
+  artifact_seed: 42
+  base_seed: 1000
+  target_performance:
+    strong: 0.80
+    weak: 0.78

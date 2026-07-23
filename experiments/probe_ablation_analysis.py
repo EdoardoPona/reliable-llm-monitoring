@@ -6,11 +6,13 @@ import argparse
 import csv
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import matplotlib.pyplot as plt
 import numpy as np
+from config import load_config
 from dv_cascade_comparison import (
     batched_topk_sweep,
     global_oracle_sweep,
@@ -62,7 +64,9 @@ def _nearest(rows: list[dict], alpha: float) -> dict | None:
 
 def evaluate_artifact(artifact_path: Path) -> dict:
     metadata = json.loads((artifact_path.parent / "metadata.json").read_text())
-    config_dict = metadata["config"]
+    # This entry point reconstructs the original budget-guarantee ablation.
+    # Old score artifacts predate the explicit guaranteed_risk config field.
+    config_dict = {**metadata["config"], "guaranteed_risk": "budget"}
     config = SimpleNamespace(**config_dict)
     arrays = np.load(artifact_path)
 
@@ -475,11 +479,168 @@ def analyse_root(root: Path) -> list[dict]:
     return results
 
 
+def evaluate_accuracy_guarantee_artifact(
+    artifact_path: Path,
+    *,
+    guarantee_performance_levels: list[float],
+    shared_config: dict,
+) -> dict:
+    """Run accuracy-guarantee LTT using one saved probe-ablation artifact."""
+    metadata = json.loads((artifact_path.parent / "metadata.json").read_text())
+    config_dict = {
+        **metadata["config"],
+        **shared_config,
+        "guaranteed_risk": "accuracy_error",
+        "opt_risk": "budget",
+        "guarantee_performance_levels": guarantee_performance_levels,
+    }
+    config = SimpleNamespace(**config_dict)
+    arrays = np.load(artifact_path)
+
+    calib, evaluation = split_calib_eval(
+        arrays["test_probe"],
+        arrays["test_expert"],
+        arrays["test_labels"],
+        arrays["test_dv"],
+        calib_fraction=config.calib_fraction,
+        seed=config.seed,
+    )
+    calib_ps, calib_expert, calib_labels, calib_dv = calib
+    eval_ps, eval_expert, eval_labels, eval_dv = evaluation
+    assert calib_ps is not None and calib_expert is not None
+    assert calib_labels is not None and calib_dv is not None
+    assert eval_ps is not None and eval_expert is not None
+    assert eval_labels is not None and eval_dv is not None
+
+    eval_uncertainty = probe_uncertainty(eval_ps, reference=calib_ps)
+    ltt, _ = run_ltt_calibration(
+        calib_ps,
+        calib_expert,
+        calib_labels,
+        calib_dv,
+        eval_ps,
+        eval_expert,
+        eval_labels,
+        eval_dv,
+        eval_uncertainty,
+        arrays["test_dv"],
+        "continuous",
+        config,
+        config.merge_strategy,
+    )
+    return {
+        "cell": config.cell_name,
+        "expert": config.expert_name,
+        "seed": config.seed,
+        "guaranteed_risk": config.guaranteed_risk,
+        "opt_risk": config.opt_risk,
+        "ltt": ltt,
+    }
+
+
+def plot_accuracy_guarantee_results(results: list[dict], output_dir: Path) -> None:
+    """Plot delegation required for each certified minimum accuracy."""
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4), squeeze=False, sharey=True)
+    for ax, expert in zip(axes[0], ("strong", "weak"), strict=True):
+        for cell in MATCHED_CELLS:
+            runs = [result for result in results if result["expert"] == expert and result["cell"] == cell]
+            if not runs:
+                continue
+            targets = sorted({row["target_performance"] for run in runs for row in run["ltt"].get("CTD", [])})
+            means, errors, valid_targets = [], [], []
+            for target in targets:
+                budgets = [
+                    row["realized_budget"]
+                    for run in runs
+                    for row in run["ltt"].get("CTD", [])
+                    if row["target_performance"] == target
+                ]
+                if budgets:
+                    valid_targets.append(target)
+                    means.append(float(np.mean(budgets)))
+                    errors.append(float(np.std(budgets)))
+            ax.errorbar(
+                valid_targets,
+                means,
+                yerr=errors,
+                label=MATCHED_LABELS[cell],
+                color=ARCHITECTURE_COLORS[cell],
+                marker=ARCHITECTURE_MARKERS[cell],
+                markersize=4,
+                capsize=2,
+            )
+        ax.set_title(f"{expert.title()} expert")
+        ax.set_xlabel("Guaranteed minimum accuracy")
+        ax.grid(alpha=0.3)
+    axes[0, 0].set_ylabel("Realized delegation rate")
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, fontsize=8, loc="lower center", ncol=len(labels), bbox_to_anchor=(0.5, -0.02))
+    fig.subplots_adjust(bottom=0.2, wspace=0.15)
+    stem = output_dir / "budget_vs_guaranteed_accuracy"
+    fig.savefig(stem.with_suffix(".pdf"), bbox_inches="tight")
+    fig.savefig(stem.with_suffix(".png"), dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+def analyse_accuracy_guarantees(config_path: Path, output_dir: Path) -> list[dict]:
+    """Run the reverse CTD formulation over saved architecture scores."""
+    config = load_config(config_path)
+    root = Path(config.artifact_root)
+    results = []
+    for expert in config.experts:
+        levels = list(config.guarantee_performance_levels[expert])
+        for cell in config.cells:
+            for seed in config.seeds:
+                artifact = root / expert / cell / f"seed_{seed}" / "scores.npz"
+                if not artifact.exists():
+                    raise FileNotFoundError(f"Missing score artifact: {artifact}")
+                results.append(
+                    evaluate_accuracy_guarantee_artifact(
+                        artifact,
+                        guarantee_performance_levels=levels,
+                        shared_config=config.shared,
+                    )
+                )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    payload = {"config": vars(config), "results": results}
+    (output_dir / "results.json").write_text(json.dumps(payload, indent=2))
+    plot_accuracy_guarantee_results(results, output_dir)
+    return results
+
+
+def plot_saved_accuracy_guarantees(output_dir: Path) -> None:
+    saved = json.loads((output_dir / "results.json").read_text())
+    plot_accuracy_guarantee_results(saved["results"], output_dir)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Analyse saved probe-ablation scores")
-    parser.add_argument("root", type=Path)
+    parser.add_argument("root", type=Path, nargs="?")
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--plot-only", action="store_true")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
-    analyse_root(parse_args().root)
+    args = parse_args()
+    if args.config is not None:
+        if args.plot_only:
+            if args.output_dir is None:
+                raise SystemExit("--plot-only requires --output-dir")
+            plot_saved_accuracy_guarantees(args.output_dir)
+            logger.info("Figures saved to %s", args.output_dir.resolve())
+        else:
+            destination = args.output_dir or Path(
+                "results/probe_ablation_accuracy_guarantee"
+            ) / datetime.now().strftime("%Y%m%d_%H%M%S")
+            analyse_accuracy_guarantees(args.config, destination)
+            logger.info("Results saved to %s", destination.resolve())
+    elif args.root is not None:
+        if args.plot_only:
+            raise SystemExit("--plot-only is only available with --config")
+        analyse_root(args.root)
+        logger.info("Results saved to %s", args.root.resolve())
+    else:
+        raise SystemExit("Provide an ablation root or --config")
