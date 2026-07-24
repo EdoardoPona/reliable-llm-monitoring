@@ -4,13 +4,12 @@ probe_analysis.py — DV probe quality analysis
 Analyses d(x) as a delegation routing signal and compares it against the
 uncertainty (McKenzie et al.) baseline.
 
-Dependencies
-------------
-This script takes *existing* cascade comparison run directories as input and
-reconstructs the EXACT eval splits from the saved configs.  A sanity check
-verifies that the reconstructed probe AUC matches the value stored in
-results.json before any metrics are computed — if they diverge, the script
-aborts rather than silently analyse the wrong data.
+Inputs
+------
+The standard mode reads the reusable ``scores.npz`` artifacts from the probe
+architecture sweep. It reproduces the saved calibration/evaluation split and
+never loads datasets, activations, or models. Legacy configs that point to two
+cascade run directories remain supported.
 
 Outputs
 -------
@@ -22,10 +21,7 @@ Outputs
 Usage
 -----
   uv run python experiments/probe_analysis.py \\
-      --config experiments/configs/probe_analysis.yaml
-
-  uv run python experiments/probe_analysis.py \\
-      --config experiments/configs/probe_analysis.yaml --use-clearml
+      --config experiments/configs/probe_ablation_probe_analysis.yaml
 
 Paper section structure
 -----------------------
@@ -57,6 +53,7 @@ Figures for the paper
 """
 
 import argparse
+import csv
 import json
 import shutil
 import sys
@@ -72,7 +69,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from clearml_logger import ClearMLLogger
 from config import load_config
+from delegation_value_probe import plot_dv_outcome_calibration
 from dv_ltt_cascade import prepare_dv_cascade_data, split_calib_eval
+from saved_ablation_runs import artifact_path, load_saved_run, run_label
 
 from reliable_monitoring.cascade import probe_uncertainty
 
@@ -289,6 +288,163 @@ def plot_auc_vs_threshold(runs: list[dict], labels: list[str], n_steps: int = 40
     return fig
 
 
+def plot_mean_v_at_k_aggregate(runs_by_expert: dict[str, list[dict]]) -> plt.Figure:
+    """Mean-v-at-k curves averaged across architecture seeds."""
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4), sharey=False)
+    styles = {
+        "oracle": ("$v(x,y)$ (upper bound)", "green"),
+        "dv": ("DV probe $d(x)$", "tab:orange"),
+        "unc": ("Uncertainty (McKenzie)", "tab:blue"),
+    }
+    for ax, expert in zip(axes, ("strong", "weak"), strict=True):
+        runs = runs_by_expert[expert]
+        fractions = np.arange(1, len(runs[0]["eval_v"]) + 1) / len(runs[0]["eval_v"])
+        curves = {name: [] for name in styles}
+        random_levels = []
+        for run in runs:
+            value = run["eval_v"]
+            orders = {
+                "oracle": np.argsort(-value),
+                "dv": np.argsort(-run["eval_dv"]),
+                "unc": np.argsort(-run["unc"]),
+            }
+            for name, order in orders.items():
+                curves[name].append(np.cumsum(value[order]) / np.arange(1, len(value) + 1))
+            random_levels.append(float(value.mean()))
+
+        for name, (label, color) in styles.items():
+            values = np.asarray(curves[name])
+            mean, std = values.mean(axis=0), values.std(axis=0)
+            ax.plot(fractions, mean, label=label, color=color, linewidth=2)
+            ax.fill_between(fractions, mean - std, mean + std, color=color, alpha=0.12, linewidth=0)
+        ax.axhline(np.mean(random_levels), color="gray", linestyle="--", linewidth=1.5, label="No ranking")
+        ax.axhline(0, color="black", linewidth=0.8)
+        ax.set_xlabel("Selection fraction $k/N$")
+        ax.set_ylabel("Mean $v(x,y)$ of selected set")
+        ax.set_title(f"{expert.title()} expert")
+        ax.set_xlim(0, 1)
+        ax.grid(alpha=0.3)
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=len(labels), bbox_to_anchor=(0.5, -0.02), frameon=False)
+    fig.subplots_adjust(bottom=0.2, wspace=0.2)
+    return fig
+
+
+def analyse_pair(
+    strong: dict,
+    weak: dict,
+    output_dir: Path,
+    *,
+    n_threshold_steps: int = 40,
+    random_seed: int = 0,
+    outcome_bins: int = 5,
+) -> dict:
+    """Write the existing DV-quality analysis for one strong/weak run pair."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    labels = [run_label(strong), run_label(weak)]
+    metrics = {
+        "strong": compute_metrics(strong, label=labels[0]),
+        "weak": compute_metrics(weak, label=labels[1]),
+    }
+    (output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+
+    figures = {
+        "mean_v_at_k": plot_mean_v_at_k([strong, weak], labels, random_seed=random_seed),
+        "auc_vs_threshold": plot_auc_vs_threshold(
+            [strong, weak],
+            labels,
+            n_steps=n_threshold_steps,
+        ),
+    }
+    for name, figure in figures.items():
+        figure.savefig(output_dir / f"{name}.pdf", bbox_inches="tight")
+        plt.close(figure)
+    for expert, run in (("strong", strong), ("weak", weak)):
+        expert_dir = output_dir / expert
+        expert_dir.mkdir(exist_ok=True)
+        figure = plot_dv_outcome_calibration(
+            run["eval_ps"],
+            run["eval_bs"],
+            run["eval_labels"],
+            run["eval_dv"],
+            expert_dir,
+            n_bins=outcome_bins,
+        )
+        plt.close(figure)
+    return metrics
+
+
+def analyse_artifact_sweep(config, output_dir: Path) -> None:
+    """Run the DV-quality analysis for every configured architecture and seed."""
+    records = []
+    root = Path(config.artifact_root)
+    runs_by_cell = {cell: {expert: [] for expert in config.experts} for cell in config.cells}
+    for cell in config.cells:
+        for seed in config.seeds:
+            pair_dir = output_dir / cell / f"seed_{seed}"
+            print(f"\n--- {cell}, seed {seed} ---")
+            runs = {expert: load_saved_run(artifact_path(root, expert, cell, seed)) for expert in config.experts}
+            if set(runs) != {"strong", "weak"}:
+                raise ValueError("Probe analysis requires exactly the strong and weak expert runs")
+            for expert, run in runs.items():
+                runs_by_cell[cell][expert].append(run)
+            metrics = analyse_pair(
+                runs["strong"],
+                runs["weak"],
+                pair_dir,
+                n_threshold_steps=getattr(config, "n_threshold_steps", 40),
+                random_seed=getattr(config, "random_seed", 0),
+                outcome_bins=getattr(config, "outcome_bins", 5),
+            )
+            for expert, rows in metrics.items():
+                records.extend(
+                    {
+                        "cell": cell,
+                        "seed": int(seed),
+                        "expert": expert,
+                        **row,
+                    }
+                    for row in rows
+                )
+
+    for cell, runs in runs_by_cell.items():
+        figure = plot_mean_v_at_k_aggregate(runs)
+        figure.savefig(output_dir / f"{cell}_mean_v_at_k.pdf", bbox_inches="tight")
+        figure.savefig(output_dir / f"{cell}_mean_v_at_k.png", dpi=200, bbox_inches="tight")
+        plt.close(figure)
+
+    (output_dir / "metrics.json").write_text(json.dumps(records, indent=2))
+    with (output_dir / "metrics.csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(records[0]))
+        writer.writeheader()
+        writer.writerows(records)
+
+    aggregate = []
+    for cell in config.cells:
+        for expert in config.experts:
+            for signal in ("d(x)", "Uncertainty"):
+                selected = [
+                    row
+                    for row in records
+                    if row["cell"] == cell and row["expert"] == expert and row["signal"] == signal
+                ]
+                row = {
+                    "cell": cell,
+                    "expert": expert,
+                    "signal": signal,
+                    "n_seeds": len(selected),
+                }
+                for metric in ("spearman_rho", "auc", "mse"):
+                    values = np.asarray([item[metric] for item in selected], dtype=float)
+                    row[f"{metric}_mean"] = float(values.mean())
+                    row[f"{metric}_std"] = float(values.std())
+                aggregate.append(row)
+    with (output_dir / "metrics_aggregate.csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(aggregate[0]))
+        writer.writeheader()
+        writer.writerows(aggregate)
+
+
 # --------------------------------------------------------------------------- #
 # Entry point                                                                  #
 # --------------------------------------------------------------------------- #
@@ -307,6 +463,13 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(args.config, output_dir / Path(args.config).name)
     print(f"Output: {output_dir}")
+
+    if hasattr(analysis_config, "artifact_root"):
+        if args.use_clearml:
+            raise ValueError("ClearML logging is not implemented for artifact sweeps")
+        analyse_artifact_sweep(analysis_config, output_dir)
+        print(f"\nDone. Results in {output_dir.resolve()}")
+        return
 
     # ------------------------------------------------------------------ #
     # ClearML                                                              #

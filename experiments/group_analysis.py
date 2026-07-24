@@ -48,18 +48,20 @@ Figures
 Usage
 -----
   uv run python experiments/group_analysis.py \\
-      --config experiments/configs/group_analysis.yaml
+      --config experiments/configs/probe_ablation_group_analysis.yaml
 
-  uv run python experiments/group_analysis.py \\
-      --config experiments/configs/group_analysis.yaml --use-clearml
+The standard config reads saved score artifacts only. Legacy configs containing
+``strong_run_dir`` and ``weak_run_dir`` remain supported.
 """
 
 import argparse
+import csv
 import json
 import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -70,6 +72,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from clearml_logger import ClearMLLogger
 from config import load_config
 from dv_ltt_cascade import prepare_dv_cascade_data, split_calib_eval, threshold_cascade
+from saved_ablation_runs import artifact_path, load_saved_run
 
 from reliable_monitoring.cascade import probe_uncertainty
 
@@ -525,6 +528,158 @@ def plot_delegation_composition(strong: dict, weak: dict, groups: list[str], alp
     return fig
 
 
+def analyse_pair(strong: dict, weak: dict, output_dir: Path, target_alpha: float) -> dict:
+    """Write the existing group analysis for one strong/weak run pair."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    groups = sorted(np.unique(strong["eval_groups"]).tolist())
+    weak_groups = sorted(np.unique(weak["eval_groups"]).tolist())
+    if groups != weak_groups:
+        raise ValueError(f"Strong and weak runs have different groups: {groups} != {weak_groups}")
+
+    metrics = {
+        "strong": per_group_metrics(strong, groups),
+        "weak": per_group_metrics(weak, groups),
+    }
+    detail: dict[str, Any] = {"target_alpha": target_alpha, "groups": groups, "experts": {}}
+    for expert, run in (("strong", strong), ("weak", weak)):
+        dv_tau, dv_realized = get_tau_for_alpha(run["ltt"], "CTD", target_alpha)
+        unc_tau, unc_realized = get_tau_for_alpha(run["ltt"], "Unc. calibrated", target_alpha)
+        detail["experts"][expert] = {
+            "tau": {
+                "ctd": dv_tau,
+                "uncertainty_calibrated": unc_tau,
+            },
+            "realized_budget": {
+                "ctd": dv_realized,
+                "uncertainty_calibrated": unc_realized,
+            },
+            "ctd": group_delegation_stats(run, dv_tau, groups),
+            "uncertainty_calibrated": group_delegation_stats(
+                run,
+                unc_tau,
+                groups,
+                scores=run["unc"],
+            ),
+            "uncertainty_topk": group_topk_stats(
+                run,
+                target_alpha,
+                groups,
+                scores=run["unc"],
+            ),
+        }
+
+    (output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+    (output_dir / "delegation_metrics.json").write_text(json.dumps(detail, indent=2))
+    alphas = np.linspace(0.05, 0.95, 19)
+    figures = {
+        "group_scatter": plot_group_scatter(metrics["strong"], metrics["weak"], groups),
+        "group_summary_strong": plot_group_summary(
+            metrics["strong"],
+            detail["experts"]["strong"]["ctd"],
+            detail["experts"]["strong"]["uncertainty_calibrated"],
+            detail["experts"]["strong"]["uncertainty_topk"],
+            detail["experts"]["strong"]["realized_budget"]["ctd"],
+            detail["experts"]["strong"]["realized_budget"]["uncertainty_calibrated"],
+            target_alpha,
+            groups,
+            suptitle="Strong expert: DV cascade concentrates budget on highest-value datasets",
+        ),
+        "group_summary_weak": plot_group_summary(
+            metrics["weak"],
+            detail["experts"]["weak"]["ctd"],
+            detail["experts"]["weak"]["uncertainty_calibrated"],
+            detail["experts"]["weak"]["uncertainty_topk"],
+            detail["experts"]["weak"]["realized_budget"]["ctd"],
+            detail["experts"]["weak"]["realized_budget"]["uncertainty_calibrated"],
+            target_alpha,
+            groups,
+            suptitle="Weak expert: DV cascade selects positive-value examples across groups",
+        ),
+        "delegation_composition": plot_delegation_composition(strong, weak, groups, alphas),
+    }
+    for name, figure in figures.items():
+        figure.savefig(output_dir / f"{name}.pdf", bbox_inches="tight")
+        plt.close(figure)
+    return {"metrics": metrics, "delegation": detail}
+
+
+def analyse_artifact_sweep(config, output_dir: Path) -> None:
+    """Run the group analysis for every configured architecture and seed."""
+    root = Path(config.artifact_root)
+    records = []
+    for cell in config.cells:
+        for seed in config.seeds:
+            print(f"\n--- {cell}, seed {seed} ---")
+            runs = {
+                expert: load_saved_run(
+                    artifact_path(root, expert, cell, seed),
+                    require_ltt=True,
+                )
+                for expert in config.experts
+            }
+            if set(runs) != {"strong", "weak"}:
+                raise ValueError("Group analysis requires exactly the strong and weak expert runs")
+            result = analyse_pair(
+                runs["strong"],
+                runs["weak"],
+                output_dir / cell / f"seed_{seed}",
+                float(config.target_alpha),
+            )
+            for expert in config.experts:
+                for group, metric in result["metrics"][expert].items():
+                    delegation = result["delegation"]["experts"][expert]
+                    records.append(
+                        {
+                            "cell": cell,
+                            "seed": int(seed),
+                            "expert": expert,
+                            "group": group,
+                            **metric,
+                            "ctd_delegation_rate": delegation["ctd"][group]["rate"],
+                            "ctd_mean_v_delegated": delegation["ctd"][group]["mean_v_delegated"],
+                            "uncertainty_topk_delegation_rate": delegation["uncertainty_topk"][group]["rate"],
+                            "uncertainty_topk_mean_v_delegated": delegation["uncertainty_topk"][group][
+                                "mean_v_delegated"
+                            ],
+                            "ctd_realized_budget": delegation["realized_budget"]["ctd"],
+                        }
+                    )
+
+    (output_dir / "metrics.json").write_text(json.dumps(records, indent=2))
+    with (output_dir / "metrics.csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(records[0]))
+        writer.writeheader()
+        writer.writerows(records)
+
+    aggregate = []
+    identifiers = ("cell", "expert", "group")
+    metrics = [key for key in records[0] if key not in {*identifiers, "seed", "n"}]
+    for cell in config.cells:
+        for expert in config.experts:
+            for group in sorted({record["group"] for record in records}):
+                selected = [
+                    record
+                    for record in records
+                    if record["cell"] == cell and record["expert"] == expert and record["group"] == group
+                ]
+                row = {
+                    "cell": cell,
+                    "expert": expert,
+                    "group": group,
+                    "n_seeds": len(selected),
+                    "n": selected[0]["n"],
+                }
+                for metric in metrics:
+                    values = np.asarray([record[metric] for record in selected], dtype=float)
+                    row[f"{metric}_mean"] = float(values.mean())
+                    row[f"{metric}_std"] = float(values.std())
+                aggregate.append(row)
+    with (output_dir / "metrics_aggregate.csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(aggregate[0]))
+        writer.writeheader()
+        writer.writerows(aggregate)
+
+
 # --------------------------------------------------------------------------- #
 # Entry point                                                                  #
 # --------------------------------------------------------------------------- #
@@ -543,6 +698,13 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(args.config, output_dir / Path(args.config).name)
     print(f"Output: {output_dir}")
+
+    if hasattr(analysis_config, "artifact_root"):
+        if args.use_clearml:
+            raise ValueError("ClearML logging is not implemented for artifact sweeps")
+        analyse_artifact_sweep(analysis_config, output_dir)
+        print(f"\nDone. Results in {output_dir.resolve()}")
+        return
 
     # ------------------------------------------------------------------ #
     # ClearML                                                              #

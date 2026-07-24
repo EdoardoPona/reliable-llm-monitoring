@@ -40,13 +40,14 @@ Outputs
 Usage
 -----
   uv run python experiments/batch_analysis.py \\
-      --config experiments/configs/batch_analysis.yaml
+      --config experiments/configs/probe_ablation_batch_analysis.yaml
 
-  uv run python experiments/batch_analysis.py \\
-      --config experiments/configs/batch_analysis.yaml --use-clearml
+The standard config reads saved score artifacts only. Legacy configs containing
+``strong_run_dir`` and ``weak_run_dir`` remain supported.
 """
 
 import argparse
+import csv
 import json
 import shutil
 import sys
@@ -64,6 +65,7 @@ from clearml_logger import ClearMLLogger
 from config import load_config
 from dv_ltt_cascade import threshold_cascade
 from probe_analysis import load_run  # reuse the same loading + sanity check
+from saved_ablation_runs import artifact_path, load_saved_run, run_label
 
 from reliable_monitoring.cascade import offline_batch_cascade
 
@@ -126,21 +128,34 @@ def make_batches(n: int, batch_size: int) -> list[tuple[int, int]]:
 # --------------------------------------------------------------------------- #
 
 
-def get_tau_for_alpha(results_path: Path, target_alpha: float, signal: str = "DV") -> tuple[float, float]:
+def get_tau_for_alpha(results: Path | dict, target_alpha: float, signal: str = "DV") -> tuple[float, float]:
     """Read the calibrated threshold closest to target_alpha from results.json.
 
     Args:
-        results_path: Path to results.json from a cascade comparison run.
+        results: Path to results.json, or an already loaded LTT table.
         target_alpha: Desired budget fraction α.
         signal: "DV" or "Uncertainty" — which LTT entry to use.
 
     Returns:
         (tau, realized_budget) for the closest stored α.
     """
-    key = "DV calibrated threshold" if signal == "DV" else "Uncertainty calibrated threshold"
-    with open(results_path) as f:
-        saved = json.load(f)
-    entries = saved["ltt"][key]
+    if isinstance(results, Path):
+        with results.open() as handle:
+            ltt = json.load(handle)["ltt"]
+    else:
+        ltt = results
+    keys = (
+        ("CTD", "DV calibrated threshold")
+        if signal == "DV"
+        else (
+            "Unc. calibrated",
+            "Uncertainty calibrated threshold",
+        )
+    )
+    key = next((candidate for candidate in keys if candidate in ltt), None)
+    if key is None:
+        raise KeyError(f"None of the expected {signal} LTT keys are present: {keys}")
+    entries = ltt[key]
     closest = min(entries, key=lambda e: abs(e["alpha"] - target_alpha))
     return closest["tau"], closest["realized_budget"]
 
@@ -167,8 +182,9 @@ def run_batch_comparison(
         dv_accuracy, unc_accuracy, probe_accuracy,
         dv_delegated, unc_delegated.
     """
-    results_path = run["run_dir"] / "results.json"
-    tau, realized_budget = get_tau_for_alpha(results_path, target_alpha, signal="DV")
+    ltt = run.get("ltt")
+    results = ltt if ltt is not None else run["run_dir"] / "results.json"
+    tau, realized_budget = get_tau_for_alpha(results, target_alpha, signal="DV")
 
     eval_ps = run["eval_ps"]
     eval_bs = run["eval_bs"]
@@ -372,6 +388,97 @@ def plot_adaptivity(batch_rows: list[dict], cascade_meta: dict, label: str) -> p
     return fig
 
 
+def analyse_pair(
+    strong: dict,
+    weak: dict,
+    output_dir: Path,
+    *,
+    batch_size: int,
+    target_alpha: float,
+) -> dict:
+    """Write the existing batch analysis for one strong/weak run pair."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output = {}
+    for expert, run in (("strong", strong), ("weak", weak)):
+        label = run_label(run)
+        rows, meta = run_batch_comparison(run, batch_size, target_alpha)
+        ttest = paired_ttest(rows)
+        output[expert] = {"batches": rows, "meta": meta, "summary": ttest}
+        figures = {
+            "delegation_rate": plot_delegation_rate(rows, meta, label),
+            "accuracy_scatter": plot_accuracy_scatter(rows, ttest, label),
+            "adaptivity": plot_adaptivity(rows, meta, label),
+        }
+        for name, figure in figures.items():
+            figure.savefig(output_dir / f"{name}_{expert}.pdf", bbox_inches="tight")
+            plt.close(figure)
+
+    (output_dir / "metrics.json").write_text(json.dumps(output, indent=2))
+    return output
+
+
+def analyse_artifact_sweep(config, output_dir: Path) -> None:
+    """Run the batch analysis for every configured architecture and seed."""
+    root = Path(config.artifact_root)
+    records = []
+    for cell in config.cells:
+        for seed in config.seeds:
+            print(f"\n--- {cell}, seed {seed} ---")
+            runs = {
+                expert: load_saved_run(
+                    artifact_path(root, expert, cell, seed),
+                    require_ltt=True,
+                )
+                for expert in config.experts
+            }
+            if set(runs) != {"strong", "weak"}:
+                raise ValueError("Batch analysis requires exactly the strong and weak expert runs")
+            result = analyse_pair(
+                runs["strong"],
+                runs["weak"],
+                output_dir / cell / f"seed_{seed}",
+                batch_size=int(config.batch_size),
+                target_alpha=float(config.target_alpha),
+            )
+            for expert, values in result.items():
+                records.append(
+                    {
+                        "cell": cell,
+                        "seed": int(seed),
+                        "expert": expert,
+                        **values["meta"],
+                        **values["summary"],
+                    }
+                )
+
+    (output_dir / "metrics.json").write_text(json.dumps(records, indent=2))
+    with (output_dir / "metrics.csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(records[0]))
+        writer.writeheader()
+        writer.writerows(records)
+
+    aggregate = []
+    identifiers = {"cell", "seed", "expert"}
+    metrics = [key for key in records[0] if key not in identifiers]
+    for cell in config.cells:
+        for expert in config.experts:
+            selected = [record for record in records if record["cell"] == cell and record["expert"] == expert]
+            row = {
+                "cell": cell,
+                "expert": expert,
+                "n_seeds": len(selected),
+            }
+            for metric in metrics:
+                values = np.asarray([record[metric] for record in selected], dtype=float)
+                row[f"{metric}_mean"] = float(values.mean())
+                row[f"{metric}_std"] = float(values.std())
+            aggregate.append(row)
+    with (output_dir / "metrics_aggregate.csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(aggregate[0]))
+        writer.writeheader()
+        writer.writerows(aggregate)
+
+
 # --------------------------------------------------------------------------- #
 # Entry point                                                                  #
 # --------------------------------------------------------------------------- #
@@ -390,6 +497,13 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(args.config, output_dir / Path(args.config).name)
     print(f"Output: {output_dir}")
+
+    if hasattr(analysis_config, "artifact_root"):
+        if args.use_clearml:
+            raise ValueError("ClearML logging is not implemented for artifact sweeps")
+        analyse_artifact_sweep(analysis_config, output_dir)
+        print(f"\nDone. Results in {output_dir.resolve()}")
+        return
 
     # ------------------------------------------------------------------ #
     # ClearML                                                              #

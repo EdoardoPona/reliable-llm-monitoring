@@ -3,9 +3,12 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from batch_analysis import get_tau_for_alpha
 from dv_cascade_comparison import run_ltt_calibration
 from ltt_coverage_validation import run_accuracy_trial
 from probe_ablation_analysis import evaluate_accuracy_guarantee_artifact, evaluate_artifact
+from saved_ablation_runs import load_saved_run
+from sklearn.metrics import roc_auc_score
 
 
 def test_evaluate_saved_score_artifact(tmp_path):
@@ -158,3 +161,56 @@ def test_ltt_calibration_requires_explicit_guaranteed_risk():
             config,
             "replace",
         )
+
+
+def test_saved_analysis_loader_reconstructs_split_without_models(tmp_path):
+    rng = np.random.default_rng(4)
+    n = 120
+    labels = np.tile([0, 1], n // 2)
+    probe = np.clip(0.2 + 0.6 * labels + rng.normal(0, 0.1, n), 0.001, 0.999)
+    expert = np.clip(0.1 + 0.8 * labels + rng.normal(0, 0.1, n), 0.001, 0.999)
+    value = np.where(labels == 1, expert - probe, probe - expert)
+    dv = value + rng.normal(0, 0.05, n)
+    groups = np.asarray(["a", "b", "c", "d"] * (n // 4))
+    score_path = tmp_path / "scores.npz"
+    np.savez_compressed(
+        score_path,
+        test_probe=probe,
+        test_expert=expert,
+        test_labels=labels,
+        test_value=value,
+        test_dv=dv,
+        test_groups=groups,
+    )
+    config = {
+        "cell_name": "attention_attention",
+        "expert_name": "strong",
+        "seed": 42,
+        "calib_fraction": 0.5,
+        "baseline_model_name": "expert/model",
+        "merge_strategy": "replace",
+    }
+    (tmp_path / "metadata.json").write_text(json.dumps({"config": config}))
+
+    permutation = np.random.default_rng(42).permutation(n)
+    eval_indices = permutation[n // 2 :]
+    ltt = {
+        "CTD": [{"alpha": 0.2, "tau": 0.1, "realized_budget": 0.15}],
+        "Unc. calibrated": [{"alpha": 0.2, "tau": -0.1, "realized_budget": 0.18}],
+    }
+    (tmp_path / "results.json").write_text(
+        json.dumps(
+            {
+                "probe_auc": roc_auc_score(labels[eval_indices], probe[eval_indices]),
+                "ltt": ltt,
+            }
+        )
+    )
+
+    run = load_saved_run(score_path, require_ltt=True)
+
+    np.testing.assert_array_equal(run["eval_ps"], probe[eval_indices])
+    np.testing.assert_array_equal(run["eval_groups"], groups[eval_indices])
+    assert run["cell"] == "attention_attention"
+    assert run["ltt"] == ltt
+    assert get_tau_for_alpha(run["ltt"], 0.2) == (0.1, 0.15)

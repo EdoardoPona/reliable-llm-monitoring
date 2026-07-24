@@ -1,0 +1,12 @@
+# Per-batch analysis for the four main matched probe architectures.
+# Reads saved scores only; it does not load models or activations.
+
+artifact_root: results/probe_ablation/cuda_run
+output_dir: results/probe_ablation_batch_analysis
+
+experts: [strong, weak]
+cells: [mean_ridge, attention_attention, softmax_softmax, mlp_mlp]
+seeds: [42, 43, 44]
+
+batch_size: 128
+target_alpha: 0.30

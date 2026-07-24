@@ -1,0 +1,11 @@
+# Group analysis for the four main matched probe architectures.
+# Reads saved scores only; it does not load models or activations.
+
+artifact_root: results/probe_ablation/cuda_run
+output_dir: results/probe_ablation_group_analysis
+
+experts: [strong, weak]
+cells: [mean_ridge, attention_attention, softmax_softmax, mlp_mlp]
+seeds: [42, 43, 44]
+
+target_alpha: 0.20
