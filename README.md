@@ -32,9 +32,11 @@ analyses use these files without loading language models.
 
 ```bash
 uv run experiments/probe_ablation_sweep.py \
-  --config experiments/configs/probe_ablation.yaml \
-  --output-dir results/probe_ablation/cuda_run
+  --config experiments/configs/probe_ablation.yaml
 ```
+
+Use the resulting run directory as the input to downstream analyses. For
+config-driven analyses, set `artifact_root` in the corresponding YAML file.
 
 Reconstruct the budget-control results, method-specific score-merging
 comparison, fixed-merging controls, architecture comparison, weak-expert
@@ -42,13 +44,13 @@ overwrite stress test, and budget-utilisation figure:
 
 ```bash
 uv run experiments/probe_ablation_analysis.py \
-  results/probe_ablation/cuda_run \
+  <run-directory> \
   --merge-strategy method-specific
 ```
 
 Outputs are stored under
-`results/probe_ablation/cuda_run/fusion_method_specific/`. The `paper_figures`
-directory contains the main and supplementary cascade figures.
+`<run-directory>/fusion_method_specific/`. The `paper_figures` directory
+contains the main and supplementary cascade figures.
 
 Run the saved-score analyses used for the DV-probe metrics and group table:
 
