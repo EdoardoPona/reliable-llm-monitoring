@@ -24,6 +24,11 @@ locations separately. Experiments fetch cached activations and expert scores
 when available; a cache miss may run model inference locally or on Modal,
 according to the selected configuration.
 
+The training and evaluation JSONL files are released by McKenzie et al. in the
+[models-under-pressure dataset table](https://github.com/arrrlex/models-under-pressure#datasets).
+Download the balanced training, Anthropic HH, MT, MTS, and ToolACE files and
+preserve the directory layout used by the experiment configurations.
+
 ## Main probe-architecture experiments
 
 Train the seven probe-ablation cells for both experts and three seeds. Each
