@@ -244,13 +244,18 @@ class TestLoadDatasetAutoCompute:
         mock_store_class.return_value = mock_store
 
         config = ActivationConfig(model_name="test-model", layer=5)
-        load_dataset(Path("/fake/path.jsonl"), config, auto_compute=True)
+        load_dataset(
+            Path("/fake/path.jsonl"),
+            config,
+            auto_compute=True,
+            cleanup_after_load=False,
+        )
 
         mock_compute.assert_called_once_with(
             dataset_path=Path("/fake/path.jsonl"),
             model="test-model",
             layer=5,
-            batch_size=4,
+            batch_size=32,
         )
 
     @patch("reliable_monitoring.dataset.cleanup_activations")

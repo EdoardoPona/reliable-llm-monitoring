@@ -11,6 +11,7 @@ import logging
 import random
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
@@ -562,10 +563,12 @@ def _prepare_sequence_batch(
 
 
 def _autocast(device: torch.device, enabled: bool):
+    if not enabled or device.type != "cuda":
+        return nullcontext()
     return torch.autocast(
-        device_type=device.type,
+        device_type="cuda",
         dtype=torch.float16,
-        enabled=enabled and device.type == "cuda",
+        enabled=True,
     )
 
 
