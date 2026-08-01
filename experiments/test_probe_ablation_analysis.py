@@ -6,7 +6,13 @@ import pytest
 from batch_analysis import get_tau_for_alpha
 from dv_cascade_comparison import run_ltt_calibration
 from ltt_coverage_validation import run_accuracy_trial
-from probe_ablation_analysis import evaluate_accuracy_guarantee_artifact, evaluate_artifact
+from probe_ablation_analysis import (
+    METHOD_SPECIFIC_MERGE_STRATEGIES,
+    _mean_ltt_results,
+    _realized_budget_curve,
+    evaluate_accuracy_guarantee_artifact,
+    evaluate_artifact,
+)
 from saved_ablation_runs import load_saved_run
 from sklearn.metrics import roc_auc_score
 
@@ -59,8 +65,92 @@ def test_evaluate_saved_score_artifact(tmp_path):
     assert result["cell"] == "attention_attention"
     assert 0 <= result["probe_auc"] <= 1
     assert -1 <= result["dv_spearman"] <= 1
+    assert result["opt_risk"] == "accuracy_error"
     assert (tmp_path / "results.json").exists()
     assert (tmp_path / "ablation_ranking_comparison_B32.pdf").exists()
+
+    auc_result = evaluate_artifact(
+        scores_path,
+        opt_risk="roc_auc_error",
+        results_filename="results_roc_auc_error.json",
+        write_cell_figure=False,
+    )
+    assert auc_result["opt_risk"] == "roc_auc_error"
+    assert (tmp_path / "results_roc_auc_error.json").exists()
+    assert json.loads((tmp_path / "results.json").read_text())["opt_risk"] == "accuracy_error"
+
+    avg_result = evaluate_artifact(
+        scores_path,
+        opt_risk="roc_auc_error",
+        merge_strategy="avg",
+        results_filename="results_roc_auc_error_avg.json",
+        write_cell_figure=False,
+    )
+    assert avg_result["merge_strategy"] == "avg"
+    assert metadata["config"]["merge_strategy"] == "replace"
+    assert (tmp_path / "results_roc_auc_error_avg.json").exists()
+
+    method_specific = evaluate_artifact(
+        scores_path,
+        opt_risk="roc_auc_error",
+        method_merge_strategies=METHOD_SPECIFIC_MERGE_STRATEGIES,
+        results_filename="results_roc_auc_error_method_specific.json",
+        write_cell_figure=False,
+    )
+    assert method_specific["method_merge_strategies"] == METHOD_SPECIFIC_MERGE_STRATEGIES
+    assert method_specific["ltt"]["CTD"] == auc_result["ltt"]["CTD"]
+    assert method_specific["ltt"]["Unc. calibrated"] == avg_result["ltt"]["Unc. calibrated"]
+    for metric in ("auc", "accuracy"):
+        np.testing.assert_allclose(
+            method_specific["topk"]["signals"]["DV top-k"][metric],
+            auc_result["topk"]["signals"]["DV top-k"][metric],
+        )
+        np.testing.assert_allclose(
+            method_specific["topk"]["signals"]["Unc. top-k"][metric],
+            avg_result["topk"]["signals"]["Unc. top-k"][metric],
+        )
+
+
+def test_panel_data_uses_metric_specific_calibrations():
+    alpha = [0.1, 0.2]
+    auc_runs = [
+        {
+            "ltt": {
+                name: [
+                    {"alpha": budget, "auc": value, "accuracy": -1.0}
+                    for budget, value in zip(alpha, (0.81, 0.84), strict=True)
+                ]
+                for name in ("CTD", "Unc. calibrated")
+            }
+        }
+    ]
+    accuracy_runs = [
+        {
+            "ltt": {
+                name: [
+                    {"alpha": budget, "auc": -1.0, "accuracy": value}
+                    for budget, value in zip(alpha, (0.71, 0.76), strict=True)
+                ]
+                for name in ("CTD", "Unc. calibrated")
+            }
+        }
+    ]
+
+    curves = _mean_ltt_results(auc_runs, accuracy_runs)
+
+    np.testing.assert_allclose(curves["CTD"][0], alpha)
+    np.testing.assert_allclose(curves["CTD"][1], [0.81, 0.84])
+    np.testing.assert_allclose(curves["CTD"][2], [0.71, 0.76])
+
+
+def test_realized_budget_curve_aggregates_seeds():
+    runs = [{"ltt": {"CTD": [{"alpha": 0.2, "realized_budget": value}]}} for value in (0.10, 0.15, 0.20)]
+
+    alpha, mean, std = _realized_budget_curve(runs)
+
+    np.testing.assert_allclose(alpha, [0.2])
+    np.testing.assert_allclose(mean, [0.15])
+    np.testing.assert_allclose(std, [np.std([0.10, 0.15, 0.20])])
 
 
 def test_evaluate_accuracy_guarantee_from_saved_scores(tmp_path):

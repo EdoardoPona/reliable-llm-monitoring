@@ -32,6 +32,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from aaai_plot_style import AAAI_TEXT_WIDTH, apply_aaai_plot_style
 from config import load_config
 from dotenv import load_dotenv
 from dv_ltt_cascade import (
@@ -52,6 +53,7 @@ from reliable_monitoring.learn_then_test import (
 from reliable_monitoring.risks import RISK_RGISTRY, BudgetCostRisk
 
 load_dotenv()
+apply_aaai_plot_style()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -369,8 +371,20 @@ def _plot_single_batch_size(
         (ax_auc, probe_auc, baseline_auc, "Cascade ROC AUC"),
         (ax_acc, probe_acc, baseline_acc, "Cascade Accuracy"),
     ]:
-        ax.axhline(ref_probe, color="gray", ls=":", alpha=0.5, label=f"Probe only ({ref_probe:.3f})")
-        ax.axhline(ref_base, color="gray", ls="--", alpha=0.5, label=f"Expert only ({ref_base:.3f})")
+        ax.axhline(
+            ref_probe,
+            color="gray",
+            ls=":",
+            alpha=0.5,
+            label=f"Probe only ({ref_probe:.3f})",
+        )
+        ax.axhline(
+            ref_base,
+            color="gray",
+            ls="--",
+            alpha=0.5,
+            label=f"Expert only ({ref_base:.3f})",
+        )
         ax.set_xlabel("Budget fraction")
         ax.set_ylabel(ylabel)
         ax.set_title(f"Batch size $B = {batch_size}$")
@@ -391,12 +405,20 @@ def _plot_single_batch_size(
             ax.legend(
                 [handles[i] for i in order],
                 [labels[i] for i in order],
-                fontsize=7,
+                fontsize=9,
                 loc="lower right",
             )
 
 
-def _add_figure_legend(fig: plt.Figure, ax: plt.Axes) -> None:
+def _add_figure_legend(
+    fig: plt.Figure,
+    ax: plt.Axes,
+    *,
+    ncol: int | None = None,
+    bottom: float = 0.18,
+    fontsize: float = 7.5,
+    compact_references: bool = False,
+) -> None:
     """Add a single ordered legend below the figure, extracted from *ax*."""
     handles, labels = ax.get_legend_handles_labels()
     legend_order = [
@@ -408,15 +430,33 @@ def _add_figure_legend(fig: plt.Figure, ax: plt.Axes) -> None:
     ]
     legend_order += [lab for lab in labels if lab not in legend_order]
     order = [labels.index(name) for name in legend_order if name in labels]
+    ordered_labels = [labels[i] for i in order]
+    if compact_references:
+        ordered_labels = [
+            label.replace("Unc. calibrated", "Unc. cal.")
+            .replace("Oracle top-k", "Oracle")
+            .replace("Probe only", "Probe")
+            .replace("Expert only", "Expert")
+            for label in ordered_labels
+        ]
+        ordered_labels = [
+            label.split(" (", 1)[0] if label.startswith(("Probe (", "Expert (")) else label for label in ordered_labels
+        ]
     fig.legend(
         [handles[i] for i in order],
-        [labels[i] for i in order],
-        fontsize=8,
+        ordered_labels,
+        fontsize=fontsize,
         loc="lower center",
-        ncol=len(order),
-        bbox_to_anchor=(0.5, -0.02),
+        ncol=ncol or len(order),
+        bbox_to_anchor=(0.5, 0.0),
+        columnspacing=0.65,
+        handlelength=1.35,
+        handletextpad=0.35,
+        labelspacing=0.25 if compact_references else 0.5,
+        borderaxespad=0.1,
+        frameon=False,
     )
-    fig.subplots_adjust(bottom=0.18)
+    fig.subplots_adjust(bottom=bottom)
 
 
 def plot_single_batch_size(
@@ -430,9 +470,24 @@ def plot_single_batch_size(
     output_dir: Path,
     ltt_results: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] | None = None,
     file_prefix: str = "",
+    layout: str = "horizontal",
 ) -> plt.Figure:
-    """Main-paper figure: 1x2 (AUC, accuracy) for a single batch size."""
-    fig, (ax_auc, ax_acc) = plt.subplots(1, 2, figsize=(10, 4))
+    """Main-paper figure for a single batch size.
+
+    ``layout="column"`` produces a compact side-by-side figure intended for a
+    single paper column. ``layout="vertical"`` stacks the same panels. The
+    default preserves the legacy two-column output exactly.
+    """
+    if layout == "horizontal":
+        fig, (ax_auc, ax_acc) = plt.subplots(1, 2, figsize=(AAAI_TEXT_WIDTH, 3.1))
+    elif layout == "column":
+        # Generate at the original wide aspect ratio; the paper scales this
+        # uniformly to one column.
+        fig, (ax_auc, ax_acc) = plt.subplots(1, 2, figsize=(AAAI_TEXT_WIDTH, 3.1))
+    elif layout == "vertical":
+        fig, (ax_auc, ax_acc) = plt.subplots(2, 1, figsize=(4.8, 6.5))
+    else:
+        raise ValueError(f"Unknown figure layout: {layout}")
     _plot_single_batch_size(
         ax_auc,
         ax_acc,
@@ -446,8 +501,36 @@ def plot_single_batch_size(
         show_legend=False,
         ltt_results=ltt_results,
     )
-    _add_figure_legend(fig, ax_auc)
-    fig.savefig(output_dir / f"{file_prefix}ranking_comparison_B{batch_size}.pdf", bbox_inches="tight")
+    if layout == "column":
+        # Keep all text in the compact line charts at one consistent source size.
+        column_fontsize = 12
+        ax_auc.set_title("AUROC", pad=2, fontsize=column_fontsize)
+        ax_acc.set_title("Accuracy", pad=2, fontsize=column_fontsize)
+        ax_auc.set_ylabel("Score", fontsize=column_fontsize)
+        ax_acc.set_ylabel("")
+        for ax in (ax_auc, ax_acc):
+            ax.set_xlabel("Budget fraction", fontsize=column_fontsize)
+            ax.set_xticks([0.0, 0.5, 1.0])
+            ax.tick_params(labelsize=column_fontsize)
+            ax.locator_params(axis="y", nbins=4)
+        _add_figure_legend(
+            fig,
+            ax_auc,
+            ncol=4,
+            bottom=0.38,
+            fontsize=column_fontsize,
+            compact_references=True,
+        )
+        fig.subplots_adjust(left=0.12, right=0.98, top=0.86, wspace=0.34)
+    elif layout == "vertical":
+        _add_figure_legend(fig, ax_auc, ncol=3, bottom=0.2)
+        fig.subplots_adjust(hspace=0.38)
+    else:
+        _add_figure_legend(fig, ax_auc, ncol=4, bottom=0.19)
+    fig.savefig(
+        output_dir / f"{file_prefix}ranking_comparison_B{batch_size}.pdf",
+        bbox_inches="tight",
+    )
     return fig
 
 

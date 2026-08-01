@@ -1,7 +1,8 @@
-"""LTT coverage validation experiment.
+"""Empirical validation of LTT risk guarantees.
 
-Empirically validates the PAC budget guarantee Pr(R_budget(λ*) ≤ α) ≥ 1 - δ
-by running many random calib/eval splits and measuring violation rates.
+Runs repeated calibration/evaluation splits to validate either a delegation-
+budget guarantee or an accuracy guarantee. Accuracy validation also compares
+LTT with a plug-in empirical selector using the same data and candidates.
 
 For each trial:
   1. Randomly split test data into calib and eval (with a different seed)
@@ -9,13 +10,8 @@ For each trial:
   3. Measure realized delegation rate on eval
   4. Check if budget constraint α is violated
 
-The budget-only LTT should be tight: violation rate ≈ δ.
-Pareto LTT may be more conservative (violation rate ≤ δ) since
-the Pareto filter discards thresholds that hurt performance.
-
-Outputs:
-  - coverage_histogram.pdf: overlaid histograms of realized delegation rates
-  - coverage_results.json: per-trial results and summary statistics
+Budget-only LTT should be tight, while Pareto-filtered LTT may be more
+conservative because it discards thresholds that hurt performance.
 
 Usage::
 
@@ -33,6 +29,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from aaai_plot_style import AAAI_COLUMN_WIDTH, AAAI_TEXT_WIDTH, apply_aaai_plot_style
 from config import load_config
 from dotenv import load_dotenv
 from dv_ltt_cascade import (
@@ -47,6 +44,8 @@ from tqdm import tqdm
 
 from reliable_monitoring.learn_then_test import build_pareto_ltt, build_risk_pareto_ltt
 from reliable_monitoring.risks import RISK_RGISTRY, AccuracyRisk, BudgetCostRisk
+
+apply_aaai_plot_style()
 
 load_dotenv()
 
@@ -291,68 +290,128 @@ ARCHITECTURE_LABELS = {
 }
 
 
+def _plot_accuracy_validation_panel(
+    ax: plt.Axes,
+    selected: list[dict],
+    *,
+    title: str,
+    show_summary: bool = True,
+) -> None:
+    """Draw one CTD-versus-empirical accuracy-validation panel."""
+    ltt_valid = [t for t in selected if t["valid"]]
+    empirical_valid = [t for t in selected if t["empirical_valid"]]
+    target = float(selected[0]["target_accuracy"])
+    ltt_values = np.asarray([t["realized_accuracy"] for t in ltt_valid])
+    empirical_values = np.asarray([t["empirical_realized_accuracy"] for t in empirical_valid])
+    ltt_violation = float(sum(t.get("violation", False) for t in selected) / len(selected))
+    empirical_violation = float(sum(t.get("empirical_violation", False) for t in selected) / len(selected))
+    nonempty_values = [values for values in (ltt_values, empirical_values) if len(values)]
+    all_values = np.concatenate(nonempty_values) if nonempty_values else np.asarray([])
+    if len(all_values):
+        lo = min(float(all_values.min()), target) - 0.01
+        hi = max(float(all_values.max()), target) + 0.01
+        bins = np.linspace(lo, hi, 35)
+        if len(empirical_values):
+            ax.hist(
+                empirical_values,
+                bins=bins.tolist(),
+                density=True,
+                color="#fdae6b",
+                edgecolor="#e6550d",
+                alpha=0.55,
+                label="Empirical",
+            )
+        if len(ltt_values):
+            ax.hist(
+                ltt_values,
+                bins=bins.tolist(),
+                density=True,
+                color="#6baed6",
+                edgecolor="#2171b5",
+                alpha=0.55,
+                label="CTD",
+            )
+    ax.axvline(target, color="red", ls="--", lw=1.5, label="Target")
+    title_lines = [] if not title else [title]
+    if show_summary:
+        title_lines.extend(
+            [
+                f"CTD: fail {ltt_violation:.1%}, select {len(ltt_valid) / len(selected):.1%}",
+                f"Empirical: fail {empirical_violation:.1%}, select {len(empirical_valid) / len(selected):.1%}",
+            ]
+        )
+    ax.set_title("\n".join(title_lines), fontsize=9)
+    ax.grid(axis="y", alpha=0.25)
+
+
 def plot_accuracy_validation(
     trials: list[dict],
     delta: float,
     output_path: Path,
 ) -> plt.Figure:
     """Overlay LTT and empirical held-out accuracy distributions."""
-    fig, axes = plt.subplots(2, 4, figsize=(13, 6.5), squeeze=False)
-    for row, expert in enumerate(("strong", "weak")):
-        for column, (cell, label) in enumerate(ARCHITECTURE_LABELS.items()):
+    fig, axes = plt.subplots(4, 2, figsize=(AAAI_TEXT_WIDTH, 7.2), squeeze=False)
+    for row, (cell, label) in enumerate(ARCHITECTURE_LABELS.items()):
+        for column, expert in enumerate(("strong", "weak")):
             ax = axes[row, column]
             selected = [t for t in trials if t["expert"] == expert and t["cell"] == cell]
-            ltt_valid = [t for t in selected if t["valid"]]
-            empirical_valid = [t for t in selected if t["empirical_valid"]]
-            target = float(selected[0]["target_accuracy"])
-            ltt_values = np.asarray([t["realized_accuracy"] for t in ltt_valid])
-            empirical_values = np.asarray([t["empirical_realized_accuracy"] for t in empirical_valid])
-            ltt_violation = float(sum(t.get("violation", False) for t in selected) / len(selected))
-            empirical_violation = float(sum(t.get("empirical_violation", False) for t in selected) / len(selected))
-            nonempty_values = [values for values in (ltt_values, empirical_values) if len(values)]
-            all_values = np.concatenate(nonempty_values) if nonempty_values else np.asarray([])
-            if len(all_values):
-                lo = min(float(all_values.min()), target) - 0.01
-                hi = max(float(all_values.max()), target) + 0.01
-                bins = np.linspace(lo, hi, 35)
-                if len(empirical_values):
-                    ax.hist(
-                        empirical_values,
-                        bins=bins,
-                        density=True,
-                        color="#fdae6b",
-                        edgecolor="#e6550d",
-                        alpha=0.55,
-                        label="Empirical",
-                    )
-                if len(ltt_values):
-                    ax.hist(
-                        ltt_values,
-                        bins=bins,
-                        density=True,
-                        color="#6baed6",
-                        edgecolor="#2171b5",
-                        alpha=0.55,
-                        label="LTT",
-                    )
-            ax.axvline(target, color="red", ls="--", lw=1.5)
-            ax.set_title(
-                f"{expert.title()} — {label}\n"
-                f"LTT: fail {ltt_violation:.1%}, select {len(ltt_valid)}/{len(selected)}\n"
-                f"Emp.: fail {empirical_violation:.1%}, select {len(empirical_valid)}/{len(selected)}",
-                fontsize=8.5,
-            )
-            ax.grid(axis="y", alpha=0.25)
-            if row == 1:
+            _plot_accuracy_validation_panel(ax, selected, title=f"{label} — {expert.title()} expert")
+            if row == len(ARCHITECTURE_LABELS) - 1:
                 ax.set_xlabel("Realized accuracy")
             if column == 0:
                 ax.set_ylabel("Density")
     handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="lower center", ncol=2, frameon=False)
-    fig.suptitle(rf"Accuracy calibration validation ($\delta={delta:.2f}$)", y=0.99)
-    fig.subplots_adjust(hspace=0.55, wspace=0.28, top=0.82, bottom=0.12)
-    fig.savefig(output_path, bbox_inches="tight")
-    fig.savefig(output_path.with_suffix(".png"), dpi=200, bbox_inches="tight")
+    fig.legend(
+        handles,
+        labels,
+        loc="lower center",
+        ncol=3,
+        frameon=False,
+        bbox_to_anchor=(0.5, 0.01),
+    )
+    fig.suptitle(rf"Performance-risk guarantee validation ($\delta_{{\mathrm{{P}}}}={delta:.2f}$)", y=0.99)
+    fig.subplots_adjust(hspace=0.78, wspace=0.28, top=0.89, bottom=0.13)
+    fig.savefig(output_path)
+    fig.savefig(output_path.with_suffix(".png"), dpi=200)
+    return fig
+
+
+def plot_attention_accuracy_validation(
+    trials: list[dict],
+    delta: float,
+    output_path: Path,
+) -> plt.Figure:
+    """Paper-sized strong-expert panel for the primary Attention architecture."""
+    fig, ax = plt.subplots(figsize=(AAAI_COLUMN_WIDTH, 2.15))
+    selected = [t for t in trials if t["expert"] == "strong" and t["cell"] == "attention_attention"]
+    _plot_accuracy_validation_panel(ax, selected, title="", show_summary=False)
+    ax.set_xlabel("Realized accuracy", fontsize=9)
+    ax.set_ylabel("Density", fontsize=9)
+    ax.tick_params(labelsize=9)
+    handles, labels = ax.get_legend_handles_labels()
+    ltt_valid = [trial for trial in selected if trial["valid"]]
+    empirical_valid = [trial for trial in selected if trial["empirical_valid"]]
+    ltt_violation = sum(trial.get("violation", False) for trial in selected) / len(selected)
+    empirical_violation = sum(trial.get("empirical_violation", False) for trial in selected) / len(selected)
+    legend_labels = {
+        "CTD": (f"CTD: fail {ltt_violation:.1%}\nselect {len(ltt_valid) / len(selected):.1%}"),
+        "Empirical": (f"Empirical: fail {empirical_violation:.1%}\nselect {len(empirical_valid) / len(selected):.1%}"),
+        "Target": "Accuracy target",
+    }
+    legend_order = [labels.index(label) for label in ("CTD", "Empirical", "Target")]
+    ax.legend(
+        [handles[index] for index in legend_order],
+        [legend_labels[labels[index]] for index in legend_order],
+        loc="upper left",
+        frameon=False,
+        fontsize=9,
+        handlelength=1.5,
+        handletextpad=0.4,
+        labelspacing=0.25,
+    )
+    fig.subplots_adjust(left=0.18, right=0.98, top=0.97, bottom=0.25)
+    fig.savefig(output_path)
+    fig.savefig(output_path.with_suffix(".png"), dpi=200)
     return fig
 
 
@@ -440,6 +499,12 @@ def run_artifact_accuracy_validation(config, output_dir: Path, n_trials_override
     (output_dir / "accuracy_guarantee_validation.json").write_text(json.dumps(payload, indent=2))
     fig = plot_accuracy_validation(trials, delta, output_dir / "accuracy_guarantee_validation.pdf")
     plt.close(fig)
+    fig = plot_attention_accuracy_validation(
+        trials,
+        delta,
+        output_dir / "attention_accuracy_guarantee_validation.pdf",
+    )
+    plt.close(fig)
     return payload
 
 
@@ -482,6 +547,12 @@ def main():
                 saved["trials"],
                 saved["delta"],
                 output_dir / "accuracy_guarantee_validation.pdf",
+            )
+            plt.close(fig)
+            fig = plot_attention_accuracy_validation(
+                saved["trials"],
+                saved["delta"],
+                output_dir / "attention_accuracy_guarantee_validation.pdf",
             )
             plt.close(fig)
         else:

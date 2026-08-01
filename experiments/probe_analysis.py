@@ -62,6 +62,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from aaai_plot_style import AAAI_TEXT_WIDTH, apply_aaai_plot_style
 from scipy.stats import spearmanr
 from sklearn.metrics import roc_auc_score
 
@@ -74,6 +75,8 @@ from dv_ltt_cascade import prepare_dv_cascade_data, split_calib_eval
 from saved_ablation_runs import artifact_path, load_saved_run, run_label
 
 from reliable_monitoring.cascade import probe_uncertainty
+
+apply_aaai_plot_style()
 
 # --------------------------------------------------------------------------- #
 # Data loading                                                                 #
@@ -290,7 +293,7 @@ def plot_auc_vs_threshold(runs: list[dict], labels: list[str], n_steps: int = 40
 
 def plot_mean_v_at_k_aggregate(runs_by_expert: dict[str, list[dict]]) -> plt.Figure:
     """Mean-v-at-k curves averaged across architecture seeds."""
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4), sharey=False)
+    fig, axes = plt.subplots(1, 2, figsize=(AAAI_TEXT_WIDTH, 3.1), sharey=False)
     styles = {
         "oracle": ("$v(x,y)$ (upper bound)", "green"),
         "dv": ("DV probe $d(x)$", "tab:orange"),
@@ -326,7 +329,7 @@ def plot_mean_v_at_k_aggregate(runs_by_expert: dict[str, list[dict]]) -> plt.Fig
         ax.grid(alpha=0.3)
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", ncol=len(labels), bbox_to_anchor=(0.5, -0.02), frameon=False)
-    fig.subplots_adjust(bottom=0.2, wspace=0.2)
+    fig.subplots_adjust(bottom=0.2, wspace=0.34)
     return fig
 
 
