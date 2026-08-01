@@ -651,6 +651,8 @@ def main():
         delta,
         output_dir / f"{file_prefix}coverage_histogram.pdf",
     )
+    expert_name = "weak_expert" if config.baseline_model_name == config.activations_model_name else "strong_expert"
+    fig.savefig(output_dir / f"coverage_{expert_name}.pdf", bbox_inches="tight")
     logger.info(f"Histogram saved to {output_dir}")
 
     # --- Save results ---

@@ -542,9 +542,8 @@ def pareto_ht_opt_split(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Split indices into hypothesis-testing and optimisation subsets.
 
-    Ensures a consistent, reproducible split across all DV cascade
-    experiments (``dv_cascade_comparison``, ``dv_sgt_cascade``,
-    ``ltt_coverage_validation``).
+    Ensures a consistent, reproducible split across the DV cascade comparison
+    and repeated-split validation experiments.
 
     Args:
         n: Total number of calibration examples.

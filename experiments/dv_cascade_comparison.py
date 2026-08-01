@@ -1128,7 +1128,7 @@ def run_dv_cascade_experiment(
 
 def parse_args():
     parser = argparse.ArgumentParser(description="DV cascade comparison experiment")
-    parser.add_argument("--config", type=str, default="configs/dv_cascade_comparison.yaml")
+    parser.add_argument("--config", type=str, required=True)
     default_output = os.path.join(os.environ.get("RESULTS_DIR", "results"), "dv_cascade_comparison")
     parser.add_argument("--output-dir", type=str, default=default_output)
     parser.add_argument("--file-prefix", type=str, default="", help="Prefix for output filenames (e.g. 'llama1b_')")

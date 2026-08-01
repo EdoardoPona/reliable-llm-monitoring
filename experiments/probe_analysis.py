@@ -414,6 +414,9 @@ def analyse_artifact_sweep(config, output_dir: Path) -> None:
         figure = plot_mean_v_at_k_aggregate(runs)
         figure.savefig(output_dir / f"{cell}_mean_v_at_k.pdf", bbox_inches="tight")
         figure.savefig(output_dir / f"{cell}_mean_v_at_k.png", dpi=200, bbox_inches="tight")
+        if cell == "attention_attention":
+            figure.savefig(output_dir / "attention_mean_v_at_k.pdf", bbox_inches="tight")
+            figure.savefig(output_dir / "attention_mean_v_at_k.png", dpi=200, bbox_inches="tight")
         plt.close(figure)
 
     (output_dir / "metrics.json").write_text(json.dumps(records, indent=2))

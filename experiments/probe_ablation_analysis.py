@@ -528,6 +528,9 @@ def plot_paper_cell_figures(
                 dpi=200,
                 bbox_inches="tight",
             )
+            paper_name = f"{MATCHED_LABELS[cell].lower()}_{expert}_B{batch_size}"
+            fig.savefig(output_dir / f"{paper_name}.pdf", bbox_inches="tight")
+            fig.savefig(output_dir / f"{paper_name}.png", dpi=200, bbox_inches="tight")
             plt.close(fig)
 
 
@@ -756,6 +759,30 @@ def plot_fusion_control_figures(
         _add_figure_legend(fig, axes[0, 0])
         fig.subplots_adjust(bottom=0.13, hspace=0.42, wspace=0.36)
         stem = output_dir / f"attention_{expert}_fusion_controls_B128"
+        fig.savefig(stem.with_suffix(".pdf"), bbox_inches="tight")
+        fig.savefig(stem.with_suffix(".png"), dpi=200, bbox_inches="tight")
+        plt.close(fig)
+
+    # The main paper also uses the weak-expert overwrite row as a standalone
+    # stress test of fixed-quota delegation.
+    accuracy_runs = _runs_for_cell(replace_accuracy, "weak", "attention_attention")
+    auc_runs = _runs_for_cell(replace_auc, "weak", "attention_attention")
+    if accuracy_runs and auc_runs:
+        fractions, signals = _mean_topk_results(accuracy_runs)
+        fig = plot_single_batch_size(
+            fractions,
+            signals,
+            float(np.mean([run["probe_auc"] for run in accuracy_runs])),
+            float(np.mean([run["probe_accuracy"] for run in accuracy_runs])),
+            float(np.mean([run["expert_auc"] for run in accuracy_runs])),
+            float(np.mean([run["expert_accuracy"] for run in accuracy_runs])),
+            int(accuracy_runs[0].get("batch_size", 128)),
+            output_dir,
+            ltt_results=_mean_ltt_results(auc_runs, accuracy_runs),
+            file_prefix="attention_weak_replacement_stress_",
+            layout="column",
+        )
+        stem = output_dir / "attention_weak_replacement_stress_B128"
         fig.savefig(stem.with_suffix(".pdf"), bbox_inches="tight")
         fig.savefig(stem.with_suffix(".png"), dpi=200, bbox_inches="tight")
         plt.close(fig)

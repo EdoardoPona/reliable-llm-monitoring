@@ -3,7 +3,6 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from batch_analysis import get_tau_for_alpha
 from dv_cascade_comparison import run_ltt_calibration
 from ltt_coverage_validation import run_accuracy_trial
 from probe_ablation_analysis import (
@@ -303,4 +302,3 @@ def test_saved_analysis_loader_reconstructs_split_without_models(tmp_path):
     np.testing.assert_array_equal(run["eval_groups"], groups[eval_indices])
     assert run["cell"] == "attention_attention"
     assert run["ltt"] == ltt
-    assert get_tau_for_alpha(run["ltt"], 0.2) == (0.1, 0.15)

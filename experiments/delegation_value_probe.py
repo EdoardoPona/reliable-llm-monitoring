@@ -1,4 +1,4 @@
-"""Prototype: Train a delegation value (DV) probe.
+"""Delegation-value targets, probe fitting, and diagnostic plots.
 
 Given a config specifying activations model, baseline model, and datasets:
 
@@ -9,12 +9,9 @@ Given a config specifying activations model, baseline model, and datasets:
 5. Evaluates on the test split: compares delegation strategies across budgets.
 6. Generates figures and optionally logs to ClearML.
 
-See ``experiments/notes/delegation_value.md`` for theory.
-
-Usage::
-
-    uv run experiments/delegation_value_probe.py --config configs/delegation_value_probe.yaml
-    uv run experiments/delegation_value_probe.py --config configs/delegation_value_probe.yaml --use-clearml
+The paper entry points use these functions through ``dv_ltt_cascade.py`` and
+``probe_analysis.py``. The optional CLI remains available for ad-hoc runs and
+requires an explicit configuration.
 """
 
 import argparse
@@ -630,7 +627,7 @@ def parse_args():
     parser.add_argument(
         "--config",
         type=str,
-        default="configs/delegation_value_probe.yaml",
+        required=True,
         help="Path to config YAML.",
     )
     parser.add_argument(
