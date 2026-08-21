@@ -1,6 +1,7 @@
 # Reliable LLM Monitoring
 
-Code for the Calibrate-Then-Delegate experiments in the AAAI submission.
+Code for the experiments in
+[Calibrate-Then-Delegate: Safety Monitoring with Risk and Budget Guarantees via Model Cascades](https://arxiv.org/abs/2604.14251).
 
 ## Setup
 
