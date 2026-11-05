@@ -102,6 +102,8 @@ Use only five named mixtures in a compact table: the three vertices, uniform and
 
 Initial fixed-target views use the already specified minimum accuracies (strong 0.80, weak 0.78) and the configured budget target nearest 0.50. These targets are selected before inspecting held-out results. All configured targets and both experts remain in the outputs. The 500-resplit configuration is a separate stability analysis; the initial figures use the three official model seeds.
 
+The [initial results](mixture_shift_initial_results.md) record the completed 68-mixture runs, including nonselection at the configured accuracy targets.
+
 Run from the repository root. Set the artifact root to the directory containing `strong/` and `weak/`, normally `results/probe_ablation/cuda_run`.
 
 ```bash
@@ -121,6 +123,11 @@ uv run experiments/mixture_shift.py \
 uv run experiments/mixture_shift.py \
   --config experiments/configs/mixture_shift/accuracy_resplits.yaml \
   --artifact-root "$CTD_ARTIFACT_ROOT" --max-trials 1
+
+# Empirical simplex maps and summaries from one completed run.
+uv run experiments/mixture_shift_report.py \
+  results/mixture_shift/<completed-run> \
+  --output-dir results/mixture_shift/<completed-run>/report_seed42
 ```
 
 Outputs go to a new directory under `results/mixture_shift/` by default. `--output-dir` can set a new destination; existing directories and destinations inside the source artifact root are rejected.
@@ -129,6 +136,8 @@ Outputs go to a new directory under `results/mixture_shift/` by default. `--outp
 - `inventory.json`: artifact identity, hashes and counts; optional reconstructed row manifests and inherited-overlap report; completion status.
 - `mixtures.json`: domain order, deployment weights and reference weights.
 - `trials.jsonl`: one record per expert/model-seed/split, containing exact split indices, domain/source counts, candidate thresholds, p-values, certified indices, selected threshold, held-out domain/source risks and mixture risks. Absent in inventory-only mode.
+
+The report command exports PNG/SVG simplex figures for seed 42, including a supplementary matched-candidate comparison; all-target certification-availability plots; and `summary.json` with all seeds, targets, explicit nonselection, worst-domain metrics and the five named mixtures. It never recalibrates thresholds. Pass `--seed` to display another official seed. The default budget view uses 47.6316%, the nearest configured target to 50% with ties resolved toward the lower target.
 
 Large inputs and outputs are not committed. The existing experiment entry points and shared calibration implementations are unchanged. The new `reliable_monitoring/mixture_ltt.py` composes their risk evaluation, bounds, Pareto mask and fixed-sequence testing; the dedicated experiment driver handles configuration and reporting.
 
