@@ -20,7 +20,7 @@ reference_weights:
   anthropic: 500
   medical: 586
   toolace: 500
-mixture_resolution: 20
+mixture_resolution: 10
 shared:
   calib_fraction: 0.5
   guarantee_probability: 0.9

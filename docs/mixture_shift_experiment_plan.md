@@ -67,7 +67,7 @@ p_{\mathrm{mix}}(\lambda)=\max_g p_g(\lambda).
 
 A missing hypothesis-testing domain gets p=1 and prevents certification. Fixed-sequence testing runs at δ=0.10 and stops at the first non-rejection. There is no extra correction by the number of domains. Candidate filtering, ordering and the complementary objective use D_est only; the 100-point DV threshold grid comes from development scores only. Budget thresholds run largest to smallest; accuracy thresholds are ordered by estimated worst-domain error, then estimated complementary cost.
 
-The reference objective uses q₀=(500,586,500)/1586 in Anthropic/Medical/ToolACE order. Evaluation includes the three-domain simplex at resolution 20 (231 grid points), plus q₀ and the uniform mixture if not already on that grid. Held-out domain risks are computed once for each selected policy and weighted to obtain mixture risks. The threshold is not recalibrated at different deployment mixtures.
+The reference objective uses q₀=(500,586,500)/1586 in Anthropic/Medical/ToolACE order. Evaluation includes the three-domain simplex at resolution 10 (66 grid points in 10-percentage-point increments), plus q₀ and the uniform mixture, giving 68 mixtures in total. Held-out domain risks are computed once for each selected policy and weighted to obtain mixture risks. The threshold is not recalibrated at different deployment mixtures.
 
 Medical source composition is fixed as part of the medical domain; arbitrary MT-versus-MTS shifts are not covered by this three-domain claim. Original source metrics remain in the output as diagnostics. Accuracy error and expert-call rate are the supported per-example risks; AUROC is not certified by this implementation. Returning no certified threshold is explicit, with no uncalibrated fallback.
 
@@ -82,6 +82,25 @@ Each target/expert configuration has its own guarantee under the paper's samplin
 Accuracy configuration targets are **minimum accuracies**; the runner converts them to error bounds. Budget configuration targets are **maximum expert-call rates**. Other groupings can be supplied through the source-to-domain mapping and reference weights; original score arrays remain immutable. Joint accuracy/budget certification is not part of this first implementation.
 
 ## Commands and outputs
+
+### How to present the mixtures
+
+Use simplex maps instead of a table with one row per deployment mixture. The vertices are pure Anthropic, Medical and ToolACE; mark the uniform mixture and original benchmark mixture explicitly. Each selected policy stays fixed across the triangle. For these per-example risks, its empirical risk is affine in the mixture weights, so the map can be rendered exactly from the three held-out domain risks. The denser colour rendering adds no observations or calibration runs.
+
+The main quantities are:
+
+| Quantity | Accuracy-controlled experiment | Budget-controlled experiment |
+|---|---|---|
+| Target margin (positive is good) | Achieved accuracy minus required accuracy | Allowed call rate minus actual call rate |
+| Complementary performance | Expert-call rate: the cost of robustness | Achieved accuracy: the performance cost of robustness |
+| Worst deployment mixture | Minimum domain accuracy | Maximum domain call rate |
+| Selection availability | Number of seeds/splits returning a certified threshold | Number of seeds/splits returning a certified threshold |
+
+Show the target margin on a shared diverging colour scale, with a zero contour separating mixtures whose empirical risk meets the target from those exceeding it. Compare pooled and domainwise calibration side by side; include the matched-candidate pooled control in supplementary output. Show the complementary metric in a second row. Report individual seeds or an explicitly labelled summary; do not interpret an average over seeds as a guarantee for every fitted policy, or silently drop configurations that return no threshold.
+
+Use only five named mixtures in a compact table: the three vertices, uniform and original benchmark. Record the selected threshold and selection availability once per configuration, since they do not vary across deployment mixtures. A separate target-sweep summary should show selection availability and worst-domain risk, including strict targets for which no policy is certified. The fraction of grid points meeting a target is optional and descriptive: it depends on how the grid is sampled and is not a deployment probability or a coverage estimate.
+
+Initial fixed-target views use the already specified minimum accuracies (strong 0.80, weak 0.78) and the configured budget target nearest 0.50. These targets are selected before inspecting held-out results. All configured targets and both experts remain in the outputs. The 500-resplit configuration is a separate stability analysis; the initial figures use the three official model seeds.
 
 Run from the repository root. Set the artifact root to the directory containing `strong/` and `weak/`, normally `results/probe_ablation/cuda_run`.
 
