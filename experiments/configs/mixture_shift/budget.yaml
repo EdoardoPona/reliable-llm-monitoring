@@ -1,0 +1,76 @@
+# Saved-score analysis only: no model inference or dataset changes.
+# --inventory-only checks inputs without performing risk control.
+# Accuracy targets are minimum accuracy; budget targets are maximum call rate.
+
+artifact_root: results/probe_ablation/cuda_run
+experts:
+- strong
+- weak
+cell: attention_attention
+seeds:
+- 42
+- 43
+- 44
+source_to_domain:
+  anthropic: anthropic
+  mt: medical
+  mts: medical
+  toolace: toolace
+reference_weights:
+  anthropic: 500
+  medical: 586
+  toolace: 500
+mixture_resolution: 20
+shared:
+  calib_fraction: 0.5
+  guarantee_probability: 0.9
+  tau_steps: 100
+  pareto_split_proportion: 0.3
+  merge_strategy: replace
+guaranteed_risk: budget
+targets:
+  strong:
+  - 0.05
+  - 0.097368421053
+  - 0.144736842105
+  - 0.192105263158
+  - 0.239473684211
+  - 0.286842105263
+  - 0.334210526316
+  - 0.381578947368
+  - 0.428947368421
+  - 0.476315789474
+  - 0.523684210526
+  - 0.571052631579
+  - 0.618421052632
+  - 0.665789473684
+  - 0.713157894737
+  - 0.760526315789
+  - 0.807894736842
+  - 0.855263157895
+  - 0.902631578947
+  - 0.95
+  weak:
+  - 0.05
+  - 0.097368421053
+  - 0.144736842105
+  - 0.192105263158
+  - 0.239473684211
+  - 0.286842105263
+  - 0.334210526316
+  - 0.381578947368
+  - 0.428947368421
+  - 0.476315789474
+  - 0.523684210526
+  - 0.571052631579
+  - 0.618421052632
+  - 0.665789473684
+  - 0.713157894737
+  - 0.760526315789
+  - 0.807894736842
+  - 0.855263157895
+  - 0.902631578947
+  - 0.95
+trials:
+  n: 1
+  base_seed: null

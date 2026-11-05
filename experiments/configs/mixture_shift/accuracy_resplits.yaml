@@ -1,0 +1,36 @@
+# Saved-score analysis only: no model inference or dataset changes.
+# --inventory-only checks inputs without performing risk control.
+# Accuracy targets are minimum accuracy; budget targets are maximum call rate.
+
+artifact_root: results/probe_ablation/cuda_run
+experts:
+- strong
+- weak
+cell: attention_attention
+seeds:
+- 42
+source_to_domain:
+  anthropic: anthropic
+  mt: medical
+  mts: medical
+  toolace: toolace
+reference_weights:
+  anthropic: 500
+  medical: 586
+  toolace: 500
+mixture_resolution: 20
+shared:
+  calib_fraction: 0.5
+  guarantee_probability: 0.9
+  tau_steps: 100
+  pareto_split_proportion: 0.3
+  merge_strategy: replace
+guaranteed_risk: accuracy_error
+targets:
+  strong:
+  - 0.8
+  weak:
+  - 0.78
+trials:
+  n: 500
+  base_seed: 1000

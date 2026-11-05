@@ -95,6 +95,21 @@ exports `attention_accuracy_guarantee_validation.pdf` and
 `accuracy_guarantee_validation_all_architectures.pdf`, together with the JSON
 trial data needed to replot them.
 
+## Distribution-mixture shift
+
+Reuse the official attention/attention scores to compare pooled and domainwise
+risk control, grouping MT and MTS as medical while preserving every benchmark
+example. The [experiment plan](docs/mixture_shift_experiment_plan.md) describes
+the data inventory, guarantees, configurations and output files.
+
+```bash
+uv run experiments/mixture_shift.py \
+  --config experiments/configs/mixture_shift/accuracy.yaml \
+  --artifact-root results/probe_ablation/cuda_run
+```
+
+Add `--inventory-only` to check the inputs without selecting thresholds.
+
 ## Mean+Ridge supplementary experiments
 
 The six configurations in `experiments/configs/dv_cascade/` reproduce the
