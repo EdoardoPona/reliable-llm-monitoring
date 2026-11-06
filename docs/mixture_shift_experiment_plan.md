@@ -1,8 +1,29 @@
 # Distribution-mixture shift experiments
 
-Implementation and data decision, 5 November 2026.
+Implementation and data decision, 5 November 2026; central evaluation criteria agreed 6 November 2026.
 
 The primary experiment reuses the exact official attention/attention score artifacts. It changes only the domain labels used for calibration and deployment-mixture evaluation: `mt` and `mts` both map to `medical`. It does not change, deduplicate, relabel, expand or move any benchmark examples between development and test.
+
+## Central evaluation questions
+
+The experiment and its main presentation must answer **all three questions together**:
+
+| Question | Primary metrics |
+|---|---|
+| **Does control survive the shift?** | Worst-domain risk and margin to the requested target across deployment mixtures |
+| **What does robustness cost?** | Achieved accuracy and expert-call rate, compared on the same seeds, splits and mixtures |
+| **Can calibration return a policy?** | Number of seeds with a certified threshold, out of all attempted seeds, for each target and expert |
+
+These are the central evaluation criteria, not supplementary diagnostics. A favourable risk result among selected policies must be reported alongside the cost and frequency of obtaining such a policy. Nonselection is a substantive result: keep it visible, distinguish it from an empirical target exceedance, and never replace it with an uncertified fallback. Report variability across the three official model seeds; their average is not a guarantee for each policy.
+
+The main results should therefore consist of:
+
+- **A paired simplex figure:** pooled versus domainwise calibration, showing target margin and the complementary accuracy/call-rate metric, with uniform and original benchmark mixtures marked.
+- **A five-row table:** pure Anthropic, pure Medical, pure ToolACE, uniform and original benchmark; show accuracy and expert-call rate for both methods.
+- **A worst-domain summary:** the risk or target margin in the most adverse mixture, with variation across seeds.
+- **A certification-availability summary:** certified/attempted seeds across all configured targets, including targets at which no policy is returned.
+
+Use this structure for both accuracy and budget control. The 68-mixture grid supports the simplex presentation; it does not require a 68-row table. The matched-candidate pooled control remains a supporting analysis of why the methods differ.
 
 ## What is already computed, and what the new experiment computes
 
@@ -81,9 +102,7 @@ Each target/expert configuration has its own guarantee under the paper's samplin
 
 Accuracy configuration targets are **minimum accuracies**; the runner converts them to error bounds. Budget configuration targets are **maximum expert-call rates**. Other groupings can be supplied through the source-to-domain mapping and reference weights; original score arrays remain immutable. Joint accuracy/budget certification is not part of this first implementation.
 
-## Commands and outputs
-
-### How to present the mixtures
+## Results presentation
 
 Use simplex maps instead of a table with one row per deployment mixture. The vertices are pure Anthropic, Medical and ToolACE; mark the uniform mixture and original benchmark mixture explicitly. Each selected policy stays fixed across the triangle. For these per-example risks, its empirical risk is affine in the mixture weights, so the map can be rendered exactly from the three held-out domain risks. The denser colour rendering adds no observations or calibration runs.
 
@@ -103,6 +122,8 @@ Use only five named mixtures in a compact table: the three vertices, uniform and
 Initial fixed-target views use the already specified minimum accuracies (strong 0.80, weak 0.78) and the configured budget target nearest 0.50. These targets are selected before inspecting held-out results. All configured targets and both experts remain in the outputs. The 500-resplit configuration is a separate stability analysis; the initial figures use the three official model seeds.
 
 The [initial results](mixture_shift_initial_results.md) record the completed 68-mixture runs, including nonselection at the configured accuracy targets.
+
+## Commands and outputs
 
 Run from the repository root. Set the artifact root to the directory containing `strong/` and `weak/`, normally `results/probe_ablation/cuda_run`.
 
