@@ -1,57 +1,49 @@
-# Initial distribution-mixture results
+# Distribution-mixture results
 
-Completed on the lab server on 5 November 2026, using calibration commit `ffd313d`. Both primary configurations ran with the official attention/attention scores: strong/weak experts, model and split seeds 42/43/44, unchanged 1,586-row benchmark, and 68 deployment mixtures. The original model scores and data were read-only inputs. No activations, refitting or new model inference were required.
+Calibration commit: [`b000dcb`](https://github.com/EdoardoPona/reliable-llm-monitoring/commit/b000dcb9768361acc260cc17e1f0d0b1305d87f7).
 
-The grid contains 66 combinations in 10-percentage-point increments, including all three single-domain extremes, plus the uniform and original benchmark mixtures. Each calibrated threshold is fixed across mixtures. The runs contain 90 accuracy-control and 360 budget-control method/target/seed records. The 500-resplit stability analysis has not been run.
+Results cover three model seeds and 68 deployment mixtures, with each threshold fixed across mixtures. The central comparisons are control under shift, its accuracy/call-rate tradeoff, and the availability of a certified policy.
 
-## Accuracy control: certification is the limitation
+## Budget control at 40%
 
-Domainwise calibration returned **no certified threshold at any configured accuracy target in any model seed**: strong targets 74–82%, weak targets 72–80%, five targets each. This is nonselection, not a measured risk violation by a selected domainwise policy. It does not establish that no alternative policy could meet these targets.
-
-At the two predefined accuracy views:
-
-| Expert / minimum accuracy | Method | Certified seeds | Accuracy at original mixture | Worst-domain accuracy |
-|---|---|---:|---:|---:|
-| Strong / 80.0% | pooled | 3/3 | 81.9%–84.9% | 61.8%–71.4% |
-| Strong / 80.0% | mixture | 0/3 | — | — |
-| Weak / 78.0% | pooled | 3/3 | 79.1%–84.0% | 68.3%–75.1% |
-| Weak / 78.0% | mixture | 0/3 | — | — |
-
-The ranges are the three observed seed results, not confidence intervals. Pooled calibration meets the accuracy target empirically at the original mixture in these views, while its fixed policies fall below the target in some domain mixtures. At the first domainwise candidate, the ToolACE p-value is 1 in all six predefined accuracy configurations; some weak-expert candidates also fail other domain tests. This identifies a calibration diagnostic to investigate before changing targets or candidate construction. Do not infer from nonselection alone that the medical sample count is the limiting factor.
-
-## Budget control: robustness and its performance cost
-
-The predefined budget view uses the configured target nearest 50%, with a lower-target tie break: **47.6316%** maximum expert calls.
+Domainwise calibration returns a certified threshold for **3/3 seeds for each expert**. All six policies have held-out worst-domain call rates below 40%. Pooled policies exceed 40% in all three strong-expert seeds and two of the three weak-expert seeds.
 
 | Expert | Method | Certified seeds | Worst-domain call rate | Accuracy at original mixture |
 |---|---|---:|---:|---:|
-| Strong | pooled | 3/3 | 49.3%–60.2% | 82.5%–85.2% |
-| Strong | mixture | 3/3 | 38.9%–42.1% | 79.8%–83.0% |
-| Weak | pooled | 3/3 | 36.7%–41.2% | 81.2%–84.4% |
-| Weak | mixture | 3/3 | 36.7%–43.1% | 81.4%–84.4% |
+| Strong | Pooled | 3/3 | 44.6%–60.2% | 80.9%–85.2% |
+| Strong | Domainwise | 3/3 | 34.3%–34.8% | 78.4%–81.5% |
+| Weak | Pooled | 3/3 | 36.7%–41.2% | 81.2%–84.4% |
+| Weak | Domainwise | 3/3 | 35.5%–37.7% | 81.2%–84.4% |
 
-For the strong expert, each pooled policy exceeds the call-rate target in at least one domain. Each domainwise policy stays below it in all three measured domains, and hence all of their empirical mixtures, at a cost in accuracy. For the weak expert, both methods stay within the empirical budget at this target; a benefit should not be claimed uniformly across experts and targets. The full summary retains the matched-candidate pooled comparison.
+Ranges show observed variation across the three seeds. For the strong expert, the extra budget margin comes with lower accuracy at the original mixture. For the weak expert, the accuracy cost is smaller; seed 44 selects the same policy under both methods. The matched-candidate pooled control is retained in the full summary.
 
-Five reference mixtures illustrate the strong-expert budget result for the **preselected seed 42**:
+Five named mixtures show the strong-expert comparison for seed 42:
 
 | Mixture | Pooled calls | Domainwise calls | Pooled accuracy | Domainwise accuracy |
 |---|---:|---:|---:|---:|
-| Anthropic | 49.2% | 38.9% | 90.2% | 86.1% |
-| Medical | 49.3% | 32.3% | 89.1% | 88.8% |
-| ToolACE | 20.4% | 11.4% | 69.8% | 67.8% |
-| Uniform | 39.6% | 27.5% | 83.0% | 80.9% |
-| Original benchmark | 40.2% | 27.8% | 83.4% | 81.3% |
+| Anthropic | 49.2% | 34.8% | 90.2% | 85.7% |
+| Medical | 49.3% | 23.5% | 89.1% | 87.8% |
+| ToolACE | 20.4% | 8.6% | 69.8% | 66.3% |
+| Uniform | 39.6% | 22.3% | 83.0% | 79.9% |
+| Original benchmark | 40.2% | 22.4% | 83.4% | 80.3% |
 
-## Figures and interpretation
+## Accuracy control: certification is the limitation
 
-Use a pair of simplex maps for target margin, with a second row for the complementary metric. Mark the uniform and original mixtures; corners identify the single-domain extremes. The budget figure shows where the pooled call-rate target is exceeded and the performance cost of domainwise calibration. The accuracy figure explicitly shows the lack of a certified domainwise threshold. All-target certification plots prevent the fixed-target figures from hiding nonselection.
+Domainwise calibration returns **no certified threshold at any configured accuracy target in any seed**: strong targets 74–82%, weak targets 72–80%, five targets each. Nonselection remains part of the result; it does not establish that no alternative policy could meet these targets.
 
-These are held-out empirical measurements, not direct observations of population-guarantee violations. The 68 mixtures reuse the same evaluation examples and are not 68 independent test sets. The guarantee is over mixtures of fixed domain distributions; the medical MT/MTS composition remains fixed. Three model seeds describe observed variability, not a calibrated estimate of coverage probability.
+| Expert / minimum accuracy | Method | Certified seeds | Accuracy at original mixture | Worst-domain accuracy |
+|---|---|---:|---:|---:|
+| Strong / 80.0% | Pooled | 3/3 | 81.9%–84.9% | 61.8%–71.4% |
+| Strong / 80.0% | Domainwise | 0/3 | — | — |
+| Weak / 78.0% | Pooled | 3/3 | 79.1%–84.0% | 68.3%–75.1% |
+| Weak / 78.0% | Domainwise | 0/3 | — | — |
 
-Run directories under `results/mixture_shift/` (outputs are not committed):
+Pooled policies meet these accuracy targets empirically at the original mixture but fall below them in some domain mixtures. At the first domainwise candidate, the ToolACE p-value is 1 in all six displayed configurations; some weak-expert candidates also fail other domain tests. Nonselection alone does not identify medical sample size as the limiting factor.
 
-- `accuracy_grid10_ffd313d/`: accuracy runs, inventory and raw trial results.
-- `budget_grid10_ffd313d/`: budget runs, inventory and raw trial results.
-- Each `report_seed42/` directory: simplex PNG/SVG figures, certification plots and all-target `summary.json`.
+## Presentation and interpretation
 
-Reproduce the figures with `experiments/mixture_shift_report.py`; see the [experiment plan](mixture_shift_experiment_plan.md) for commands and metrics. The calibration target grid was unchanged after viewing these results.
+The main presentation combines paired simplex maps, the five-mixture table, a worst-domain summary and certification availability across targets. The maps show target margin and complementary performance, mark uniform and original mixtures, and display nonselection explicitly. All accuracy targets and the original budget sweep plus exact 40% remain in the summaries.
+
+The measurements are held-out empirical risks, not direct observations of population-guarantee violations. The 68 mixtures reuse the same evaluation examples; the medical MT/MTS composition stays fixed. The seed ranges are descriptive, not confidence intervals. The 500-resplit stability analysis remains outstanding.
+
+See the [experiment plan](mixture_shift_experiment_plan.md) for the metric definitions and reproduction commands.
