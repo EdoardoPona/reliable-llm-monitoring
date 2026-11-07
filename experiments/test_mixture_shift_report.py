@@ -2,7 +2,7 @@ import json
 
 import numpy as np
 import pytest
-from mixture_shift_report import domain_metrics, read_run, summarise
+from mixture_shift_report import configured_target, domain_metrics, read_run, summarise
 
 DOMAINS = ["anthropic", "medical", "toolace"]
 
@@ -59,3 +59,13 @@ def test_report_rejects_incomplete_runs(tmp_path):
     (tmp_path / "inventory.json").write_text(json.dumps({"status": "incomplete", "inventory_only": False}))
     with pytest.raises(ValueError, match="completed calibration"):
         read_run(tmp_path)
+
+
+def test_figure_target_requires_exact_calibration():
+    rows = [{**record(), "alpha": a} for a in (0.381578947368, 0.428947368421)]
+    with pytest.raises(ValueError, match="calibrate this exact target first"):
+        configured_target(rows, "strong", 0.4)
+    rows.append({**record(), "alpha": 0.4})
+    assert configured_target(rows, "strong", 0.4) == 0.4
+    # Permit only floating-point representation differences, including 1 - accuracy.
+    assert configured_target([{**record(), "alpha": 1 - 0.8}], "strong", 0.2) == pytest.approx(0.2)

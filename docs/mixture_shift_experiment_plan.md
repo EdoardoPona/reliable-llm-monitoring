@@ -1,7 +1,5 @@
 # Distribution-mixture shift experiments
 
-Implementation and data decision, 5 November 2026; central evaluation criteria agreed 6 November 2026.
-
 The primary experiment reuses the exact official attention/attention score artifacts. It changes only the domain labels used for calibration and deployment-mixture evaluation: `mt` and `mts` both map to `medical`. It does not change, deduplicate, relabel, expand or move any benchmark examples between development and test.
 
 ## Central evaluation questions
@@ -97,7 +95,7 @@ Each target/expert configuration has its own guarantee under the paper's samplin
 ## Separate configurations
 
 - `experiments/configs/mixture_shift/accuracy.yaml`: attention/attention, both experts, seeds 42/43/44, existing minimum-accuracy sweeps; one official split per seed.
-- `experiments/configs/mixture_shift/budget.yaml`: the same model artifacts and seeds, with 20 budget targets from 0.05 to 0.95.
+- `experiments/configs/mixture_shift/budget.yaml`: the same model artifacts and seeds, with the original 20 budget targets from 0.05 to 0.95 plus **exactly 0.40**, the primary budget comparison.
 - `experiments/configs/mixture_shift/accuracy_resplits.yaml`: seed-42 models, 500 paired splits starting at seed 1000; minimum accuracy 0.80 for the strong expert and 0.78 for the weak expert.
 
 Accuracy configuration targets are **minimum accuracies**; the runner converts them to error bounds. Budget configuration targets are **maximum expert-call rates**. Other groupings can be supplied through the source-to-domain mapping and reference weights; original score arrays remain immutable. Joint accuracy/budget certification is not part of this first implementation.
@@ -119,7 +117,7 @@ Show the target margin on a shared diverging colour scale, with a zero contour s
 
 Use only five named mixtures in a compact table: the three vertices, uniform and original benchmark. Record the selected threshold and selection availability once per configuration, since they do not vary across deployment mixtures. A separate target-sweep summary should show selection availability and worst-domain risk, including strict targets for which no policy is certified. The fraction of grid points meeting a target is optional and descriptive: it depends on how the grid is sampled and is not a deployment probability or a coverage estimate.
 
-Initial fixed-target views use the already specified minimum accuracies (strong 0.80, weak 0.78) and the configured budget target nearest 0.50. These targets are selected before inspecting held-out results. All configured targets and both experts remain in the outputs. The 500-resplit configuration is a separate stability analysis; the initial figures use the three official model seeds.
+The primary fixed-target views use minimum accuracies of 0.80 for the strong expert and 0.78 for the weak expert, and **exactly 0.40 maximum expert-call rate** for both experts. Calibrate at these exact targets; do not substitute the nearest grid value. All configured targets and both experts remain in the outputs. The 500-resplit configuration is a separate stability analysis; the primary figures use the three official model seeds.
 
 The [initial results](mixture_shift_initial_results.md) record the completed 68-mixture runs, including nonselection at the configured accuracy targets.
 
@@ -158,12 +156,6 @@ Outputs go to a new directory under `results/mixture_shift/` by default. `--outp
 - `mixtures.json`: domain order, deployment weights and reference weights.
 - `trials.jsonl`: one record per expert/model-seed/split, containing exact split indices, domain/source counts, candidate thresholds, p-values, certified indices, selected threshold, held-out domain/source risks and mixture risks. Absent in inventory-only mode.
 
-The report command exports PNG/SVG simplex figures for seed 42, including a supplementary matched-candidate comparison; all-target certification-availability plots; and `summary.json` with all seeds, targets, explicit nonselection, worst-domain metrics and the five named mixtures. It never recalibrates thresholds. Pass `--seed` to display another official seed. The default budget view uses 47.6316%, the nearest configured target to 50% with ties resolved toward the lower target.
+The report command exports PNG/SVG simplex figures for seed 42, including a supplementary matched-candidate comparison; all-target certification-availability plots; and `summary.json` with all seeds, targets, explicit nonselection, worst-domain metrics and the five named mixtures. It never recalibrates thresholds. Pass `--seed` to display another official seed. The default budget view is exactly 40%; the report fails if that calibration target is absent.
 
 Large inputs and outputs are not committed. The existing experiment entry points and shared calibration implementations are unchanged. The new `reliable_monitoring/mixture_ltt.py` composes their risk evaluation, bounds, Pareto mask and fixed-sequence testing; the dedicated experiment driver handles configuration and reporting.
-
-## Remote readiness
-
-The lab server's original score artifacts and full token-activation caches were located and verified. The primary workflow needs only the score files. The older remote checkout should be left in place; use a separate checkout of the PR branch and the existing environment with that checkout on `PYTHONPATH`. The inherited benchmark files and activation caches are read-only inputs.
-
-The checkpoint search found legacy difference-of-means and Gemma-based probe files, not verified attention/attention checkpoints. This does not block the score-based experiment. New score generation or probe refitting is only needed if we later change the model or example selection, and should be a separate recorded run.

@@ -259,6 +259,18 @@ def plot_availability(summary, risk_name, output):
     plt.close(fig)
 
 
+def configured_target(records: list[dict], expert: str, requested: float) -> float:
+    """Require calibration at the requested target instead of substituting a neighbour."""
+    matches = sorted(
+        {r["alpha"] for r in records if r["expert"] == expert and np.isclose(r["alpha"], requested, rtol=0, atol=1e-12)}
+    )
+    if len(matches) != 1:
+        raise ValueError(
+            f"No unique calibration at target {requested:g} for {expert}; calibrate this exact target first"
+        )
+    return matches[0]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run", type=Path)
@@ -267,18 +279,18 @@ def main():
     parser.add_argument("--strong-accuracy", type=float, default=0.80)
     parser.add_argument("--weak-accuracy", type=float, default=0.78)
     parser.add_argument(
-        "--budget", type=float, default=0.50, help="Use the nearest configured target; lower target breaks ties"
+        "--budget", type=float, default=0.40, help="Exact calibrated budget target to plot (default: 0.40)"
     )
     args = parser.parse_args()
     mixtures, records, code_commit = read_run(args.run)
-    args.output_dir.mkdir(parents=True, exist_ok=False)
     summary = summarise(records, mixtures)
     risk_name = records[0]["guaranteed_risk"]
     targets = {}
     for expert in ("strong", "weak"):
         requested = 1 - getattr(args, expert + "_accuracy") if risk_name == "accuracy_error" else args.budget
-        alphas = sorted({r["alpha"] for r in records if r["expert"] == expert})
-        targets[expert] = min(alphas, key=lambda a: (round(abs(a - requested), 12), a))
+        targets[expert] = configured_target(records, expert, requested)
+    args.output_dir.mkdir(parents=True, exist_ok=False)
+    for expert in ("strong", "weak"):
         for matched in (False, True):
             plot_simplex(
                 records, mixtures, expert, targets[expert], args.seed, args.output_dir, include_matched=matched
